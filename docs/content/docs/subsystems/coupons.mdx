@@ -1,0 +1,237 @@
+---
+title: Coupons
+description: Percentage and fixed-amount discounts with redemption tracking and validity windows.
+---
+
+**Coupons** provide discount mechanisms for subscriptions and invoices. Ledger supports both percentage-based and fixed-amount discounts with configurable validity windows, redemption limits, and per-app scoping.
+
+## Structure
+
+```go
+type Coupon struct {
+    types.Entity
+    ID             id.CouponID       `json:"id"`
+    Code           string            `json:"code"`
+    Name           string            `json:"name"`
+    Type           CouponType        `json:"type"`
+    Amount         types.Money       `json:"amount,omitempty"`
+    Percentage     int               `json:"percentage,omitempty"`
+    Currency       string            `json:"currency"`
+    MaxRedemptions int               `json:"max_redemptions"`
+    TimesRedeemed  int               `json:"times_redeemed"`
+    ValidFrom      *time.Time        `json:"valid_from,omitempty"`
+    ValidUntil     *time.Time        `json:"valid_until,omitempty"`
+    AppID          string            `json:"app_id"`
+    Metadata       map[string]string `json:"metadata,omitempty"`
+}
+```
+
+## Coupon types
+
+| Type | Description | Example |
+|------|-------------|---------|
+| `CouponTypePercentage` | Percentage discount off subtotal | 20% off |
+| `CouponTypeAmount` | Fixed amount discount | $10 off |
+
+```go
+type CouponType string
+
+const (
+    CouponTypePercentage CouponType = "percentage"
+    CouponTypeAmount     CouponType = "amount"
+)
+```
+
+## Creating coupons
+
+### Percentage discount
+
+```go
+coupon := &coupon.Coupon{
+    ID:             id.NewCouponID(),
+    Code:           "SUMMER20",
+    Name:           "Summer Sale - 20% Off",
+    Type:           coupon.CouponTypePercentage,
+    Percentage:     20,
+    MaxRedemptions: 100,
+    ValidFrom:      ptrTime(time.Date(2024, 6, 1, 0, 0, 0, 0, time.UTC)),
+    ValidUntil:     ptrTime(time.Date(2024, 9, 1, 0, 0, 0, 0, time.UTC)),
+    AppID:          "myapp",
+}
+
+if err := store.CreateCoupon(ctx, coupon); err != nil {
+    log.Fatal(err)
+}
+```
+
+### Fixed amount discount
+
+```go
+coupon := &coupon.Coupon{
+    ID:             id.NewCouponID(),
+    Code:           "SAVE10",
+    Name:           "$10 Off First Month",
+    Type:           coupon.CouponTypeAmount,
+    Amount:         types.USD(1000), // $10.00
+    Currency:       "USD",
+    MaxRedemptions: 500,
+    AppID:          "myapp",
+}
+```
+
+## Validity windows
+
+Coupons can have optional start and end dates:
+
+```go
+// Always valid (no window)
+coupon.ValidFrom = nil
+coupon.ValidUntil = nil
+
+// Valid for a specific period
+coupon.ValidFrom = ptrTime(time.Date(2024, 1, 1, 0, 0, 0, 0, time.UTC))
+coupon.ValidUntil = ptrTime(time.Date(2024, 12, 31, 23, 59, 59, 0, time.UTC))
+
+// Valid starting from a date (no end)
+coupon.ValidFrom = ptrTime(time.Now())
+coupon.ValidUntil = nil
+```
+
+When validating a coupon:
+
+```go
+now := time.Now()
+
+if coupon.ValidFrom != nil && now.Before(*coupon.ValidFrom) {
+    return ErrCouponNotStarted
+}
+
+if coupon.ValidUntil != nil && now.After(*coupon.ValidUntil) {
+    return ErrCouponExpired
+}
+```
+
+## Redemption tracking
+
+Each coupon tracks how many times it has been used:
+
+```go
+// Check if coupon is still available
+if coupon.MaxRedemptions > 0 && coupon.TimesRedeemed >= coupon.MaxRedemptions {
+    return ErrCouponExhausted
+}
+
+// Redeem the coupon
+coupon.TimesRedeemed++
+store.UpdateCoupon(ctx, coupon)
+```
+
+Set `MaxRedemptions` to `0` for unlimited redemptions.
+
+## Applying coupons to invoices
+
+When generating an invoice, apply the coupon discount:
+
+```go
+func applyCoupon(invoice *invoice.Invoice, cpn *coupon.Coupon) {
+    var discount types.Money
+
+    switch cpn.Type {
+    case coupon.CouponTypePercentage:
+        discount = invoice.Subtotal.Multiply(int64(cpn.Percentage)).Divide(100)
+    case coupon.CouponTypeAmount:
+        discount = cpn.Amount
+        if discount.GreaterThan(invoice.Subtotal) {
+            discount = invoice.Subtotal // Don't discount more than subtotal
+        }
+    }
+
+    invoice.LineItems = append(invoice.LineItems, invoice.LineItem{
+        ID:          id.NewLineItemID(),
+        InvoiceID:   invoice.ID,
+        Type:        invoice.LineItemDiscount,
+        Description: fmt.Sprintf("Coupon: %s", cpn.Code),
+        Amount:      discount.Negate(),
+    })
+
+    invoice.DiscountAmount = discount
+    invoice.Total = invoice.Subtotal.Add(invoice.TaxAmount).Subtract(discount)
+}
+```
+
+## Coupon validation
+
+Use the `CouponValidator` plugin interface for custom validation logic:
+
+```go
+type CouponValidator interface {
+    plugin.Plugin
+    ValidateCoupon(ctx context.Context, coupon interface{}, sub interface{}) error
+}
+```
+
+Example: Limit coupons to new customers only:
+
+```go
+type NewCustomerOnly struct{}
+
+func (v *NewCustomerOnly) Name() string { return "new-customer-coupon-validator" }
+
+func (v *NewCustomerOnly) ValidateCoupon(ctx context.Context, cpn interface{}, sub interface{}) error {
+    subscription := sub.(*subscription.Subscription)
+
+    // Check if customer already had a subscription
+    existing, _ := store.ListSubscriptions(ctx, subscription.TenantID, subscription.AppID, subscription.ListOpts{})
+    if len(existing) > 0 {
+        return fmt.Errorf("coupon only valid for new customers")
+    }
+
+    return nil
+}
+```
+
+## Listing coupons
+
+```go
+coupons, err := store.ListCoupons(ctx, "myapp", coupon.ListOpts{
+    Active: true,  // Only active coupons
+    Limit:  20,
+    Offset: 0,
+})
+
+for _, cpn := range coupons {
+    fmt.Printf("%s (%s): %d/%d redeemed\n",
+        cpn.Code, cpn.Name, cpn.TimesRedeemed, cpn.MaxRedemptions)
+}
+```
+
+## Store interface
+
+```go
+type Store interface {
+    Create(ctx context.Context, c *Coupon) error
+    Get(ctx context.Context, code string, appID string) (*Coupon, error)
+    GetByID(ctx context.Context, couponID id.CouponID) (*Coupon, error)
+    List(ctx context.Context, appID string, opts ListOpts) ([]*Coupon, error)
+    Update(ctx context.Context, c *Coupon) error
+    Delete(ctx context.Context, couponID id.CouponID) error
+}
+
+type ListOpts struct {
+    Active bool
+    Limit  int
+    Offset int
+}
+```
+
+## API routes
+
+| Method | Path | Description |
+|--------|------|-------------|
+| `POST` | `/ledger/coupons` | Create a coupon |
+| `GET` | `/ledger/coupons` | List coupons |
+| `GET` | `/ledger/coupons/{code}` | Get coupon by code |
+| `GET` | `/ledger/coupons/id/{id}` | Get coupon by ID |
+| `PUT` | `/ledger/coupons/{id}` | Update a coupon |
+| `DELETE` | `/ledger/coupons/{id}` | Delete a coupon |
+| `POST` | `/ledger/coupons/{code}/redeem` | Redeem a coupon |

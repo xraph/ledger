@@ -1,137 +1,227 @@
 ---
 title: Architecture
-description: How Cortex's packages fit together.
+description: How Ledger's billing packages fit together.
 ---
 
-Cortex is organized as a set of focused Go packages. The `engine` package is the central coordinator. All other packages define interfaces, entities, and subsystem logic that compose around it.
+Ledger is organized as a set of focused Go packages for usage-based billing. The `ledger` package provides the main engine that coordinates all billing operations. Other packages define domain models, stores, and providers.
 
 ## Package diagram
 
 ```
 ┌──────────────────────────────────────────────────────────────────┐
-│                        engine.Engine                              │
-│  CreateAgent / GetAgent / UpdateAgent / DeleteAgent / ListAgents  │
-│  CreateSkill / CreateTrait / CreateBehavior / CreatePersona       │
-│  GetRun / ListRuns / LoadConversation / ResolveCheckpoint         │
+│                        ledger.Ledger                              │
+│  CreatePlan / UpdatePlan / GetPlan / ListPlans                    │
+│  CreateSubscription / UpdateSubscription / CancelSubscription     │
+│  Meter / Entitled / GenerateInvoice / CollectPayment              │
+│  CreateCoupon / ApplyCoupon / CreateCustomer / UpdateCustomer     │
 ├──────────────────────────────────────────────────────────────────┤
-│                     Agent resolution flow                         │
-│  1. Load agent config (flat or persona mode)                      │
-│  2. If persona mode: resolve persona → load skills + traits       │
-│  3. Assemble system prompt from persona identity + skill          │
-│     fragments + trait influences + behavior rules                 │
-│  4. Apply cognitive style (phase-based reasoning strategy)        │
-│  5. Execute reasoning loop (Run → Steps → ToolCalls)              │
-│  6. Record results, emit plugin hooks                             │
+│                     Billing flow                                  │
+│  1. Define plans with features and pricing tiers                  │
+│  2. Create customer subscriptions to plans                        │
+│  3. Check entitlements with sub-millisecond cache                 │
+│  4. Meter usage events with high-throughput batching              │
+│  5. Generate invoices with line items and taxes                   │
+│  6. Process payments through providers (Stripe, Paddle, etc)      │
 ├──────────────────────┬───────────────────────────────────────────┤
-│  plugin.Registry      │  api.API (Forge HTTP handlers)            │
-│  OnRunStarted         │  36 REST endpoints:                       │
-│  OnRunCompleted       │  - Agents (7 routes)                      │
-│  OnRunFailed          │  - Skills, Traits, Behaviors,             │
-│  OnToolCalled         │    Personas (5 routes each)               │
-│  OnPersonaResolved    │  - Runs (3), Checkpoints (2),             │
-│  (16 total hooks)     │    Memory (2), Tools (2)                  │
+│  plugin.Registry      │  meter.Buffer                             │
+│  OnMeterEvent         │  10K+ events/second ingestion             │
+│  OnInvoiceGenerated   │  Automatic batching and flushing           │
+│  OnPaymentProcessed   │  Configurable batch size and interval      │
+│  OnSubscriptionChange │  Non-blocking API                          │
+│  (16 lifecycle hooks) │                                           │
 ├──────────────────────┴───────────────────────────────────────────┤
 │                        store.Store                                │
-│  (composite: agent.Store + skill.Store + trait.Store +            │
-│   behavior.Store + persona.Store + run.Store + memory.Store +     │
-│   checkpoint.Store + Migrate/Ping/Close)                          │
+│  Plans / Features / Subscriptions / Customers / Invoices          │
+│  Usage events / Entitlements / Coupons / Tax rates                │
+│  Audit trail / Webhooks / Migrations                              │
 ├──────────────────────────────────────────────────────────────────┤
-│                      store/postgres                               │
-│  (PostgreSQL backend with bun ORM + embedded migrations)          │
+│              PostgreSQL / SQLite / Redis / Memory                 │
+│  Production-ready stores with TypeID identifiers                  │
+│  Multi-tenancy with context-based isolation                       │
 └──────────────────────────────────────────────────────────────────┘
 ```
 
 ## Engine construction
 
-`engine.New` accepts option functions:
+`ledger.New` accepts functional options:
 
 ```go
-eng, err := engine.New(
-    engine.WithStore(pgStore),           // required: composite Store
-    engine.WithConfig(cortex.Config{     // optional: override defaults
-        DefaultModel:    "gpt-4o",
-        DefaultMaxSteps: 30,
-    }),
-    engine.WithExtension(metricsExt),    // optional: lifecycle hooks
-    engine.WithLogger(slog.Default()),   // optional: structured logger
+engine := ledger.New(store,
+    // Metering configuration
+    ledger.WithMeterConfig(
+        100,              // Batch size
+        5*time.Second,    // Flush interval
+    ),
+
+    // Entitlement caching
+    ledger.WithEntitlementCacheTTL(30*time.Second),
+
+    // Payment provider
+    ledger.WithProvider(stripeProvider),
+
+    // Plugins for lifecycle hooks
+    ledger.WithPlugin(metricsPlugin),
+    ledger.WithPlugin(webhookPlugin),
+
+    // Structured logging
+    ledger.WithLogger(slog.Default()),
 )
 ```
 
 All components are interfaces — swap any with your own implementation.
 
-## Agent resolution flow
+## Billing flow
 
-When an agent run begins, the engine resolves the agent's full configuration:
+When processing usage-based billing, Ledger follows this flow:
 
-1. **Load agent config** — Read the `agent.Config` from the store. Check if it uses flat mode (inline `SystemPrompt` + `Tools`) or persona mode (`PersonaRef` or inline skill/trait/behavior names).
+1. **Plan definition** — Create plans with features (metered, licensed, or binary), pricing tiers, and billing intervals.
 
-2. **Resolve persona** — If `PersonaRef` is set, load the `persona.Persona` from the store. The persona contains `SkillAssignment`s, `TraitAssignment`s, behavior names, cognitive style, communication style, and perception.
+2. **Subscription creation** — Subscribe customers to plans with trials, discounts, and custom pricing overrides.
 
-3. **Assemble system prompt** — Concatenate the persona's `Identity` field with each skill's `SystemPromptFragment`, trait influences that target `prompt_injection`, and behavior actions that inject prompts.
+3. **Entitlement checking** — Before allowing feature access, check entitlements with sub-millisecond latency using the cache layer.
 
-4. **Apply runtime parameters** — Trait influences modify runtime parameters like `Temperature`, `MaxSteps`, and tool selection preferences. Cognitive style determines the reasoning loop strategy.
+4. **Usage metering** — Track usage events in a non-blocking, high-throughput buffer that batches and persists to the store.
 
-5. **Execute reasoning loop** — The agent runs through its reasoning loop, creating `run.Step` records for each reasoning step and `run.ToolCall` records for each tool invocation.
+5. **Invoice generation** — At billing period end, aggregate usage, apply pricing tiers, calculate taxes, and generate detailed invoices.
 
-6. **Record and notify** — The `run.Run` is updated with the final state, output, token usage, and timing. Plugin hooks fire at each stage (`OnRunStarted`, `OnStepStarted`, `OnToolCalled`, etc.).
+6. **Payment collection** — Process payments through integrated providers (Stripe, Paddle, custom) with retry logic and webhook handling.
 
-## Tenant isolation
+## Performance architecture
 
-`cortex.WithTenant(ctx, id)` and `cortex.WithApp(ctx, id)` inject identifiers into the context. These are extracted at every layer:
+### Sub-millisecond entitlements
 
-- **Store** — all queries include `WHERE app_id = ?` filters
-- **Engine** — scope is applied before any store operation
-- **API** — the Forge request context provides tenant/app identifiers
+```
+Request → Cache Check (0.01ms) → Hit? → Return
+              ↓ Miss
+         Store Query (1-2ms) → Cache Update → Return
+```
 
-Cross-tenant access is structurally impossible: even if a caller passes an agent ID from another tenant, the store layer returns `ErrAgentNotFound`.
+- **In-memory LRU cache** with configurable TTL
+- **Tenant-scoped keys** prevent cache pollution
+- **Automatic invalidation** on subscription changes
+
+### High-throughput metering
+
+```
+Meter() → Ring Buffer → Batch Full? → Flush to Store
+                           ↓ No
+                     Timer Elapsed? → Flush to Store
+```
+
+- **Lock-free ring buffer** for event collection
+- **Configurable batching** (size and time thresholds)
+- **Non-blocking API** returns immediately
+- **10K+ events/second** sustained throughput
+
+## Multi-tenancy
+
+`context.Context` carries tenant and app identifiers through every layer:
+
+```go
+ctx = context.WithValue(ctx, "tenant_id", "acme_corp")
+ctx = context.WithValue(ctx, "app_id", "production")
+```
+
+Isolation is enforced at multiple levels:
+
+- **Store layer** — All queries include `WHERE tenant_id = ?`
+- **Cache layer** — Keys prefixed with `tenant:{id}:`
+- **Metering buffer** — Separate buffers per tenant
+- **Plugin hooks** — Tenant context passed to all plugins
+
+Cross-tenant access is structurally impossible.
 
 ## Plugin system
 
-Extensions implement the `plugin.Extension` base interface (just `Name() string`) and then opt in to specific lifecycle hooks by implementing additional interfaces:
+Plugins implement lifecycle hooks for extensibility:
 
 ```go
-type Extension interface {
+type Plugin interface {
     Name() string
 }
 
-// Opt-in hooks (implement any subset):
-type RunStarted interface {
-    OnRunStarted(ctx context.Context, agentID id.AgentID, runID id.AgentRunID, input string) error
+// Optional hooks (implement any subset)
+type MeterPlugin interface {
+    OnMeterEvent(ctx context.Context, event meter.Event) error
 }
-type RunCompleted interface { /* ... */ }
-type ToolCalled interface { /* ... */ }
-type PersonaResolved interface { /* ... */ }
-// ... 16 hooks total
+
+type InvoicePlugin interface {
+    OnInvoiceGenerated(ctx context.Context, invoice Invoice) error
+}
+
+type PaymentPlugin interface {
+    OnPaymentProcessed(ctx context.Context, payment Payment) error
+}
 ```
 
-The `plugin.Registry` type-caches extensions at registration time, so emit calls iterate only over extensions that implement the relevant hook. Errors from hooks are logged but never propagated.
+Built-in plugins:
 
-Built-in extensions:
-- `observability.MetricsExtension` — 11 counters for all lifecycle events
-- `audithook.Extension` — bridges lifecycle events to an audit trail backend
+- `metrics.Plugin` — Prometheus metrics for all operations
+- `webhook.Plugin` — HTTP webhooks for billing events
+- `audit.Plugin` — Audit trail for compliance
+- `tax.Plugin` — Tax calculation integrations
+
+## Type-safe money
+
+All currency amounts use integer cents to avoid floating-point errors:
+
+```go
+type Money struct {
+    Amount   int64    // Cents (or smallest currency unit)
+    Currency Currency // USD, EUR, GBP, etc
+}
+
+// Helper constructors
+amount := types.USD(4999)      // $49.99
+tax := amount.Multiply(0.08)   // 8% tax = $4.00
+total := amount.Add(tax)       // $53.99
+
+// Formatting
+fmt.Println(total.Format())    // "$53.99"
+fmt.Println(total.Cents())     // 5399
+```
+
+## TypeID identifiers
+
+All entities use type-prefixed, K-sortable identifiers:
+
+```
+pln_01hqx3qfz5ekth2h5y6z6r099x  // Plan
+sub_01hqx3qg8w5kjyhwkrp5j4wsy3  // Subscription
+inv_01hqx3qgf2c8mhwy9s6zwmf3yh  // Invoice
+cst_01hqx3qgn9v3rywqk8zxr7t9kj  // Customer
+cpn_01hqx3qgw4ekqhxyz6z6r099xa  // Coupon
+evt_01hqx3qh4r5kjyhwkrp5j4wsyb  // Event
+```
+
+Benefits:
+- **Type safety** — Can't pass invoice ID where plan ID expected
+- **K-sortable** — Chronological ordering without timestamps
+- **URL safe** — No encoding needed
+- **Globally unique** — No collisions across systems
 
 ## Package index
 
 | Package | Import path | Purpose |
 |---------|-------------|---------|
-| `cortex` | `github.com/xraph/cortex` | Root package — Entity, Config, scope helpers, errors |
-| `id` | `.../id` | TypeID-based entity identifiers (12 prefixes) |
-| `engine` | `.../engine` | Central coordinator — all CRUD passthroughs |
-| `agent` | `.../agent` | Agent config entity and store interface |
-| `skill` | `.../skill` | Skill entity — capabilities and tools |
-| `trait` | `.../trait` | Trait entity — personality dimensions |
-| `behavior` | `.../behavior` | Behavior entity — trigger/action patterns |
-| `persona` | `.../persona` | Persona entity — composes all aspects |
-| `cognitive` | `.../cognitive` | CognitiveStyle value object — thinking phases |
-| `communication` | `.../communication` | CommunicationStyle value object — tone and format |
-| `perception` | `.../perception` | Perception value object — attention filters |
-| `run` | `.../run` | Run, Step, ToolCall entities and store |
-| `memory` | `.../memory` | Message entity and memory store |
-| `checkpoint` | `.../checkpoint` | Checkpoint entity for human-in-the-loop |
-| `store` | `.../store` | Composite store interface |
-| `store/postgres` | `.../store/postgres` | PostgreSQL backend (bun ORM) |
-| `plugin` | `.../plugin` | Extension interfaces and Registry |
-| `observability` | `.../observability` | Metrics extension (11 counters) |
-| `audit_hook` | `.../audit_hook` | Audit trail extension |
-| `api` | `.../api` | Forge-native HTTP handlers (36 routes) |
-| `extension` | `.../extension` | Forge framework extension adapter |
+| `ledger` | `github.com/xraph/ledger` | Main engine and configuration |
+| `plan` | `.../plan` | Plan and feature definitions |
+| `subscription` | `.../subscription` | Subscription lifecycle management |
+| `meter` | `.../meter` | Usage event tracking and batching |
+| `entitlement` | `.../entitlement` | Feature access checking with cache |
+| `invoice` | `.../invoice` | Invoice generation and line items |
+| `payment` | `.../payment` | Payment processing and methods |
+| `customer` | `.../customer` | Customer profiles and metadata |
+| `coupon` | `.../coupon` | Discounts and promotional codes |
+| `tax` | `.../tax` | Tax calculation and rates |
+| `types` | `.../types` | Money, TypeID, and common types |
+| `store` | `.../store` | Storage interface |
+| `store/postgres` | `.../store/postgres` | PostgreSQL implementation |
+| `store/sqlite` | `.../store/sqlite` | SQLite implementation |
+| `store/redis` | `.../store/redis` | Redis cache layer |
+| `store/memory` | `.../store/memory` | In-memory for testing |
+| `provider` | `.../provider` | Payment provider interface |
+| `provider/stripe` | `.../provider/stripe` | Stripe integration |
+| `provider/paddle` | `.../provider/paddle` | Paddle integration |
+| `plugin` | `.../plugin` | Plugin system and registry |
+| `webhook` | `.../webhook` | Webhook delivery system |

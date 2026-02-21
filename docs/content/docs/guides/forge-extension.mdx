@@ -1,118 +1,364 @@
 ---
 title: Forge Extension
-description: Mount Weave into a Forge application as a first-class extension with automatic route registration and migrations.
+description: Mount Ledger as a Forge application extension with automatic tenant isolation.
 ---
 
-Weave ships a ready-made Forge extension in the `extension` package. It wires the engine, HTTP API, and lifecycle management into Forge's extension system with one call.
+Ledger integrates with [Forge](https://github.com/xraph/forge) as a first-class extension. This gives you automatic lifecycle management, tenant context extraction from Forge scope, and the ability to share the billing engine across other extensions in the same application.
 
-## Installation
+## What is the Forge integration?
 
-```go
-import "github.com/xraph/weave/extension"
-```
+Forge is a Go application framework with a standardized extension system. Each extension implements lifecycle hooks (`Register`, `Start`, `RegisterRoutes`, `Stop`) that Forge calls in order during the application boot sequence. Mounting Ledger as a Forge extension means:
 
-## Registering the extension
+- The billing engine starts and stops with the application.
+- Database migrations run automatically on startup.
+- Tenant and app IDs are extracted from the Forge request scope -- no manual `context.WithValue` calls.
+- Other extensions can access `engine` to check entitlements, meter usage, or generate invoices.
+
+## Registering Ledger as a Forge extension
+
+Create a Ledger extension and register it with your Forge app:
 
 ```go
 package main
 
 import (
+    "log/slog"
+    "os"
+    "time"
+
     "github.com/xraph/forge"
-    pgstore "github.com/xraph/weave/store/postgres"
-    pgvec "github.com/xraph/weave/vectorstore/pgvector"
-    "github.com/xraph/weave/embedder"
-    "github.com/xraph/weave/extension"
+    "github.com/xraph/ledger"
+    "github.com/xraph/ledger/store/memory"
 )
 
 func main() {
     app := forge.New()
 
-    weaveExt := extension.New(
-        extension.WithStore(pgstore.New(bunDB)),
-        extension.WithVectorStore(pgvec.New(pgxPool)),
-        extension.WithEmbedder(embedder.NewOpenAI(
-            embedder.WithOpenAIKey(os.Getenv("OPENAI_API_KEY")),
-        )),
+    // Create the store (use postgres.New(pool) in production)
+    store := memory.New()
+
+    // Create the Ledger extension
+    ledgerExt := NewLedgerExtension(store,
+        ledger.WithLogger(slog.Default()),
+        ledger.WithMeterConfig(100, 5*time.Second),
+        ledger.WithEntitlementCacheTTL(30*time.Second),
     )
 
-    app.RegisterExtension(weaveExt)
+    app.RegisterExtension(ledgerExt)
     app.Run()
 }
 ```
 
-## What the extension does
+## Extension lifecycle
 
-| Lifecycle event | Behaviour |
-|----------------|-----------|
-| `Register` | Creates the engine from the provided options |
-| `Start` | Runs `store.Migrate` and `vectorstore.Migrate` (unless disabled) |
-| `RegisterRoutes` | Mounts all 12 Weave HTTP endpoints under `/v1` |
-| `Stop` | Calls `engine.Stop` → emits `OnShutdown` to all extensions |
+The Ledger extension participates in all four Forge lifecycle phases:
 
-## Extension options
+| Lifecycle event   | Behaviour |
+|-------------------|-----------|
+| `Register`        | Creates the `*ledger.Ledger` engine from the store and options |
+| `Start`           | Calls `engine.Start(ctx)` which runs `store.Migrate` and starts the meter flush worker |
+| `RegisterRoutes`  | Mounts billing HTTP endpoints under `/v1/billing` (plans, subscriptions, invoices, usage) |
+| `Stop`            | Calls `engine.Stop()` which flushes remaining meter events and emits `OnShutdown` to all plugins |
 
-| Option | Type | Default | Description |
-|--------|------|---------|-------------|
-| `WithStore(s)` | `store.Store` | — | **Required.** MetadataStore |
-| `WithVectorStore(v)` | `vectorstore.VectorStore` | — | **Required.** VectorStore |
-| `WithEmbedder(e)` | `embedder.Embedder` | — | **Required.** Embedder |
-| `WithLogger(l)` | `*slog.Logger` | `slog.Default()` | Logger |
-| `WithDisableRoutes(b)` | `bool` | `false` | Skip HTTP route registration |
-| `WithDisableMigrate(b)` | `bool` | `false` | Skip migrations on Start |
+## Building a Ledger extension
 
-## Disabling auto-migration
-
-If you manage migrations separately (e.g. with a migration tool), disable auto-migration:
+Here is a complete implementation of a Ledger Forge extension:
 
 ```go
-weaveExt := extension.New(
-    extension.WithStore(store),
-    extension.WithVectorStore(vecStore),
-    extension.WithEmbedder(emb),
-    extension.WithDisableMigrate(true),
+package main
+
+import (
+    "context"
+    "net/http"
+
+    "github.com/xraph/forge"
+    "github.com/xraph/ledger"
+    "github.com/xraph/ledger/store"
 )
+
+// LedgerExtension wraps Ledger as a Forge extension.
+type LedgerExtension struct {
+    store  store.Store
+    opts   []ledger.Option
+    engine *ledger.Ledger
+}
+
+// NewLedgerExtension creates a new Forge extension for Ledger.
+func NewLedgerExtension(s store.Store, opts ...ledger.Option) *LedgerExtension {
+    return &LedgerExtension{
+        store: s,
+        opts:  opts,
+    }
+}
+
+// Name returns the extension name.
+func (e *LedgerExtension) Name() string { return "ledger" }
+
+// Register creates the billing engine.
+func (e *LedgerExtension) Register(app *forge.App) error {
+    e.engine = ledger.New(e.store, e.opts...)
+    return nil
+}
+
+// Start runs migrations and starts the billing engine.
+func (e *LedgerExtension) Start(ctx context.Context) error {
+    return e.engine.Start(ctx)
+}
+
+// RegisterRoutes mounts billing HTTP endpoints.
+func (e *LedgerExtension) RegisterRoutes(router *forge.Router) {
+    billing := router.Group("/v1/billing")
+
+    // Plan endpoints
+    billing.POST("/plans", e.handleCreatePlan)
+    billing.GET("/plans/:id", e.handleGetPlan)
+
+    // Subscription endpoints
+    billing.POST("/subscriptions", e.handleCreateSubscription)
+    billing.GET("/subscriptions/:id", e.handleGetSubscription)
+    billing.DELETE("/subscriptions/:id", e.handleCancelSubscription)
+
+    // Usage endpoints
+    billing.POST("/usage", e.handleMeterUsage)
+
+    // Entitlement endpoints
+    billing.GET("/entitlements/:feature", e.handleCheckEntitlement)
+
+    // Invoice endpoints
+    billing.POST("/invoices/generate", e.handleGenerateInvoice)
+    billing.GET("/invoices/:id", e.handleGetInvoice)
+}
+
+// Stop shuts down the billing engine.
+func (e *LedgerExtension) Stop() error {
+    return e.engine.Stop()
+}
+
+// Engine returns the underlying Ledger engine for use by other extensions.
+func (e *LedgerExtension) Engine() *ledger.Ledger {
+    return e.engine
+}
+```
+
+## Automatic tenant context extraction
+
+In a Forge application, tenant scope is set by authentication middleware. Ledger extracts `tenant_id` and `app_id` from the Go context. In Forge, you bridge from the Forge scope to Ledger's context values:
+
+```go
+// tenantMiddleware extracts tenant info from Forge scope and sets
+// the context values that Ledger expects.
+func tenantMiddleware(next http.Handler) http.Handler {
+    return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+        // Extract from Forge scope (e.g., JWT claims, API key lookup)
+        tenantID := r.Header.Get("X-Tenant-ID")
+        appID := r.Header.Get("X-App-ID")
+
+        // Set the context values that Ledger reads
+        ctx := context.WithValue(r.Context(), "tenant_id", tenantID)
+        ctx = context.WithValue(ctx, "app_id", appID)
+
+        next.ServeHTTP(w, r.WithContext(ctx))
+    })
+}
+```
+
+Register the middleware on your Forge router:
+
+```go
+func (e *LedgerExtension) RegisterRoutes(router *forge.Router) {
+    billing := router.Group("/v1/billing")
+    billing.Use(tenantMiddleware)
+
+    // ... routes as above
+}
+```
+
+Now every handler automatically has the correct tenant context. For example:
+
+```go
+func (e *LedgerExtension) handleCheckEntitlement(w http.ResponseWriter, r *http.Request) {
+    featureKey := forge.Param(r, "feature")
+
+    // r.Context() already has tenant_id and app_id from the middleware
+    result, err := e.engine.Entitled(r.Context(), featureKey)
+    if err != nil {
+        http.Error(w, err.Error(), http.StatusInternalServerError)
+        return
+    }
+
+    // Return JSON response
+    forge.JSON(w, http.StatusOK, result)
+}
+
+func (e *LedgerExtension) handleMeterUsage(w http.ResponseWriter, r *http.Request) {
+    var req struct {
+        FeatureKey string `json:"feature_key"`
+        Quantity   int64  `json:"quantity"`
+    }
+    if err := forge.Bind(r, &req); err != nil {
+        http.Error(w, err.Error(), http.StatusBadRequest)
+        return
+    }
+
+    if err := e.engine.Meter(r.Context(), req.FeatureKey, req.Quantity); err != nil {
+        http.Error(w, err.Error(), http.StatusInternalServerError)
+        return
+    }
+
+    w.WriteHeader(http.StatusAccepted)
+}
 ```
 
 ## Accessing the engine from other extensions
 
-After `Register` is called by Forge, `weaveExt.Engine()` returns the fully initialised engine:
+After Forge calls `Register`, other extensions can obtain the Ledger engine to check entitlements or meter usage in their own handlers:
 
 ```go
-eng := weaveExt.Engine()
-// use eng.Ingest, eng.Retrieve, etc. from another extension or handler
-```
-
-## Tenant middleware
-
-In a Forge app, tenant scope is typically set by middleware that reads the JWT or API key. Implement a Forge middleware that calls `weave.WithTenant` and `weave.WithApp` before passing the request to the Weave handlers:
-
-```go
-func tenantMiddleware(next http.Handler) http.Handler {
-    return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-        tenantID := r.Header.Get("X-Tenant-ID")
-        appID := r.Header.Get("X-App-ID")
-        ctx := weave.WithTenant(r.Context(), tenantID)
-        ctx = weave.WithApp(ctx, appID)
-        next.ServeHTTP(w, r.WithContext(ctx))
-    })
+// In another Forge extension:
+type APIExtension struct {
+    ledger *LedgerExtension
 }
 
-router.Use(tenantMiddleware)
+func (a *APIExtension) Register(app *forge.App) error {
+    // Get the Ledger extension by name
+    ext := app.Extension("ledger")
+    a.ledger = ext.(*LedgerExtension)
+    return nil
+}
+
+func (a *APIExtension) handleAPIRequest(w http.ResponseWriter, r *http.Request) {
+    // Check entitlement before processing the API request
+    result, err := a.ledger.Engine().Entitled(r.Context(), "api_calls")
+    if err != nil || !result.Allowed {
+        http.Error(w, "quota exceeded", http.StatusTooManyRequests)
+        return
+    }
+
+    // Process the request...
+
+    // Record the usage
+    a.ledger.Engine().Meter(r.Context(), "api_calls", 1)
+}
 ```
 
-## Adding metrics
+## Adding plugins (audit, metrics)
 
-Register the observability extension alongside the Weave engine extension:
+Pass Ledger plugins through the options when creating the extension. The audit hook and observability plugins are built-in:
 
 ```go
-import "github.com/xraph/weave/observability"
+import (
+    audithook "github.com/xraph/ledger/audit_hook"
+    "github.com/xraph/ledger/observability"
+)
 
-metricsExt := observability.NewMetricsExtensionWithFactory(fapp.Metrics())
+// Create an audit recorder (bridges to your audit trail backend)
+auditRecorder := audithook.RecorderFunc(func(ctx context.Context, event *audithook.AuditEvent) error {
+    slog.Info("audit",
+        "action", event.Action,
+        "resource", event.Resource,
+        "outcome", event.Outcome,
+    )
+    return nil
+})
 
-weaveExt := extension.New(
-    extension.WithStore(store),
-    extension.WithVectorStore(vecStore),
-    extension.WithEmbedder(emb),
-    extension.WithEngineExtension(metricsExt), // passed to engine.New internally
+// Create the extension with plugins
+ledgerExt := NewLedgerExtension(store,
+    ledger.WithLogger(slog.Default()),
+    ledger.WithMeterConfig(100, 5*time.Second),
+    ledger.WithEntitlementCacheTTL(30*time.Second),
+    ledger.WithPlugin(audithook.New(auditRecorder)),
+    ledger.WithPlugin(observability.NewMetricsExtension(metricsFactory)),
 )
 ```
+
+The audit hook emits structured audit events for plan creation, subscription changes, invoice generation, and quota violations. The observability plugin tracks counters and histograms for all lifecycle events.
+
+## Configuration via Forge config
+
+If your Forge app uses a configuration system, you can read Ledger options from config:
+
+```go
+type BillingConfig struct {
+    MeterBatchSize      int           `yaml:"meter_batch_size" default:"100"`
+    MeterFlushInterval  time.Duration `yaml:"meter_flush_interval" default:"5s"`
+    EntitlementCacheTTL time.Duration `yaml:"entitlement_cache_ttl" default:"30s"`
+    DatabaseURL         string        `yaml:"database_url" env:"BILLING_DATABASE_URL"`
+}
+
+func (e *LedgerExtension) Register(app *forge.App) error {
+    var cfg BillingConfig
+    if err := app.Config("billing", &cfg); err != nil {
+        return fmt.Errorf("ledger config: %w", err)
+    }
+
+    // Build options from config
+    opts := []ledger.Option{
+        ledger.WithLogger(app.Logger()),
+        ledger.WithMeterConfig(cfg.MeterBatchSize, cfg.MeterFlushInterval),
+        ledger.WithEntitlementCacheTTL(cfg.EntitlementCacheTTL),
+    }
+
+    e.engine = ledger.New(e.store, opts...)
+    return nil
+}
+```
+
+## Complete example
+
+Putting it all together, here is a Forge application with Ledger as a billing extension:
+
+```go
+package main
+
+import (
+    "context"
+    "log/slog"
+    "os"
+    "time"
+
+    "github.com/xraph/forge"
+    "github.com/xraph/ledger"
+    audithook "github.com/xraph/ledger/audit_hook"
+    "github.com/xraph/ledger/observability"
+    "github.com/xraph/ledger/store/memory"
+)
+
+func main() {
+    app := forge.New()
+    logger := slog.New(slog.NewJSONHandler(os.Stdout, nil))
+
+    // Store setup
+    store := memory.New()
+
+    // Audit recorder
+    recorder := audithook.RecorderFunc(func(ctx context.Context, event *audithook.AuditEvent) error {
+        logger.Info("billing.audit",
+            "action", event.Action,
+            "resource", event.Resource,
+            "severity", event.Severity,
+        )
+        return nil
+    })
+
+    // Create the Ledger extension with full configuration
+    ledgerExt := NewLedgerExtension(store,
+        ledger.WithLogger(logger),
+        ledger.WithMeterConfig(100, 5*time.Second),
+        ledger.WithEntitlementCacheTTL(30*time.Second),
+        ledger.WithPlugin(audithook.New(recorder,
+            audithook.WithLogger(logger),
+        )),
+        ledger.WithPlugin(observability.NewMetricsExtension(app.Metrics())),
+    )
+
+    // Register and run
+    app.RegisterExtension(ledgerExt)
+    app.Run()
+}
+```
+
+## Next steps
+
+- [End-to-End Billing Example](/docs/guides/full-example) -- see the full billing pipeline without Forge.
+- [Custom Store](/docs/guides/custom-store) -- implement a production storage backend.
+- [Custom Plugin](/docs/guides/custom-plugin) -- build notification, metrics, or webhook plugins.

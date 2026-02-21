@@ -1,0 +1,309 @@
+---
+title: Customer Management
+description: Manage customer profiles, billing addresses, and payment methods.
+---
+
+A **Customer** is the central entity in Ledger's billing system. It represents an individual or organization that subscribes to plans, generates usage, receives invoices, and makes payments.
+
+## Structure
+
+```go
+type Customer struct {
+    ledger.Entity
+    ID                    id.CustomerID
+    TenantID              string
+    AppID                 string
+    Name                  string
+    Email                 string
+    BillingAddress        *Address
+    DefaultPaymentMethod  string
+    Balance               money.Money
+    Currency              string
+    TaxIDs                []TaxID
+    Metadata              map[string]any
+}
+```
+
+## Creating customers
+
+```go
+customer := &customer.Customer{
+    ID:       id.NewCustomerID(),
+    TenantID: "acme-corp",
+    AppID:    "saas-platform",
+    Name:     "Alice Johnson",
+    Email:    "alice@example.com",
+    BillingAddress: &customer.Address{
+        Line1:      "123 Main St",
+        Line2:      "Suite 100",
+        City:       "San Francisco",
+        State:      "CA",
+        PostalCode: "94105",
+        Country:    "US",
+    },
+    Currency: "USD",
+    Balance:  money.Money{Amount: 0, Currency: "USD"},
+}
+
+if err := store.CreateCustomer(ctx, customer); err != nil {
+    log.Fatal(err)
+}
+```
+
+## Billing address
+
+The billing address determines tax jurisdiction and payment routing:
+
+```go
+type Address struct {
+    Line1      string
+    Line2      string
+    City       string
+    State      string
+    PostalCode string
+    Country    string // ISO 3166-1 alpha-2
+}
+```
+
+Tax rates are calculated based on `Country`, `State`, and `PostalCode`:
+
+```go
+taxRate, err := tax.GetRate(ctx, customer.BillingAddress)
+invoice.Tax = invoice.Subtotal.Multiply(taxRate)
+```
+
+## Payment methods
+
+Customers can have multiple payment methods, with one set as default:
+
+```go
+// Add a card via Stripe
+method, err := processor.CreatePaymentMethod(ctx, customer.ID, stripeToken)
+
+// Set as default
+customer.DefaultPaymentMethod = method.ID
+store.UpdateCustomer(ctx, customer)
+
+// List all methods
+methods, err := store.GetPaymentMethods(ctx, customer.ID)
+```
+
+When an invoice is generated, Ledger attempts to charge the default payment method automatically.
+
+## Customer balance
+
+Customers can have account credits (negative balance) or debts (positive balance):
+
+```go
+// Add $100 credit
+customer.Balance = customer.Balance.Add(money.Money{
+    Amount:   -10000, // Negative = credit
+    Currency: "USD",
+})
+
+// Check balance before charging
+if customer.Balance.Amount < 0 {
+    // Apply credit to invoice
+    creditApplied := min(invoice.Total.Amount, -customer.Balance.Amount)
+    invoice.Total = invoice.Total.Add(money.Money{
+        Amount:   -creditApplied,
+        Currency: invoice.Total.Currency,
+    })
+    customer.Balance = customer.Balance.Add(money.Money{
+        Amount:   creditApplied,
+        Currency: customer.Balance.Currency,
+    })
+}
+```
+
+## Tax IDs
+
+Customers can provide tax IDs for VAT, GST, or other tax exemptions:
+
+```go
+type TaxID struct {
+    Type  string // "eu_vat", "us_ein", "au_abn", "in_gst"
+    Value string
+}
+
+customer.TaxIDs = []customer.TaxID{
+    {Type: "eu_vat", Value: "DE123456789"},
+}
+
+// Tax calculator uses this to determine exemptions
+taxAmount, exempt := tax.Calculate(ctx, invoice, customer)
+```
+
+## Customer portal
+
+Generate a secure link to the customer billing portal:
+
+```go
+portal, err := portal.CreateSession(ctx, customer.ID, &portal.SessionRequest{
+    ReturnURL: "https://myapp.com/billing",
+})
+
+// Redirect customer to portal.URL
+http.Redirect(w, r, portal.URL, http.StatusSeeOther)
+```
+
+The portal allows customers to:
+- View invoices and payment history
+- Update payment methods
+- Change subscription plans
+- Download receipts
+
+## Customer subscriptions
+
+Get all subscriptions for a customer:
+
+```go
+subscriptions, err := store.GetSubscriptionsByCustomer(ctx, customer.ID)
+
+for _, sub := range subscriptions {
+    plan, _ := store.GetPlan(ctx, sub.PlanID)
+    fmt.Printf("Plan: %s, Status: %s\n", plan.Name, sub.Status)
+}
+```
+
+## Customer invoices
+
+Retrieve billing history:
+
+```go
+invoices, err := store.GetInvoicesByCustomer(ctx, customer.ID)
+
+for _, inv := range invoices {
+    fmt.Printf("%s: %s - %s\n", inv.Number, inv.Total, inv.Status)
+}
+```
+
+## Customer usage
+
+View current period usage:
+
+```go
+usage, err := meter.GetUsageByCustomer(ctx, customer.ID)
+
+for meter, agg := range usage {
+    fmt.Printf("%s: %.0f (limit: %d)\n", meter, agg.Sum, agg.Limit)
+}
+```
+
+## Customer lifecycle events
+
+Ledger emits events for customer actions:
+
+| Event | Trigger |
+|-------|---------|
+| `customer.created` | New customer created |
+| `customer.updated` | Customer details changed |
+| `customer.deleted` | Customer deleted |
+| `customer.payment_method.added` | Payment method added |
+| `customer.payment_method.removed` | Payment method removed |
+| `customer.balance.updated` | Credit/debit applied |
+
+Use webhooks or event handlers to sync with CRM systems:
+
+```go
+events.Subscribe("customer.created", func(ctx context.Context, event *events.Event) {
+    customer := event.Data.(*customer.Customer)
+    crm.SyncCustomer(ctx, customer)
+})
+```
+
+## Deleting customers
+
+Customers can only be deleted if they have no active subscriptions:
+
+```go
+if err := store.DeleteCustomer(ctx, customer.ID); err != nil {
+    if errors.Is(err, customer.ErrHasActiveSubscriptions) {
+        return fmt.Errorf("cannot delete: customer has active subscriptions")
+    }
+    return err
+}
+```
+
+To preserve billing history, use soft deletes:
+
+```go
+customer.DeletedAt = &now
+customer.Status = customer.StatusDeleted
+store.UpdateCustomer(ctx, customer)
+```
+
+## Multi-currency support
+
+Customers are billed in their preferred currency:
+
+```go
+customer := &customer.Customer{
+    Currency: "EUR", // Customer pays in Euros
+}
+
+plan := &plan.Plan{
+    Pricing: plan.Pricing{
+        Amount: money.Money{
+            Amount:   4999, // $49.99 USD
+            Currency: "USD",
+        },
+    },
+}
+
+// Convert at invoice generation time
+invoice.Total = currencyConverter.Convert(
+    plan.Pricing.Amount,
+    customer.Currency,
+)
+// Invoice.Total = money.Money{Amount: 4699, Currency: "EUR"} (€46.99)
+```
+
+## Customer export
+
+Export customer data for GDPR compliance:
+
+```go
+export, err := customer.Export(ctx, customer.ID)
+
+// export contains:
+// - Customer profile
+// - All subscriptions
+// - All invoices
+// - All payments
+// - All usage events
+// - All entitlement checks
+
+json.NewEncoder(w).Encode(export)
+```
+
+## Store interface
+
+```go
+type Store interface {
+    CreateCustomer(ctx context.Context, customer *Customer) error
+    GetCustomer(ctx context.Context, customerID id.CustomerID) (*Customer, error)
+    GetCustomerByEmail(ctx context.Context, email string) (*Customer, error)
+    UpdateCustomer(ctx context.Context, customer *Customer) error
+    DeleteCustomer(ctx context.Context, customerID id.CustomerID) error
+    ListCustomers(ctx context.Context, filter *ListFilter) ([]*Customer, error)
+    AddCredit(ctx context.Context, customerID id.CustomerID, amount money.Money, reason string) error
+}
+```
+
+## API routes
+
+| Method | Path | Description |
+|--------|------|-------------|
+| `POST` | `/ledger/customers` | Create a customer |
+| `GET` | `/ledger/customers` | List customers |
+| `GET` | `/ledger/customers/{id}` | Get customer by ID |
+| `GET` | `/ledger/customers/email/{email}` | Get customer by email |
+| `PUT` | `/ledger/customers/{id}` | Update customer |
+| `DELETE` | `/ledger/customers/{id}` | Delete customer |
+| `POST` | `/ledger/customers/{id}/credit` | Add account credit |
+| `GET` | `/ledger/customers/{id}/subscriptions` | List customer subscriptions |
+| `GET` | `/ledger/customers/{id}/invoices` | List customer invoices |
+| `GET` | `/ledger/customers/{id}/usage` | Get current usage |
+| `POST` | `/ledger/customers/{id}/portal` | Create portal session |
+| `GET` | `/ledger/customers/{id}/export` | Export customer data |

@@ -1,0 +1,304 @@
+---
+title: PostgreSQL Store
+description: Production-ready PostgreSQL storage backend with migrations, multi-tenancy, and optimized queries.
+---
+
+The **PostgreSQL Store** is Ledger's production storage backend. It provides persistent storage with automatic migrations, multi-tenant isolation, and optimized queries for high-throughput billing operations.
+
+## Setup
+
+```go
+import (
+    "github.com/xraph/ledger"
+    "github.com/xraph/ledger/store/postgres"
+)
+
+// Create the store
+pgStore, err := postgres.New(
+    postgres.WithDSN(os.Getenv("DATABASE_URL")),
+    postgres.WithMaxConns(20),
+    postgres.WithMinConns(5),
+)
+if err != nil {
+    log.Fatal(err)
+}
+
+// Create the engine
+engine := ledger.New(pgStore,
+    ledger.WithMeterConfig(100, 5*time.Second),
+    ledger.WithEntitlementCacheTTL(30*time.Second),
+)
+
+// Start runs migrations automatically
+if err := engine.Start(ctx); err != nil {
+    log.Fatal(err)
+}
+defer engine.Stop()
+```
+
+## Connection configuration
+
+```go
+pgStore, err := postgres.New(
+    postgres.WithDSN("postgres://user:pass@localhost:5432/ledger?sslmode=disable"),
+
+    // Connection pool settings
+    postgres.WithMaxConns(20),      // Maximum open connections
+    postgres.WithMinConns(5),       // Minimum idle connections
+    postgres.WithMaxConnLifetime(30*time.Minute),
+    postgres.WithMaxConnIdleTime(5*time.Minute),
+)
+```
+
+For production, use environment-based configuration:
+
+```go
+pgStore, err := postgres.New(
+    postgres.WithDSN(os.Getenv("DATABASE_URL")),
+    postgres.WithMaxConns(50),
+    postgres.WithMinConns(10),
+)
+```
+
+## Database schema
+
+The PostgreSQL store creates and manages the following tables:
+
+### Plans table
+
+```sql
+CREATE TABLE ledger_plans (
+    id          TEXT PRIMARY KEY,
+    name        TEXT NOT NULL,
+    slug        TEXT NOT NULL,
+    description TEXT,
+    app_id      TEXT NOT NULL,
+    tenant_id   TEXT NOT NULL,
+    status      TEXT NOT NULL DEFAULT 'active',
+    features    JSONB NOT NULL DEFAULT '[]',
+    pricing     JSONB,
+    currency    TEXT NOT NULL DEFAULT 'USD',
+    billing_cycle TEXT NOT NULL DEFAULT 'monthly',
+    trial_days  INTEGER NOT NULL DEFAULT 0,
+    metadata    JSONB,
+    created_at  TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    updated_at  TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+
+    UNIQUE(slug, app_id)
+);
+
+CREATE INDEX idx_plans_app_id ON ledger_plans(app_id);
+CREATE INDEX idx_plans_tenant_id ON ledger_plans(tenant_id);
+```
+
+### Subscriptions table
+
+```sql
+CREATE TABLE ledger_subscriptions (
+    id                   TEXT PRIMARY KEY,
+    customer_id          TEXT NOT NULL,
+    plan_id              TEXT NOT NULL REFERENCES ledger_plans(id),
+    tenant_id            TEXT NOT NULL,
+    app_id               TEXT NOT NULL,
+    status               TEXT NOT NULL DEFAULT 'active',
+    current_period_start TIMESTAMPTZ NOT NULL,
+    current_period_end   TIMESTAMPTZ NOT NULL,
+    trial_start          TIMESTAMPTZ,
+    trial_end            TIMESTAMPTZ,
+    canceled_at          TIMESTAMPTZ,
+    cancellation_reason  TEXT,
+    metadata             JSONB,
+    created_at           TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    updated_at           TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+CREATE INDEX idx_subscriptions_tenant ON ledger_subscriptions(tenant_id, app_id);
+CREATE INDEX idx_subscriptions_customer ON ledger_subscriptions(customer_id);
+CREATE INDEX idx_subscriptions_status ON ledger_subscriptions(status);
+CREATE INDEX idx_subscriptions_period ON ledger_subscriptions(current_period_end);
+```
+
+### Usage events table
+
+```sql
+CREATE TABLE ledger_usage_events (
+    id              TEXT PRIMARY KEY,
+    tenant_id       TEXT NOT NULL,
+    app_id          TEXT NOT NULL,
+    feature_key     TEXT NOT NULL,
+    quantity        BIGINT NOT NULL,
+    timestamp       TIMESTAMPTZ NOT NULL,
+    idempotency_key TEXT,
+    metadata        JSONB,
+    created_at      TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+CREATE INDEX idx_usage_tenant_feature ON ledger_usage_events(tenant_id, app_id, feature_key);
+CREATE INDEX idx_usage_timestamp ON ledger_usage_events(timestamp);
+CREATE UNIQUE INDEX idx_usage_idempotency ON ledger_usage_events(idempotency_key) WHERE idempotency_key IS NOT NULL;
+```
+
+### Invoices table
+
+```sql
+CREATE TABLE ledger_invoices (
+    id              TEXT PRIMARY KEY,
+    subscription_id TEXT NOT NULL REFERENCES ledger_subscriptions(id),
+    tenant_id       TEXT NOT NULL,
+    app_id          TEXT NOT NULL,
+    status          TEXT NOT NULL DEFAULT 'draft',
+    currency        TEXT NOT NULL,
+    subtotal        BIGINT NOT NULL DEFAULT 0,
+    tax_amount      BIGINT NOT NULL DEFAULT 0,
+    discount_amount BIGINT NOT NULL DEFAULT 0,
+    total           BIGINT NOT NULL DEFAULT 0,
+    period_start    TIMESTAMPTZ NOT NULL,
+    period_end      TIMESTAMPTZ NOT NULL,
+    paid_at         TIMESTAMPTZ,
+    payment_ref     TEXT,
+    voided_reason   TEXT,
+    line_items      JSONB NOT NULL DEFAULT '[]',
+    metadata        JSONB,
+    created_at      TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    updated_at      TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+CREATE INDEX idx_invoices_tenant ON ledger_invoices(tenant_id, app_id);
+CREATE INDEX idx_invoices_subscription ON ledger_invoices(subscription_id);
+CREATE INDEX idx_invoices_status ON ledger_invoices(status);
+CREATE INDEX idx_invoices_period ON ledger_invoices(period_start, period_end);
+```
+
+### Coupons table
+
+```sql
+CREATE TABLE ledger_coupons (
+    id              TEXT PRIMARY KEY,
+    code            TEXT NOT NULL,
+    name            TEXT NOT NULL,
+    type            TEXT NOT NULL,
+    amount          BIGINT,
+    percentage      INTEGER,
+    currency        TEXT,
+    max_redemptions INTEGER NOT NULL DEFAULT 0,
+    times_redeemed  INTEGER NOT NULL DEFAULT 0,
+    valid_from      TIMESTAMPTZ,
+    valid_until     TIMESTAMPTZ,
+    app_id          TEXT NOT NULL,
+    metadata        JSONB,
+    created_at      TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    updated_at      TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+
+    UNIQUE(code, app_id)
+);
+
+CREATE INDEX idx_coupons_app_id ON ledger_coupons(app_id);
+```
+
+### Entitlement cache table
+
+```sql
+CREATE TABLE ledger_entitlement_cache (
+    tenant_id   TEXT NOT NULL,
+    app_id      TEXT NOT NULL,
+    feature_key TEXT NOT NULL,
+    result      JSONB NOT NULL,
+    expires_at  TIMESTAMPTZ NOT NULL,
+
+    PRIMARY KEY (tenant_id, app_id, feature_key)
+);
+
+CREATE INDEX idx_cache_expiry ON ledger_entitlement_cache(expires_at);
+```
+
+## Migrations
+
+Migrations run automatically when `engine.Start()` is called via the `Migrate(ctx)` method. The store uses embedded SQL migrations that create and update tables as needed.
+
+```go
+// Migrations are embedded in the binary
+//go:embed migrations/*.sql
+var migrations embed.FS
+```
+
+For production, you can run migrations separately:
+
+```go
+if err := pgStore.Migrate(ctx); err != nil {
+    log.Fatal("migration failed:", err)
+}
+```
+
+## Multi-tenancy
+
+All queries include tenant isolation:
+
+```go
+// Every query enforces tenant_id and app_id filtering
+func (s *Store) GetPlan(ctx context.Context, planID id.PlanID) (*plan.Plan, error) {
+    var p plan.Plan
+    err := s.db.QueryRow(ctx,
+        `SELECT * FROM ledger_plans WHERE id = $1 AND tenant_id = $2 AND app_id = $3`,
+        planID.String(), extractTenantID(ctx), extractAppID(ctx),
+    ).Scan(&p)
+    return &p, err
+}
+```
+
+Composite indexes on `(tenant_id, app_id)` ensure efficient multi-tenant queries.
+
+## JSONB columns
+
+Complex structures are stored as JSONB for flexibility:
+
+- **`features`** — Plan features array with type, limit, and period
+- **`pricing`** — Pricing configuration with tiers and base amount
+- **`line_items`** — Invoice line items with type, amount, and description
+- **`metadata`** — Custom key-value pairs on all entities
+
+JSONB enables GIN indexing for metadata queries:
+
+```sql
+CREATE INDEX idx_plans_metadata ON ledger_plans USING GIN (metadata);
+```
+
+## Usage event optimization
+
+Usage events are optimized for high-throughput ingestion:
+
+- **Batch inserts** — `IngestBatch` uses `COPY` protocol for bulk loading
+- **Idempotency index** — Unique partial index on `idempotency_key` prevents duplicates
+- **Aggregation** — `SUM(quantity)` with index on `(tenant_id, app_id, feature_key, timestamp)`
+- **Partitioning** — Monthly partitions for efficient archival (optional)
+
+```sql
+-- Optional: Time-based partitioning for high-volume deployments
+CREATE TABLE ledger_usage_events (
+    -- columns...
+) PARTITION BY RANGE (timestamp);
+
+CREATE TABLE ledger_usage_events_2024_01 PARTITION OF ledger_usage_events
+    FOR VALUES FROM ('2024-01-01') TO ('2024-02-01');
+```
+
+## Implements `store.Store`
+
+The PostgreSQL store implements the full `store.Store` interface:
+
+```go
+// Compile-time check
+var _ store.Store = (*Store)(nil)
+```
+
+See [Memory Store](/docs/stores/memory) for a comparison of implementations.
+
+## Performance considerations
+
+| Operation | Optimization |
+|-----------|-------------|
+| Plan lookups | Indexed by `(slug, app_id)` and `(id)` |
+| Active subscription | Indexed by `(tenant_id, app_id, status)` |
+| Usage aggregation | Indexed by `(tenant_id, app_id, feature_key, timestamp)` |
+| Invoice queries | Indexed by `(subscription_id)` and `(tenant_id, app_id)` |
+| Entitlement cache | Primary key lookup with TTL expiration |
+| Batch ingestion | PostgreSQL `COPY` protocol for bulk inserts |

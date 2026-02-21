@@ -1,62 +1,107 @@
 ---
 title: Error Handling
-description: Sentinel errors returned by Cortex operations.
+description: Sentinel errors returned by Ledger operations.
 ---
 
-Cortex defines sentinel errors in the root `cortex` package. All errors are created with `errors.New` and can be checked with `errors.Is`.
+Ledger defines sentinel errors in the root `ledger` package. All errors are created with `errors.New` and can be checked with `errors.Is`.
 
 ## Store errors
 
 | Error | Description |
 |-------|-------------|
-| `ErrNoStore` | No store was configured on the engine |
+| `ErrNoStore` | No store was configured |
 | `ErrStoreClosed` | The store has been closed |
 | `ErrMigrationFailed` | Database migration failed |
+| `ErrDatabaseConnection` | Database connection failed |
 
 ## Not-found errors
 
 | Error | Description |
 |-------|-------------|
-| `ErrAgentNotFound` | Agent with the given ID does not exist |
-| `ErrRunNotFound` | Run with the given ID does not exist |
-| `ErrStepNotFound` | Step with the given ID does not exist |
-| `ErrToolCallNotFound` | Tool call with the given ID does not exist |
-| `ErrSkillNotFound` | Skill with the given ID does not exist |
-| `ErrTraitNotFound` | Trait with the given ID does not exist |
-| `ErrBehaviorNotFound` | Behavior with the given ID does not exist |
-| `ErrPersonaNotFound` | Persona with the given ID does not exist |
-| `ErrCheckpointNotFound` | Checkpoint with the given ID does not exist |
+| `ErrPlanNotFound` | Plan with the given ID does not exist |
+| `ErrSubscriptionNotFound` | Subscription with the given ID does not exist |
+| `ErrCustomerNotFound` | Customer with the given ID does not exist |
+| `ErrInvoiceNotFound` | Invoice with the given ID does not exist |
+| `ErrUsageEventNotFound` | Usage event with the given ID does not exist |
+| `ErrPaymentNotFound` | Payment with the given ID does not exist |
+| `ErrFeatureNotFound` | Feature with the given ID does not exist |
 
 ## Conflict errors
 
 | Error | Description |
 |-------|-------------|
-| `ErrAlreadyExists` | A resource with the same name already exists in this app |
+| `ErrAlreadyExists` | A resource with the same identifier already exists |
+| `ErrDuplicateCustomerEmail` | Customer with this email already exists |
+| `ErrDuplicatePlanName` | Plan with this name already exists |
+| `ErrDuplicateIdempotencyKey` | Usage event with this idempotency key already exists |
 
 ## State errors
 
 | Error | Description |
 |-------|-------------|
-| `ErrInvalidState` | Invalid state transition (e.g., completing an already-failed run) |
-| `ErrRunCancelled` | The run was cancelled |
-| `ErrRunAlreadyDone` | The run has already completed |
-| `ErrBudgetExhausted` | Token or cost budget exhausted |
-| `ErrMaxStepsReached` | Maximum reasoning steps reached |
-| `ErrMaxTokensReached` | Maximum output tokens reached |
+| `ErrInvalidState` | Invalid state transition (e.g., activating a canceled subscription) |
+| `ErrSubscriptionCanceled` | The subscription has been canceled |
+| `ErrSubscriptionExpired` | The subscription has expired |
+| `ErrInvoiceAlreadyPaid` | The invoice has already been paid |
+| `ErrInvoiceVoided` | The invoice has been voided |
+| `ErrTrialExpired` | The trial period has expired |
+| `ErrPaymentFailed` | Payment processing failed |
+
+## Billing errors
+
+| Error | Description |
+|-------|-------------|
+| `ErrNoPaymentMethod` | No payment method attached to customer |
+| `ErrInsufficientFunds` | Payment failed due to insufficient funds |
+| `ErrCardDeclined` | Payment card was declined |
+| `ErrUsageLimitExceeded` | Usage limit exceeded and overage not allowed |
+| `ErrInvalidAmount` | Invalid monetary amount (must be positive) |
+| `ErrInvalidCurrency` | Unsupported currency code |
+| `ErrMissingPrice` | Plan has no pricing tiers configured |
+
+## Entitlement errors
+
+| Error | Description |
+|-------|-------------|
+| `ErrFeatureNotEnabled` | Feature is not available in customer's plan |
+| `ErrQuotaExceeded` | Feature usage quota exceeded |
+| `ErrNoActiveSubscription` | Customer has no active subscription |
+| `ErrEntitlementExpired` | Entitlement has expired |
+
+## Provider errors
+
+| Error | Description |
+|-------|-------------|
+| `ErrProviderNotConfigured` | Payment provider not configured |
+| `ErrProviderAPIError` | Payment provider API returned an error |
+| `ErrProviderTimeout` | Payment provider request timed out |
+| `ErrWebhookVerificationFailed` | Webhook signature verification failed |
+| `ErrInvalidWebhookPayload` | Webhook payload is invalid or malformed |
+
+## Validation errors
+
+| Error | Description |
+|-------|-------------|
+| `ErrInvalidEmail` | Email address format is invalid |
+| `ErrInvalidPlanID` | Plan ID format is invalid |
+| `ErrInvalidCustomerID` | Customer ID format is invalid |
+| `ErrInvalidTypeID` | TypeID format or prefix is invalid |
+| `ErrMissingRequiredField` | Required field is missing |
+| `ErrInvalidDateRange` | Invalid date range (end before start) |
 
 ## Error wrapping
 
 Store implementations wrap these sentinel errors with additional context:
 
 ```go
-return fmt.Errorf("postgres: get agent %s: %w", agentID, cortex.ErrAgentNotFound)
+return fmt.Errorf("postgres: get subscription %s: %w", subID, ledger.ErrSubscriptionNotFound)
 ```
 
 Check errors using `errors.Is`:
 
 ```go
-agent, err := eng.GetAgent(ctx, agentID)
-if errors.Is(err, cortex.ErrAgentNotFound) {
+sub, err := store.GetSubscription(ctx, subID)
+if errors.Is(err, ledger.ErrSubscriptionNotFound) {
     // handle not found
 }
 ```
@@ -67,7 +112,107 @@ The HTTP API maps sentinel errors to HTTP status codes:
 
 | Sentinel error | HTTP status |
 |----------------|-------------|
-| `ErrAgentNotFound`, `ErrRunNotFound`, etc. | `404 Not Found` |
-| `ErrAlreadyExists` | `409 Conflict` |
-| `ErrInvalidState`, `ErrRunCancelled`, etc. | `400 Bad Request` |
-| `ErrNoStore` | `500 Internal Server Error` |
+| `ErrPlanNotFound`, `ErrSubscriptionNotFound`, etc. | `404 Not Found` |
+| `ErrAlreadyExists`, `ErrDuplicate*` | `409 Conflict` |
+| `ErrInvalidState`, `ErrInvalid*`, validation errors | `400 Bad Request` |
+| `ErrPaymentFailed`, `ErrCardDeclined` | `402 Payment Required` |
+| `ErrFeatureNotEnabled`, `ErrQuotaExceeded` | `403 Forbidden` |
+| `ErrNoStore`, `ErrProviderAPIError` | `500 Internal Server Error` |
+| `ErrProviderTimeout` | `504 Gateway Timeout` |
+
+## Error response format
+
+All API errors follow a consistent JSON structure:
+
+```json
+{
+  "error": {
+    "code": "subscription_not_found",
+    "message": "Subscription sub_01h2xcejqtf2nbrexx3vqjhp44 does not exist",
+    "type": "not_found",
+    "param": "subscription_id",
+    "details": {}
+  }
+}
+```
+
+Fields:
+- `code` — Machine-readable error code (snake_case)
+- `message` — Human-readable error message
+- `type` — Error category: `validation`, `not_found`, `conflict`, `payment`, `provider`, `server`
+- `param` — The parameter that caused the error (optional)
+- `details` — Additional context (optional)
+
+## Custom error handling
+
+Application code can define custom error types by embedding the base error:
+
+```go
+type InsufficientCreditsError struct {
+    CustomerID CustomerID
+    Required   int64
+    Available  int64
+}
+
+func (e *InsufficientCreditsError) Error() string {
+    return fmt.Sprintf("customer %s has %d credits, but %d required",
+        e.CustomerID, e.Available, e.Required)
+}
+```
+
+## Error logging
+
+Ledger logs errors with structured fields for observability:
+
+```go
+logger.Error("subscription creation failed",
+    "error", err,
+    "customer_id", customerID,
+    "plan_id", planID,
+    "trace_id", traceID,
+)
+```
+
+Integration with OpenTelemetry for distributed tracing is supported.
+
+## Retry logic
+
+Certain errors are retryable:
+
+| Error | Retryable | Strategy |
+|-------|-----------|----------|
+| `ErrDatabaseConnection` | Yes | Exponential backoff |
+| `ErrProviderTimeout` | Yes | Fixed delay (1s) |
+| `ErrProviderAPIError` | Sometimes | Check provider status code |
+| `ErrPaymentFailed` | No | User intervention required |
+| `ErrInvalidState` | No | Logic error |
+
+Example retry implementation:
+
+```go
+func CreateSubscriptionWithRetry(ctx context.Context, sub *Subscription) error {
+    backoff := []time.Duration{100*time.Millisecond, 500*time.Millisecond, 1*time.Second}
+
+    for i := 0; i < len(backoff); i++ {
+        err := store.CreateSubscription(ctx, sub)
+        if err == nil {
+            return nil
+        }
+
+        if !isRetryable(err) {
+            return err
+        }
+
+        if i < len(backoff)-1 {
+            time.Sleep(backoff[i])
+        }
+    }
+
+    return fmt.Errorf("max retries exceeded")
+}
+
+func isRetryable(err error) bool {
+    return errors.Is(err, ledger.ErrDatabaseConnection) ||
+           errors.Is(err, ledger.ErrProviderTimeout)
+}
+```

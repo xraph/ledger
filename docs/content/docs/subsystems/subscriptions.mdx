@@ -1,0 +1,217 @@
+---
+title: Subscriptions
+description: Track customer commitments, lifecycle states, and plan associations.
+---
+
+A **Subscription** represents a customer's commitment to a plan. It tracks the lifecycle from trial through active billing to cancellation, managing state transitions, billing periods, and usage entitlements.
+
+## Structure
+
+```go
+type Subscription struct {
+    ledger.Entity
+    ID               id.SubscriptionID
+    CustomerID       id.CustomerID
+    PlanID           id.PlanID
+    TenantID         string
+    AppID            string
+    Status           SubscriptionStatus
+    CurrentPeriodStart time.Time
+    CurrentPeriodEnd   time.Time
+    TrialStart       *time.Time
+    TrialEnd         *time.Time
+    CanceledAt       *time.Time
+    CancellationReason string
+    Metadata         map[string]any
+}
+```
+
+## Lifecycle states
+
+Subscriptions transition through well-defined states:
+
+```go
+type SubscriptionStatus string
+
+const (
+    StatusTrialing     SubscriptionStatus = "trialing"
+    StatusActive       SubscriptionStatus = "active"
+    StatusPastDue      SubscriptionStatus = "past_due"
+    StatusCanceled     SubscriptionStatus = "canceled"
+    StatusUnpaid       SubscriptionStatus = "unpaid"
+    StatusPaused       SubscriptionStatus = "paused"
+)
+```
+
+### State diagram
+
+```
+trialing → active → past_due → unpaid
+   ↓         ↓         ↓          ↓
+          canceled ← ← ← ← ← ← ← ←
+                  ↕
+               paused
+```
+
+| Status | Description |
+|--------|-------------|
+| `trialing` | In trial period, no billing |
+| `active` | Actively billed, entitlements enabled |
+| `past_due` | Payment failed, grace period active |
+| `unpaid` | Payment collection failed, limited access |
+| `paused` | Temporarily suspended by customer |
+| `canceled` | Terminated, no further billing |
+
+## Billing periods
+
+Each subscription tracks its current billing cycle:
+
+```go
+CurrentPeriodStart: time.Date(2024, 1, 15, 0, 0, 0, 0, time.UTC)
+CurrentPeriodEnd:   time.Date(2024, 2, 15, 0, 0, 0, 0, time.UTC)
+```
+
+When an invoice is generated, the billing period advances:
+
+- **Monthly**: `CurrentPeriodEnd` moves forward 1 month
+- **Yearly**: `CurrentPeriodEnd` moves forward 1 year
+- **Usage-based**: Period defined by billing schedule (e.g., monthly)
+
+## Trial periods
+
+Trials are tracked separately from billing periods:
+
+```go
+TrialStart: &time.Time{...} // Trial started
+TrialEnd:   &time.Time{...} // Trial ends (becomes active or canceled)
+```
+
+When `time.Now()` is before `TrialEnd`:
+- Status is `trialing`
+- No invoices are generated
+- Full plan entitlements are granted
+
+When trial expires:
+- Status transitions to `active` (if payment method on file) or `unpaid`
+- First invoice is generated
+
+## Cancellation
+
+Subscriptions can be canceled immediately or at period end:
+
+### Immediate cancellation
+
+```go
+subscription.Status = subscription.StatusCanceled
+subscription.CanceledAt = &now
+subscription.CancellationReason = "customer_request"
+```
+
+Entitlements are revoked immediately.
+
+### Cancel at period end
+
+```go
+subscription.CancelAtPeriodEnd = true
+```
+
+The subscription remains `active` until `CurrentPeriodEnd`, then transitions to `canceled`.
+
+## Plan changes (upgrades/downgrades)
+
+When a customer changes plans:
+
+### Immediate change
+
+```go
+subscription.PlanID = newPlan.ID
+subscription.CurrentPeriodStart = time.Now()
+subscription.CurrentPeriodEnd = time.Now().AddDate(0, 1, 0) // restart billing cycle
+```
+
+A prorated invoice is generated for the unused portion of the old plan.
+
+### At period end
+
+```go
+subscription.ScheduledPlanChange = &ScheduledChange{
+    NewPlanID:     newPlan.ID,
+    EffectiveDate: subscription.CurrentPeriodEnd,
+}
+```
+
+The plan change applies at the end of the current billing period.
+
+## Usage tracking
+
+Subscriptions accumulate usage events for metered features:
+
+```go
+// Usage is stored separately and aggregated during invoice generation
+meter.Record(ctx, &meter.Event{
+    SubscriptionID: subscription.ID,
+    Meter:          "api-calls",
+    Value:          1,
+    Timestamp:      time.Now(),
+})
+```
+
+See [Usage Metering](/docs/subsystems/metering) for details.
+
+## Complete example: Creating a subscription
+
+```go
+subscription := &subscription.Subscription{
+    ID:                 id.NewSubscriptionID(),
+    CustomerID:         customer.ID,
+    PlanID:             starterPlan.ID,
+    TenantID:           "acme-corp",
+    AppID:              "saas-platform",
+    Status:             subscription.StatusTrialing,
+    CurrentPeriodStart: time.Now(),
+    CurrentPeriodEnd:   time.Now().AddDate(0, 1, 0), // 1 month
+    TrialStart:         ptrTime(time.Now()),
+    TrialEnd:           ptrTime(time.Now().AddDate(0, 0, 14)), // 14 days
+}
+
+if err := store.CreateSubscription(ctx, subscription); err != nil {
+    log.Fatal(err)
+}
+```
+
+## Scheduled jobs
+
+Ledger runs background jobs to manage subscription lifecycle:
+
+| Job | Frequency | Action |
+|-----|-----------|--------|
+| Trial expiration | Hourly | Transition `trialing` → `active` or `unpaid` |
+| Period rollover | Daily | Advance billing periods, generate invoices |
+| Dunning management | Daily | Retry failed payments, transition `past_due` → `unpaid` |
+| Scheduled changes | Daily | Apply plan changes at `EffectiveDate` |
+
+## Store interface
+
+```go
+type Store interface {
+    CreateSubscription(ctx context.Context, sub *Subscription) error
+    GetSubscription(ctx context.Context, subID id.SubscriptionID) (*Subscription, error)
+    GetSubscriptionsByCustomer(ctx context.Context, customerID id.CustomerID) ([]*Subscription, error)
+    UpdateSubscription(ctx context.Context, sub *Subscription) error
+    CancelSubscription(ctx context.Context, subID id.SubscriptionID, reason string) error
+    ListSubscriptions(ctx context.Context, filter *ListFilter) ([]*Subscription, error)
+}
+```
+
+## API routes
+
+| Method | Path | Description |
+|--------|------|-------------|
+| `POST` | `/ledger/subscriptions` | Create a subscription |
+| `GET` | `/ledger/subscriptions` | List subscriptions |
+| `GET` | `/ledger/subscriptions/{id}` | Get subscription by ID |
+| `PUT` | `/ledger/subscriptions/{id}` | Update subscription |
+| `POST` | `/ledger/subscriptions/{id}/cancel` | Cancel subscription |
+| `POST` | `/ledger/subscriptions/{id}/pause` | Pause subscription |
+| `POST` | `/ledger/subscriptions/{id}/resume` | Resume subscription |
+| `POST` | `/ledger/subscriptions/{id}/change-plan` | Upgrade/downgrade plan |

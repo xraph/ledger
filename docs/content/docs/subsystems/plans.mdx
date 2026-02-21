@@ -1,0 +1,224 @@
+---
+title: Plans & Pricing
+description: Define what customers can access — features, usage limits, and graduated pricing tiers.
+---
+
+A **Plan** represents a product offering in your billing system. It bundles features, usage limits, and pricing rules into a named, reusable entity that customers subscribe to.
+
+## Structure
+
+```go
+type Plan struct {
+    ledger.Entity
+    ID          id.PlanID
+    Name        string
+    Description string
+    AppID       string
+    TenantID    string
+    Features    []Feature
+    Pricing     Pricing
+    BillingCycle BillingCycle
+    TrialDays   int
+    Metadata    map[string]any
+}
+```
+
+## Features
+
+Each plan defines a list of features that customers get access to:
+
+```go
+type Feature struct {
+    Name        string      // feature identifier
+    Type        FeatureType // boolean, metered, or licensed
+    Limit       int64       // usage limit (for metered features)
+    Description string      // human-readable description
+}
+```
+
+### Feature types
+
+| Type | Description | Example |
+|------|-------------|---------|
+| `FeatureBoolean` | Simple on/off access | "api-access", "sso-enabled" |
+| `FeatureMetered` | Usage-based with limit | "api-calls" (1000/month) |
+| `FeatureLicensed` | Seat-based with quantity | "team-members" (5 seats) |
+
+Example:
+
+```go
+Features: []plan.Feature{
+    {
+        Name:        "api-calls",
+        Type:        plan.FeatureMetered,
+        Limit:       10000,
+        Description: "API requests per month",
+    },
+    {
+        Name:        "team-members",
+        Type:        plan.FeatureLicensed,
+        Limit:       5,
+        Description: "Maximum team size",
+    },
+    {
+        Name:        "priority-support",
+        Type:        plan.FeatureBoolean,
+        Description: "24/7 priority support",
+    },
+}
+```
+
+## Pricing models
+
+Ledger supports four pricing models:
+
+### 1. Flat rate
+
+Fixed monthly/yearly fee:
+
+```go
+Pricing: plan.Pricing{
+    Model: plan.PricingFlat,
+    Amount: money.Money{
+        Amount:   4999, // $49.99
+        Currency: "USD",
+    },
+}
+```
+
+### 2. Per-unit
+
+Linear pricing based on usage:
+
+```go
+Pricing: plan.Pricing{
+    Model:     plan.PricingPerUnit,
+    UnitPrice: 100, // $1.00 per unit
+    Currency:  "USD",
+}
+```
+
+### 3. Graduated (tiered)
+
+Different rates for usage tiers:
+
+```go
+Pricing: plan.Pricing{
+    Model: plan.PricingGraduated,
+    Tiers: []plan.Tier{
+        {UpTo: 1000, UnitPrice: 0},      // First 1K free
+        {UpTo: 10000, UnitPrice: 10},    // Next 9K at $0.01
+        {UpTo: 100000, UnitPrice: 5},    // Next 90K at $0.005
+        {UpTo: -1, UnitPrice: 2},        // Everything above at $0.002
+    },
+    Currency: "USD",
+}
+```
+
+### 4. Volume-based
+
+Apply single rate based on total usage:
+
+```go
+Pricing: plan.Pricing{
+    Model: plan.PricingVolume,
+    Tiers: []plan.Tier{
+        {UpTo: 1000, UnitPrice: 100},    // $1.00 per unit for 0-1000
+        {UpTo: 10000, UnitPrice: 75},    // $0.75 per unit for 1001-10000
+        {UpTo: -1, UnitPrice: 50},       // $0.50 per unit for 10001+
+    },
+    Currency: "USD",
+}
+```
+
+## Billing cycles
+
+| Cycle | Description |
+|-------|-------------|
+| `BillingMonthly` | Bill every month on subscription start day |
+| `BillingYearly` | Bill every year on subscription start day |
+| `BillingQuarterly` | Bill every 3 months |
+| `BillingUsageBased` | Bill based on metered usage (e.g., pay-as-you-go) |
+
+```go
+BillingCycle: plan.BillingMonthly
+```
+
+## Trial periods
+
+Plans can include a free trial:
+
+```go
+TrialDays: 14 // 14-day free trial
+```
+
+When a subscription is created with this plan, billing starts after the trial period.
+
+## Complete example: SaaS starter plan
+
+```go
+starterPlan := &plan.Plan{
+    ID:          id.NewPlanID(),
+    Name:        "starter",
+    Description: "Perfect for small teams getting started",
+    AppID:       "myapp",
+    TenantID:    "platform",
+    Features: []plan.Feature{
+        {
+            Name:        "api-calls",
+            Type:        plan.FeatureMetered,
+            Limit:       10000,
+            Description: "API requests per month",
+        },
+        {
+            Name:        "team-members",
+            Type:        plan.FeatureLicensed,
+            Limit:       5,
+            Description: "Team member seats",
+        },
+        {
+            Name:        "email-support",
+            Type:        plan.FeatureBoolean,
+            Description: "Email support included",
+        },
+    },
+    Pricing: plan.Pricing{
+        Model: plan.PricingGraduated,
+        Tiers: []plan.Tier{
+            {UpTo: 5000, UnitPrice: 0},       // 5K free calls
+            {UpTo: 10000, UnitPrice: 10},     // Next 5K at $0.01
+            {UpTo: -1, UnitPrice: 5},         // Overage at $0.005
+        },
+        Currency: "USD",
+        BaseAmount: money.Money{
+            Amount:   2999, // $29.99 base fee
+            Currency: "USD",
+        },
+    },
+    BillingCycle: plan.BillingMonthly,
+    TrialDays:    14,
+}
+```
+
+## Store interface
+
+```go
+type Store interface {
+    CreatePlan(ctx context.Context, plan *Plan) error
+    GetPlan(ctx context.Context, planID id.PlanID) (*Plan, error)
+    GetPlanByName(ctx context.Context, appID, name string) (*Plan, error)
+    UpdatePlan(ctx context.Context, plan *Plan) error
+    DeletePlan(ctx context.Context, planID id.PlanID) error
+    ListPlans(ctx context.Context, filter *ListFilter) ([]*Plan, error)
+}
+```
+
+## API routes
+
+| Method | Path | Description |
+|--------|------|-------------|
+| `POST` | `/ledger/plans` | Create a plan |
+| `GET` | `/ledger/plans` | List plans |
+| `GET` | `/ledger/plans/{name}` | Get a plan by name |
+| `PUT` | `/ledger/plans/{name}` | Update a plan |
+| `DELETE` | `/ledger/plans/{id}` | Delete a plan |

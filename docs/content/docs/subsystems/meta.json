@@ -1,0 +1,15 @@
+{
+  "title": "Subsystems",
+  "pages": [
+    "overview",
+    "plans",
+    "subscriptions",
+    "metering",
+    "entitlements",
+    "invoicing",
+    "payments",
+    "customers",
+    "billing-cycles",
+    "coupons"
+  ]
+}

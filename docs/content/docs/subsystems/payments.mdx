@@ -1,0 +1,625 @@
+---
+title: Payment Processing
+description: Stripe and Paddle integration for collecting payments, managing payment methods, and handling webhooks.
+---
+
+**Payment Processing** handles the collection of payments through third-party providers like Stripe and Paddle. It provides a unified interface for charging customers, managing payment methods, and handling webhooks. Payments are automatically collected when invoices are generated, with support for retries and failure handling.
+
+## Processor interface
+
+```go
+type Processor interface {
+    Name() string
+    Charge(ctx context.Context, req *ChargeRequest) (*Payment, error)
+    CreatePaymentMethod(ctx context.Context, customerID id.CustomerID, token string) (*PaymentMethod, error)
+    DeletePaymentMethod(ctx context.Context, methodID string) error
+    RefundPayment(ctx context.Context, paymentID id.PaymentID, amount *money.Money) (*Refund, error)
+    GetPayment(ctx context.Context, paymentID id.PaymentID) (*Payment, error)
+    HandleWebhook(ctx context.Context, payload []byte, signature string) error
+}
+```
+
+## Payment structure
+
+```go
+type Payment struct {
+    ID                id.PaymentID
+    InvoiceID         id.InvoiceID
+    CustomerID        id.CustomerID
+    TenantID          string
+    AppID             string
+    Amount            money.Money
+    Status            PaymentStatus
+    PaymentMethodID   string
+    ProcessorID       string // Stripe charge ID, Paddle transaction ID
+    ProcessorName     string // "stripe", "paddle"
+    FailureCode       string
+    FailureMessage    string
+    CompletedAt       *time.Time
+    RefundedAmount    money.Money
+    Metadata          map[string]any
+}
+```
+
+## Payment status
+
+```go
+type PaymentStatus string
+
+const (
+    StatusPending    PaymentStatus = "pending"
+    StatusSucceeded  PaymentStatus = "succeeded"
+    StatusFailed     PaymentStatus = "failed"
+    StatusRefunded   PaymentStatus = "refunded"
+    StatusCanceled   PaymentStatus = "canceled"
+)
+```
+
+## Payment lifecycle
+
+```
+Invoice Created (draft) -> Payment Initiated (pending)
+                            |
+                    Payment Succeeded -> Invoice (paid)
+                    Payment Failed -> Invoice (open) -> Retry
+```
+
+## Stripe integration
+
+### Setup
+
+```go
+import (
+    "github.com/xraph/ledger/payment"
+    "github.com/xraph/ledger/payment/stripe"
+)
+
+processor := stripe.New(
+    stripe.WithSecretKey(os.Getenv("STRIPE_SECRET_KEY")),
+    stripe.WithWebhookSecret(os.Getenv("STRIPE_WEBHOOK_SECRET")),
+)
+```
+
+### Charging a customer
+
+Using the `Processor` interface directly:
+
+```go
+payment, err := processor.Charge(ctx, &payment.ChargeRequest{
+    InvoiceID:       invoice.ID,
+    CustomerID:      customer.ID,
+    Amount:          invoice.Total,
+    PaymentMethodID: customer.DefaultPaymentMethod,
+    Description:     fmt.Sprintf("Invoice %s", invoice.Number),
+    IdempotencyKey:  fmt.Sprintf("inv:%s", invoice.ID),
+})
+
+if err != nil {
+    log.Error("charge failed", "error", err)
+    return err
+}
+
+if payment.Status == payment.StatusSucceeded {
+    invoice.Status = invoice.StatusPaid
+    invoice.PaidAt = payment.CompletedAt
+}
+```
+
+### Stripe payment processing (BillingService)
+
+The `BillingService` handles Stripe customer creation and payment intent management internally:
+
+```go
+func (s *BillingService) processStripePayment(ctx context.Context, payment *Payment, invoice *Invoice, customer *Customer) (*Payment, error) {
+    // Create or retrieve Stripe customer
+    stripeCustomerID := customer.StripeCustomerID
+    if stripeCustomerID == "" {
+        sc, err := s.stripe.CreateCustomer(ctx, &stripe.CustomerParams{
+            Email: customer.Email,
+            Name:  customer.Name,
+        })
+        if err != nil {
+            return nil, err
+        }
+        stripeCustomerID = sc.ID
+
+        // Save Stripe customer ID
+        customer.StripeCustomerID = stripeCustomerID
+        s.store.UpdateCustomer(ctx, customer)
+    }
+
+    // Create payment intent
+    params := &stripe.PaymentIntentParams{
+        Amount:   stripe.Int64(int64(payment.Amount)),
+        Currency: stripe.String(strings.ToLower(payment.Currency)),
+        Customer: stripe.String(stripeCustomerID),
+        Metadata: map[string]string{
+            "ledger_invoice_id": invoice.ID.String(),
+            "ledger_payment_id": payment.ID.String(),
+        },
+    }
+
+    pi, err := s.stripe.CreatePaymentIntent(ctx, params)
+    if err != nil {
+        payment.Status = "failed"
+        payment.FailedAt = timePtr(time.Now())
+        payment.FailureReason = err.Error()
+        s.store.UpdatePayment(ctx, payment)
+        return payment, err
+    }
+
+    payment.ProviderID = pi.ID
+
+    // Check status
+    if pi.Status == "succeeded" {
+        payment.Status = "succeeded"
+        payment.ProcessedAt = timePtr(time.Now())
+
+        // Mark invoice as paid
+        invoice.Status = "paid"
+        invoice.PaidAt = payment.ProcessedAt
+        invoice.AmountPaid = payment.Amount
+        invoice.PaymentIntentID = pi.ID
+        s.store.UpdateInvoice(ctx, invoice)
+    }
+
+    s.store.UpdatePayment(ctx, payment)
+    return payment, nil
+}
+```
+
+## Paddle integration
+
+### Setup
+
+```go
+import "github.com/xraph/ledger/payment/paddle"
+
+processor := paddle.New(
+    paddle.WithVendorID(os.Getenv("PADDLE_VENDOR_ID")),
+    paddle.WithAuthCode(os.Getenv("PADDLE_AUTH_CODE")),
+    paddle.WithPublicKey(os.Getenv("PADDLE_PUBLIC_KEY")),
+)
+```
+
+### Charging a customer
+
+Paddle uses checkout URLs instead of direct API charges:
+
+```go
+checkout, err := processor.CreateCheckout(ctx, &paddle.CheckoutRequest{
+    CustomerID:  customer.ID,
+    InvoiceID:   invoice.ID,
+    Amount:      invoice.Total,
+    ProductName: "Starter Plan - Monthly",
+    ReturnURL:   "https://myapp.com/billing/success",
+})
+
+// Redirect customer to checkout.URL
+http.Redirect(w, r, checkout.URL, http.StatusSeeOther)
+```
+
+## Processing a payment
+
+The `BillingService.ProcessPayment` method orchestrates payment collection for an invoice, routing to the configured provider:
+
+```go
+func (s *BillingService) ProcessPayment(ctx context.Context, invoiceID InvoiceID) (*Payment, error) {
+    invoice, err := s.store.GetInvoice(ctx, invoiceID)
+    if err != nil {
+        return nil, err
+    }
+
+    if invoice.Status == "paid" {
+        return nil, ledger.ErrInvoiceAlreadyPaid
+    }
+
+    customer, err := s.store.GetCustomer(ctx, invoice.CustomerID)
+    if err != nil {
+        return nil, err
+    }
+
+    // Create payment record
+    payment := &Payment{
+        ID:         id.NewPaymentID(),
+        InvoiceID:  invoice.ID,
+        CustomerID: invoice.CustomerID,
+        Amount:     invoice.AmountDue,
+        Currency:   invoice.Currency,
+        Status:     "pending",
+        Provider:   s.config.Provider, // "stripe", "paddle"
+    }
+
+    err = s.store.CreatePayment(ctx, payment)
+    if err != nil {
+        return nil, err
+    }
+
+    // Process with provider
+    switch s.config.Provider {
+    case "stripe":
+        return s.processStripePayment(ctx, payment, invoice, customer)
+    case "paddle":
+        return s.processPaddlePayment(ctx, payment, invoice, customer)
+    default:
+        return nil, fmt.Errorf("unsupported payment provider: %s", s.config.Provider)
+    }
+}
+```
+
+## Payment method management
+
+### PaymentMethod type
+
+```go
+type PaymentMethod struct {
+    ID           string
+    CustomerID   id.CustomerID
+    Type         PaymentMethodType
+    Last4        string
+    ExpiryMonth  int
+    ExpiryYear   int
+    Brand        string // "visa", "mastercard", "amex"
+    IsDefault    bool
+}
+
+type PaymentMethodType string
+
+const (
+    TypeCard        PaymentMethodType = "card"
+    TypeBankAccount PaymentMethodType = "bank_account"
+    TypePayPal      PaymentMethodType = "paypal"
+)
+```
+
+### Adding a payment method
+
+Using the `Processor` interface:
+
+```go
+// Customer provides card token from Stripe.js
+method, err := processor.CreatePaymentMethod(ctx, customer.ID, cardToken)
+
+if err != nil {
+    return fmt.Errorf("failed to add card: %w", err)
+}
+
+// Set as default
+customer.DefaultPaymentMethod = method.ID
+store.UpdateCustomer(ctx, customer)
+```
+
+### Attaching a payment method (BillingService)
+
+The `BillingService` provides a higher-level method that handles both the Stripe attachment and the local record creation:
+
+```go
+func (s *BillingService) AttachPaymentMethod(ctx context.Context, customerID CustomerID, providerMethodID string) (*PaymentMethod, error) {
+    customer, err := s.store.GetCustomer(ctx, customerID)
+    if err != nil {
+        return nil, err
+    }
+
+    // Attach in Stripe
+    _, err = s.stripe.AttachPaymentMethod(ctx, providerMethodID, &stripe.PaymentMethodAttachParams{
+        Customer: stripe.String(customer.StripeCustomerID),
+    })
+    if err != nil {
+        return nil, err
+    }
+
+    // Create in Ledger
+    pm := &PaymentMethod{
+        ID:         id.NewPaymentMethodID(),
+        CustomerID: customerID,
+        Type:       "card",
+        IsDefault:  true, // First payment method is default
+        ProviderID: providerMethodID,
+        Provider:   "stripe",
+    }
+
+    err = s.store.CreatePaymentMethod(ctx, pm)
+    return pm, err
+}
+```
+
+### Payment status checks
+
+```go
+// Check if customer has valid payment method
+func (s *BillingService) HasPaymentMethod(ctx context.Context, customerID CustomerID) (bool, error) {
+    methods, err := s.store.ListPaymentMethods(ctx, PaymentMethodFilters{
+        CustomerID: customerID,
+    })
+    return len(methods) > 0, err
+}
+
+// Get default payment method
+func (s *BillingService) GetDefaultPaymentMethod(ctx context.Context, customerID CustomerID) (*PaymentMethod, error) {
+    return s.store.GetDefaultPaymentMethod(ctx, customerID)
+}
+```
+
+## Webhooks
+
+Ledger listens for provider webhooks to update payment status:
+
+```go
+func (h *WebhookHandler) HandleStripeWebhook(w http.ResponseWriter, r *http.Request) {
+    payload, err := io.ReadAll(r.Body)
+    if err != nil {
+        http.Error(w, "invalid payload", http.StatusBadRequest)
+        return
+    }
+
+    // Verify webhook signature
+    event, err := webhook.ConstructEvent(payload, r.Header.Get("Stripe-Signature"), h.webhookSecret)
+    if err != nil {
+        http.Error(w, "invalid signature", http.StatusUnauthorized)
+        return
+    }
+
+    switch event.Type {
+    case "payment_intent.succeeded":
+        h.handlePaymentSucceeded(event)
+    case "payment_intent.payment_failed":
+        h.handlePaymentFailed(event)
+    case "charge.refunded":
+        h.handleRefund(event)
+    }
+
+    w.WriteHeader(http.StatusOK)
+}
+
+func (h *WebhookHandler) handlePaymentSucceeded(event stripe.Event) {
+    var pi stripe.PaymentIntent
+    json.Unmarshal(event.Data.Raw, &pi)
+
+    // Find payment by provider ID
+    payment, err := h.store.GetPaymentByProviderID(context.Background(), pi.ID)
+    if err != nil {
+        logger.Error("payment not found for webhook", "provider_id", pi.ID)
+        return
+    }
+
+    // Update payment status
+    payment.Status = "succeeded"
+    payment.ProcessedAt = timePtr(time.Now())
+    h.store.UpdatePayment(context.Background(), payment)
+
+    // Update invoice
+    invoice, _ := h.store.GetInvoice(context.Background(), payment.InvoiceID)
+    invoice.Status = "paid"
+    invoice.PaidAt = payment.ProcessedAt
+    invoice.AmountPaid = payment.Amount
+    h.store.UpdateInvoice(context.Background(), invoice)
+}
+```
+
+### Paddle webhooks
+
+```go
+http.HandleFunc("/webhooks/paddle", func(w http.ResponseWriter, r *http.Request) {
+    payload, _ := io.ReadAll(r.Body)
+    signature := r.Header.Get("Paddle-Signature")
+
+    if err := processor.HandleWebhook(ctx, payload, signature); err != nil {
+        log.Error("webhook failed", "error", err)
+        w.WriteHeader(http.StatusBadRequest)
+        return
+    }
+
+    w.WriteHeader(http.StatusOK)
+})
+```
+
+## Refunds
+
+### Using the Processor interface
+
+Issue full or partial refunds:
+
+```go
+// Full refund
+refund, err := processor.RefundPayment(ctx, payment.ID, nil)
+
+// Partial refund ($50)
+refund, err := processor.RefundPayment(ctx, payment.ID, &money.Money{
+    Amount:   5000,
+    Currency: "USD",
+})
+
+if err == nil {
+    invoice.AmountDue = invoice.AmountDue.Add(refund.Amount)
+    payment.RefundedAmount = payment.RefundedAmount.Add(refund.Amount)
+}
+```
+
+### Using the BillingService
+
+```go
+func (s *BillingService) RefundPayment(ctx context.Context, paymentID PaymentID, amount Money, reason string) error {
+    payment, err := s.store.GetPayment(ctx, paymentID)
+    if err != nil {
+        return err
+    }
+
+    if payment.Status != "succeeded" {
+        return errors.New("can only refund succeeded payments")
+    }
+
+    // Refund in Stripe
+    refund, err := s.stripe.CreateRefund(ctx, &stripe.RefundParams{
+        PaymentIntent: stripe.String(payment.ProviderID),
+        Amount:        stripe.Int64(int64(amount)),
+        Reason:        stripe.String(reason),
+    })
+    if err != nil {
+        return err
+    }
+
+    // Update payment
+    payment.Status = "refunded"
+    payment.RefundedAt = timePtr(time.Now())
+    payment.RefundAmount = amount
+    payment.RefundReason = reason
+
+    return s.store.UpdatePayment(ctx, payment)
+}
+```
+
+## Idempotency
+
+Use idempotency keys to prevent duplicate charges:
+
+```go
+req := &payment.ChargeRequest{
+    InvoiceID:      invoice.ID,
+    Amount:         invoice.Total,
+    IdempotencyKey: fmt.Sprintf("inv:%s", invoice.ID),
+}
+
+// Safe to retry - same IdempotencyKey returns same payment
+payment1, _ := processor.Charge(ctx, req)
+payment2, _ := processor.Charge(ctx, req)
+// payment1.ID == payment2.ID
+```
+
+## Retry logic
+
+For failed payments, implement exponential backoff:
+
+```go
+func retryPayment(ctx context.Context, invoice *invoice.Invoice, attempts int) error {
+    for i := 0; i < attempts; i++ {
+        payment, err := processor.Charge(ctx, &payment.ChargeRequest{
+            InvoiceID:       invoice.ID,
+            CustomerID:      invoice.CustomerID,
+            Amount:          invoice.Total,
+            PaymentMethodID: customer.DefaultPaymentMethod,
+        })
+
+        if err == nil && payment.Status == payment.StatusSucceeded {
+            return nil
+        }
+
+        // Exponential backoff: 1h, 2h, 4h, 8h
+        delay := time.Hour * time.Duration(math.Pow(2, float64(i)))
+        time.Sleep(delay)
+    }
+
+    return fmt.Errorf("payment failed after %d attempts", attempts)
+}
+```
+
+## Automatic payment retry
+
+The `BillingService` provides a built-in retry mechanism for failed payments:
+
+```go
+func (s *BillingService) RetryFailedPayments(ctx context.Context) error {
+    // Find payments that failed in the last 7 days
+    payments, err := s.store.ListPayments(ctx, PaymentFilters{
+        Status:        "failed",
+        FailedAfter:   time.Now().Add(-7 * 24 * time.Hour),
+        RetryAttempts: lessThan(3), // Max 3 retries
+    })
+
+    for _, payment := range payments {
+        invoice, err := s.store.GetInvoice(ctx, payment.InvoiceID)
+        if err != nil {
+            continue
+        }
+
+        customer, err := s.store.GetCustomer(ctx, payment.CustomerID)
+        if err != nil {
+            continue
+        }
+
+        // Retry payment
+        _, err = s.processStripePayment(ctx, payment, invoice, customer)
+        if err != nil {
+            logger.Warn("payment retry failed",
+                "payment_id", payment.ID,
+                "attempt", payment.RetryAttempts + 1,
+                "error", err,
+            )
+        }
+
+        payment.RetryAttempts++
+        s.store.UpdatePayment(ctx, payment)
+    }
+
+    return nil
+}
+```
+
+## Dunning management
+
+Automatically retry failed payments and notify customers:
+
+```go
+// Background job runs daily
+func processDunning(ctx context.Context) {
+    pastDue := store.GetSubscriptionsByStatus(ctx, subscription.StatusPastDue)
+
+    for _, sub := range pastDue {
+        invoice := getLatestUnpaidInvoice(ctx, sub.ID)
+
+        // Retry payment
+        payment, err := processor.Charge(ctx, &payment.ChargeRequest{
+            InvoiceID:  invoice.ID,
+            CustomerID: sub.CustomerID,
+            Amount:     invoice.AmountDue,
+        })
+
+        if err == nil && payment.Status == payment.StatusSucceeded {
+            // Payment succeeded - reactivate
+            sub.Status = subscription.StatusActive
+            store.UpdateSubscription(ctx, sub)
+            continue
+        }
+
+        // Check dunning attempts
+        attempts := getPaymentAttempts(ctx, invoice.ID)
+        if attempts >= 4 {
+            // Max attempts reached - mark unpaid
+            sub.Status = subscription.StatusUnpaid
+            invoice.Status = invoice.StatusUncollectible
+            store.UpdateSubscription(ctx, sub)
+            store.UpdateInvoice(ctx, invoice)
+        }
+
+        // Send dunning email
+        notifications.SendPaymentFailed(ctx, sub.CustomerID, invoice)
+    }
+}
+```
+
+## Store interface
+
+```go
+type Store interface {
+    CreatePayment(ctx context.Context, payment *Payment) error
+    GetPayment(ctx context.Context, paymentID id.PaymentID) (*Payment, error)
+    GetPaymentsByInvoice(ctx context.Context, invoiceID id.InvoiceID) ([]*Payment, error)
+    GetPaymentsByCustomer(ctx context.Context, customerID id.CustomerID) ([]*Payment, error)
+    UpdatePayment(ctx context.Context, payment *Payment) error
+    CreateRefund(ctx context.Context, refund *Refund) error
+    ListPayments(ctx context.Context, filter *ListFilter) ([]*Payment, error)
+}
+```
+
+## API routes
+
+| Method | Path | Description |
+|--------|------|-------------|
+| `POST` | `/ledger/payments` | Create payment manually |
+| `GET` | `/ledger/payments` | List payments |
+| `GET` | `/ledger/payments/{id}` | Get payment by ID |
+| `POST` | `/ledger/payments/{id}/refund` | Issue refund |
+| `POST` | `/ledger/payment-methods` | Add payment method |
+| `GET` | `/ledger/payment-methods` | List payment methods |
+| `DELETE` | `/ledger/payment-methods/{id}` | Remove payment method |
+| `POST` | `/webhooks/stripe` | Stripe webhook handler |
+| `POST` | `/webhooks/paddle` | Paddle webhook handler |

@@ -1,0 +1,286 @@
+---
+title: Billing Cycles
+description: How Ledger manages subscription billing cycles, period calculations, and automated billing runs.
+---
+
+Ledger automates billing through recurring billing cycles tied to subscriptions. Each subscription has a billing period (monthly, yearly, etc.) and Ledger automatically generates invoices at the end of each period.
+
+## Billing period
+
+The billing period is defined in the plan and copied to subscriptions:
+
+```go
+type Plan struct {
+    BillingPeriod string `json:"billing_period"` // month, year, quarter, week
+    // ...
+}
+
+type Subscription struct {
+    CurrentPeriodStart time.Time  `json:"current_period_start"`
+    CurrentPeriodEnd   time.Time  `json:"current_period_end"`
+    // ...
+}
+```
+
+Supported billing periods:
+
+| Period | Duration | Example |
+|--------|----------|---------|
+| `day` | 1 day | Daily billing |
+| `week` | 7 days | Weekly billing |
+| `month` | 1 calendar month | Monthly billing |
+| `quarter` | 3 calendar months | Quarterly billing |
+| `year` | 1 calendar year | Annual billing |
+
+## Period calculation
+
+When a subscription is created, Ledger calculates the first billing period:
+
+```go
+func CalculateInitialPeriod(startTime time.Time, period string) (start, end time.Time) {
+    start = startTime
+
+    switch period {
+    case "month":
+        end = start.AddDate(0, 1, 0) // +1 month
+    case "year":
+        end = start.AddDate(1, 0, 0) // +1 year
+    case "quarter":
+        end = start.AddDate(0, 3, 0) // +3 months
+    case "week":
+        end = start.AddDate(0, 0, 7) // +7 days
+    case "day":
+        end = start.AddDate(0, 0, 1) // +1 day
+    }
+
+    return start, end
+}
+```
+
+Example:
+
+```go
+// Create subscription on January 15, 2024
+sub := &Subscription{
+    ID:                 id.NewSubscriptionID(),
+    CurrentPeriodStart: time.Date(2024, 1, 15, 0, 0, 0, 0, time.UTC),
+    CurrentPeriodEnd:   time.Date(2024, 2, 15, 0, 0, 0, 0, time.UTC), // +1 month
+}
+```
+
+## Billing run
+
+A billing run is the automated process that generates invoices for subscriptions at the end of their billing period:
+
+```go
+type BillingRun struct {
+    ID              RunID     `json:"id"` // run_...
+    StartedAt       time.Time `json:"started_at"`
+    CompletedAt     *time.Time `json:"completed_at,omitempty"`
+    Status          string    `json:"status"` // running, completed, failed
+
+    // Statistics
+    TotalSubscriptions int `json:"total_subscriptions"`
+    InvoicesGenerated  int `json:"invoices_generated"`
+    PaymentsProcessed  int `json:"payments_processed"`
+    FailedPayments     int `json:"failed_payments"`
+    TotalRevenue       Money `json:"total_revenue"`
+
+    // Errors
+    Errors []BillingError `json:"errors,omitempty"`
+}
+```
+
+## Automated billing cycle
+
+Ledger runs a scheduled job (typically hourly) to process subscriptions ending in the current period:
+
+```go
+func (s *BillingService) RunBillingCycle(ctx context.Context) (*BillingRun, error) {
+    run := &BillingRun{
+        ID:        id.NewRunID(),
+        StartedAt: time.Now(),
+        Status:    "running",
+    }
+
+    // Find subscriptions ending in the next hour
+    now := time.Now()
+    subs, err := s.store.ListSubscriptions(ctx, SubscriptionFilters{
+        PeriodEndBefore: now.Add(1 * time.Hour),
+        PeriodEndAfter:  now,
+        Status:          "active",
+    })
+
+    run.TotalSubscriptions = len(subs)
+
+    for _, sub := range subs {
+        // Generate invoice for subscription
+        invoice, err := s.GenerateInvoice(ctx, &sub)
+        if err != nil {
+            run.Errors = append(run.Errors, BillingError{
+                SubscriptionID: sub.ID,
+                Error:          err.Error(),
+            })
+            continue
+        }
+
+        run.InvoicesGenerated++
+        run.TotalRevenue += invoice.Total
+
+        // Attempt payment
+        payment, err := s.ProcessPayment(ctx, invoice.ID)
+        if err != nil {
+            run.FailedPayments++
+            continue
+        }
+
+        run.PaymentsProcessed++
+
+        // Advance subscription to next period
+        err = s.AdvanceSubscriptionPeriod(ctx, &sub)
+        if err != nil {
+            run.Errors = append(run.Errors, BillingError{
+                SubscriptionID: sub.ID,
+                Error:          err.Error(),
+            })
+        }
+    }
+
+    now = time.Now()
+    run.CompletedAt = &now
+    run.Status = "completed"
+
+    return run, nil
+}
+```
+
+## Invoice generation
+
+For each subscription, Ledger generates an invoice with:
+
+1. **Base subscription fee** — The plan's base price
+2. **Usage charges** — Metered usage during the period
+3. **Prorations** — Mid-period plan changes
+4. **One-time charges** — Add-ons, credits, adjustments
+
+```go
+func (s *BillingService) GenerateInvoice(ctx context.Context, sub *Subscription) (*Invoice, error) {
+    plan, err := s.store.GetPlan(ctx, sub.PlanID)
+    if err != nil {
+        return nil, err
+    }
+
+    invoice := &Invoice{
+        ID:             id.NewInvoiceID(),
+        CustomerID:     sub.CustomerID,
+        SubscriptionID: sub.ID,
+        Status:         "draft",
+        PeriodStart:    sub.CurrentPeriodStart,
+        PeriodEnd:      sub.CurrentPeriodEnd,
+        Currency:       plan.Currency,
+        Lines:          []InvoiceLine{},
+    }
+
+    // Add base subscription line
+    baseLine := InvoiceLine{
+        ID:          id.NewLineID().String(),
+        Description: fmt.Sprintf("%s - %s", plan.Name, formatPeriod(sub.CurrentPeriodStart, sub.CurrentPeriodEnd)),
+        Type:        "subscription",
+        Amount:      plan.BaseAmount,
+    }
+    invoice.Lines = append(invoice.Lines, baseLine)
+
+    // Add usage lines
+    usageLines, err := s.CalculateUsageLines(ctx, sub, plan)
+    if err != nil {
+        return nil, err
+    }
+    invoice.Lines = append(invoice.Lines, usageLines...)
+
+    // Calculate totals
+    invoice.Subtotal = calculateSubtotal(invoice.Lines)
+    invoice.Tax = calculateTax(invoice.Subtotal, sub.CustomerID)
+    invoice.Total = invoice.Subtotal + invoice.Tax
+    invoice.AmountDue = invoice.Total
+
+    // Save invoice
+    err = s.store.CreateInvoice(ctx, invoice)
+    return invoice, err
+}
+```
+
+## Period advancement
+
+After successful payment, advance the subscription to the next period:
+
+```go
+func (s *BillingService) AdvanceSubscriptionPeriod(ctx context.Context, sub *Subscription) error {
+    // Calculate next period
+    nextStart := sub.CurrentPeriodEnd
+    var nextEnd time.Time
+
+    plan, err := s.store.GetPlan(ctx, sub.PlanID)
+    if err != nil {
+        return err
+    }
+
+    switch plan.BillingPeriod {
+    case "month":
+        nextEnd = nextStart.AddDate(0, 1, 0)
+    case "year":
+        nextEnd = nextStart.AddDate(1, 0, 0)
+    case "quarter":
+        nextEnd = nextStart.AddDate(0, 3, 0)
+    case "week":
+        nextEnd = nextStart.AddDate(0, 0, 7)
+    case "day":
+        nextEnd = nextStart.AddDate(0, 0, 1)
+    }
+
+    // Update subscription
+    sub.CurrentPeriodStart = nextStart
+    sub.CurrentPeriodEnd = nextEnd
+
+    return s.store.UpdateSubscription(ctx, sub)
+}
+```
+
+## Proration
+
+When a subscription changes mid-period, Ledger prorates charges:
+
+```go
+func CalculateProration(oldAmount, newAmount Money, periodStart, periodEnd, changeTime time.Time) Money {
+    totalDays := periodEnd.Sub(periodStart).Hours() / 24
+    remainingDays := periodEnd.Sub(changeTime).Hours() / 24
+    fraction := remainingDays / totalDays
+
+    // Credit unused portion of old plan
+    oldCredit := Money(float64(oldAmount) * fraction)
+
+    // Charge for remaining portion of new plan
+    newCharge := Money(float64(newAmount) * fraction)
+
+    // Net proration (can be positive or negative)
+    return newCharge - oldCredit
+}
+```
+
+## Monitoring billing runs
+
+```go
+// Get recent billing runs
+runs, err := store.ListBillingRuns(ctx, BillingRunFilters{
+    Limit: 10,
+})
+
+// Check for errors
+for _, run := range runs {
+    if run.Status == "failed" || len(run.Errors) > 0 {
+        logger.Warn("billing run had errors",
+            "run_id", run.ID,
+            "errors", len(run.Errors),
+        )
+    }
+}
+```

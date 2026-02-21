@@ -1,0 +1,129 @@
+---
+title: Memory Store
+description: In-memory store implementation for testing and development.
+---
+
+The **Memory Store** is Ledger's in-memory storage implementation. It stores all data in Go maps protected by a `sync.RWMutex`, making it thread-safe but non-persistent. It is designed for unit tests, integration tests, and local development.
+
+## Setup
+
+```go
+import "github.com/xraph/ledger/store/memory"
+
+memStore := memory.New()
+
+engine := ledger.New(memStore,
+    ledger.WithMeterConfig(1, 0), // Immediate flush for testing
+    ledger.WithEntitlementCacheTTL(0), // No caching for testing
+)
+```
+
+## Internal structure
+
+The memory store maintains separate maps for each entity type:
+
+```go
+type Store struct {
+    mu sync.RWMutex
+
+    plans            map[string]*plan.Plan
+    subscriptions    map[string]*subscription.Subscription
+    usageEvents      []meter.UsageEvent
+    entitlementCache map[string]*entitlement.Result
+    cacheExpiry      map[string]time.Time
+    invoices         map[string]*invoice.Invoice
+    coupons          map[string]*coupon.Coupon
+}
+```
+
+All operations acquire the appropriate lock (read or write) before accessing data.
+
+## Implements `store.Store`
+
+The memory store implements the full `store.Store` interface including:
+
+- **Plan methods** — `CreatePlan`, `GetPlan`, `GetPlanBySlug`, `ListPlans`, `UpdatePlan`, `DeletePlan`, `ArchivePlan`
+- **Subscription methods** — `CreateSubscription`, `GetSubscription`, `GetActiveSubscription`, `ListSubscriptions`, `UpdateSubscription`, `CancelSubscription`
+- **Meter methods** — `IngestBatch`, `Aggregate`, `AggregateMulti`, `QueryUsage`, `PurgeUsage`
+- **Entitlement methods** — `GetCached`, `SetCached`, `Invalidate`, `InvalidateFeature`
+- **Invoice methods** — `CreateInvoice`, `GetInvoice`, `ListInvoices`, `UpdateInvoice`, `GetInvoiceByPeriod`, `ListPendingInvoices`, `MarkInvoicePaid`, `MarkInvoiceVoided`
+- **Coupon methods** — `CreateCoupon`, `GetCoupon`, `GetCouponByID`, `ListCoupons`, `UpdateCoupon`, `DeleteCoupon`
+- **Core methods** — `Migrate` (no-op), `Ping` (always succeeds), `Close` (no-op)
+
+## Use cases
+
+| Use case | Recommended? |
+|----------|-------------|
+| Unit tests | Yes |
+| Integration tests | Yes |
+| Local development | Yes |
+| CI pipelines | Yes |
+| Production | No |
+| Multi-process environments | No |
+
+## Limitations
+
+- **No persistence** — Data is lost when the process exits.
+- **Single process only** — Cannot be shared across multiple instances.
+- **No real caching** — Entitlement cache uses the same process memory, so cache-miss behavior cannot be tested accurately.
+- **No SQL queries** — Cannot test SQL-specific behavior like indexes, constraints, or migrations.
+
+## Testing patterns
+
+### Basic test setup
+
+```go
+func TestBillingFlow(t *testing.T) {
+    store := memory.New()
+    engine := ledger.New(store)
+
+    ctx := context.Background()
+    ctx = context.WithValue(ctx, "tenant_id", "test-tenant")
+    ctx = context.WithValue(ctx, "app_id", "test-app")
+
+    if err := engine.Start(ctx); err != nil {
+        t.Fatal(err)
+    }
+    defer engine.Stop()
+
+    // Create plan
+    p := &plan.Plan{
+        ID:   id.NewPlanID(),
+        Name: "test-plan",
+        Features: []plan.Feature{
+            {Key: "api-calls", Type: plan.FeatureMetered, Limit: 100},
+        },
+    }
+    if err := engine.CreatePlan(ctx, p); err != nil {
+        t.Fatal(err)
+    }
+
+    // Test entitlements, metering, invoicing...
+}
+```
+
+### Test with plugins
+
+```go
+func TestPluginHooks(t *testing.T) {
+    store := memory.New()
+    recorder := &mockRecorder{}
+
+    engine := ledger.New(store,
+        ledger.WithPlugin(audithook.New(recorder)),
+    )
+
+    // Actions will trigger audit events through the plugin
+}
+```
+
+## Comparison with PostgreSQL store
+
+| Feature | Memory | PostgreSQL |
+|---------|--------|-----------|
+| Persistence | None | Full |
+| Multi-process | No | Yes |
+| Migrations | No-op | Full schema migrations |
+| Performance | Very fast (no I/O) | Network I/O |
+| Setup required | None | Database connection |
+| Multi-tenancy | Map-based filtering | Row-level security |

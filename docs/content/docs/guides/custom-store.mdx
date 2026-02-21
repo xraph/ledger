@@ -1,189 +1,707 @@
 ---
-title: Custom Components
-description: Implement custom Chunker, Embedder, Loader, and VectorStore to plug your own backends into Weave.
+title: Custom Store
+description: Implement the store.Store interface for a custom storage backend.
 ---
 
-Every Weave component is a Go interface. This guide shows how to implement each one so you can plug in custom backends, models, or processing logic.
+Ledger persists all data through the `store.Store` interface. The library ships with an in-memory store for testing, but production deployments need a durable backend. This guide walks through implementing a custom store -- whether that is PostgreSQL, MySQL, SQLite, DynamoDB, or anything else.
 
-## Custom Chunker
+## The store.Store interface
 
-Implement `chunker.Chunker` to split text with your own algorithm:
+`store.Store` is a single flat interface that declares every storage method Ledger needs. It is organized into logical groups:
 
 ```go
-import "github.com/xraph/weave/chunker"
+// store/store.go
+type Store interface {
+    // Plan methods (7 methods)
+    CreatePlan(ctx context.Context, p *plan.Plan) error
+    GetPlan(ctx context.Context, planID id.PlanID) (*plan.Plan, error)
+    GetPlanBySlug(ctx context.Context, slug string, appID string) (*plan.Plan, error)
+    ListPlans(ctx context.Context, appID string, opts plan.ListOpts) ([]*plan.Plan, error)
+    UpdatePlan(ctx context.Context, p *plan.Plan) error
+    DeletePlan(ctx context.Context, planID id.PlanID) error
+    ArchivePlan(ctx context.Context, planID id.PlanID) error
 
-type SentenceChunker struct {
-    maxTokens int
+    // Subscription methods (6 methods)
+    CreateSubscription(ctx context.Context, s *subscription.Subscription) error
+    GetSubscription(ctx context.Context, subID id.SubscriptionID) (*subscription.Subscription, error)
+    GetActiveSubscription(ctx context.Context, tenantID string, appID string) (*subscription.Subscription, error)
+    ListSubscriptions(ctx context.Context, tenantID string, appID string, opts subscription.ListOpts) ([]*subscription.Subscription, error)
+    UpdateSubscription(ctx context.Context, s *subscription.Subscription) error
+    CancelSubscription(ctx context.Context, subID id.SubscriptionID, cancelAt time.Time) error
+
+    // Meter methods (5 methods)
+    IngestBatch(ctx context.Context, events []*meter.UsageEvent) error
+    Aggregate(ctx context.Context, tenantID, appID, featureKey string, period plan.Period) (int64, error)
+    AggregateMulti(ctx context.Context, tenantID, appID string, featureKeys []string, period plan.Period) (map[string]int64, error)
+    QueryUsage(ctx context.Context, tenantID, appID string, opts meter.QueryOpts) ([]*meter.UsageEvent, error)
+    PurgeUsage(ctx context.Context, before time.Time) (int64, error)
+
+    // Entitlement cache methods (4 methods)
+    GetCached(ctx context.Context, tenantID, appID, featureKey string) (*entitlement.Result, error)
+    SetCached(ctx context.Context, tenantID, appID, featureKey string, result *entitlement.Result, ttl time.Duration) error
+    Invalidate(ctx context.Context, tenantID, appID string) error
+    InvalidateFeature(ctx context.Context, tenantID, appID, featureKey string) error
+
+    // Invoice methods (8 methods)
+    CreateInvoice(ctx context.Context, inv *invoice.Invoice) error
+    GetInvoice(ctx context.Context, invID id.InvoiceID) (*invoice.Invoice, error)
+    ListInvoices(ctx context.Context, tenantID, appID string, opts invoice.ListOpts) ([]*invoice.Invoice, error)
+    UpdateInvoice(ctx context.Context, inv *invoice.Invoice) error
+    GetInvoiceByPeriod(ctx context.Context, tenantID, appID string, periodStart, periodEnd time.Time) (*invoice.Invoice, error)
+    ListPendingInvoices(ctx context.Context, appID string) ([]*invoice.Invoice, error)
+    MarkInvoicePaid(ctx context.Context, invID id.InvoiceID, paidAt time.Time, paymentRef string) error
+    MarkInvoiceVoided(ctx context.Context, invID id.InvoiceID, reason string) error
+
+    // Coupon methods (6 methods)
+    CreateCoupon(ctx context.Context, c *coupon.Coupon) error
+    GetCoupon(ctx context.Context, code string, appID string) (*coupon.Coupon, error)
+    GetCouponByID(ctx context.Context, couponID id.CouponID) (*coupon.Coupon, error)
+    ListCoupons(ctx context.Context, appID string, opts coupon.ListOpts) ([]*coupon.Coupon, error)
+    UpdateCoupon(ctx context.Context, c *coupon.Coupon) error
+    DeleteCoupon(ctx context.Context, couponID id.CouponID) error
+
+    // Core methods (3 methods)
+    Migrate(ctx context.Context) error
+    Ping(ctx context.Context) error
+    Close() error
 }
-
-func (c *SentenceChunker) Chunk(_ context.Context, text string, opts *chunker.Options) ([]chunker.ChunkResult, error) {
-    sentences := splitSentences(text)
-    var results []chunker.ChunkResult
-    var current strings.Builder
-    idx := 0
-
-    for _, sentence := range sentences {
-        if estimateTokens(current.String()) + estimateTokens(sentence) > opts.ChunkSize {
-            if current.Len() > 0 {
-                results = append(results, chunker.ChunkResult{
-                    Content:    current.String(),
-                    Index:      idx,
-                    TokenCount: estimateTokens(current.String()),
-                })
-                idx++
-                current.Reset()
-            }
-        }
-        current.WriteString(sentence + " ")
-    }
-    if current.Len() > 0 {
-        results = append(results, chunker.ChunkResult{
-            Content:    strings.TrimSpace(current.String()),
-            Index:      idx,
-            TokenCount: estimateTokens(current.String()),
-        })
-    }
-    return results, nil
-}
-
-// Register:
-eng, _ := engine.New(engine.WithChunker(&SentenceChunker{maxTokens: 256}))
 ```
 
-## Custom Embedder
+That is **39 methods** total, grouped into 7 categories. The interface is flat rather than composed so that method names are unambiguous and there are no naming conflicts.
 
-Implement `embedder.Embedder` to use any embedding model:
+## Planning your implementation
 
-```go
-import "github.com/xraph/weave/embedder"
+You do not have to implement everything at once. A practical approach:
 
-type CohereEmbedder struct {
-    client *cohere.Client
-    dims   int
-}
+1. **Start with core methods** -- `Migrate`, `Ping`, `Close`.
+2. **Add plan methods** -- these are simple CRUD and let you test plan creation.
+3. **Add subscription methods** -- once plans work, you can create subscriptions.
+4. **Add meter methods** -- `IngestBatch` is the hot path that must handle high throughput.
+5. **Add entitlement cache** -- start with a no-op cache that always returns `ErrCacheMiss`, then add Redis or local cache.
+6. **Add invoice methods** -- needed for billing cycle generation.
+7. **Add coupon methods** -- last priority unless coupons are a launch requirement.
 
-func (e *CohereEmbedder) Embed(ctx context.Context, texts []string) ([]embedder.EmbedResult, error) {
-    resp, err := e.client.Embed(ctx, &cohere.EmbedRequest{
-        Texts:     texts,
-        Model:     "embed-english-v3.0",
-        InputType: "search_document",
-    })
-    if err != nil {
-        return nil, err
-    }
-    results := make([]embedder.EmbedResult, len(resp.Embeddings))
-    for i, vec := range resp.Embeddings {
-        results[i] = embedder.EmbedResult{Vector: toFloat32(vec)}
-    }
-    return results, nil
-}
-
-func (e *CohereEmbedder) Dimensions() int { return e.dims }
-
-// Register:
-eng, _ := engine.New(engine.WithEmbedder(&CohereEmbedder{client: client, dims: 1024}))
-```
-
-## Custom Loader
-
-Implement `loader.Loader` to extract text from a custom format:
+## Scaffold your store struct
 
 ```go
+package pgstore
+
 import (
-    "io"
-    "github.com/xraph/weave/loader"
+    "context"
+    "time"
+
+    "github.com/jackc/pgx/v5/pgxpool"
+
+    "github.com/xraph/ledger/coupon"
+    "github.com/xraph/ledger/entitlement"
+    "github.com/xraph/ledger/id"
+    "github.com/xraph/ledger/invoice"
+    "github.com/xraph/ledger/meter"
+    "github.com/xraph/ledger/plan"
+    "github.com/xraph/ledger/store"
+    "github.com/xraph/ledger/subscription"
 )
 
-type DocxLoader struct{}
+// Compile-time interface check
+var _ store.Store = (*Store)(nil)
 
-func (l *DocxLoader) Supports(mime string) bool {
-    return mime == "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+// Store implements store.Store using PostgreSQL.
+type Store struct {
+    pool *pgxpool.Pool
 }
 
-func (l *DocxLoader) Load(ctx context.Context, r io.Reader) (*loader.LoadResult, error) {
-    data, err := io.ReadAll(r)
-    if err != nil {
-        return nil, err
-    }
-    text, meta, err := extractDocx(data)
-    if err != nil {
-        return nil, fmt.Errorf("docx: %w", err)
-    }
-    return &loader.LoadResult{
-        Content:  text,
-        MimeType: "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
-        Metadata: meta,
-    }, nil
+// New creates a new PostgreSQL store.
+func New(pool *pgxpool.Pool) *Store {
+    return &Store{pool: pool}
 }
-
-// Register:
-eng, _ := engine.New(engine.WithLoader(&DocxLoader{}))
 ```
 
-When ingesting a `.docx` file, set `SourceType` to trigger the loader:
+The compile-time check `var _ store.Store = (*Store)(nil)` guarantees that your struct implements every method in the interface. If you miss a method, you get a compile error, not a runtime panic.
+
+## Implementing plan methods
+
+Plan operations are straightforward CRUD. Here is an example for `CreatePlan` and `GetPlan`:
 
 ```go
-eng.Ingest(ctx, &engine.IngestInput{
-    CollectionID: colID,
-    Content:      string(docxBytes),
-    SourceType:   "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
-})
-```
+func (s *Store) CreatePlan(ctx context.Context, p *plan.Plan) error {
+    query := `
+        INSERT INTO plans (id, name, slug, description, currency, status, trial_days, app_id, metadata, created_at, updated_at)
+        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)`
 
-## Custom VectorStore
-
-Implement `vectorstore.VectorStore` to use any vector database:
-
-```go
-import "github.com/xraph/weave/vectorstore"
-
-type WeaviateStore struct {
-    client *weaviate.Client
-}
-
-func (s *WeaviateStore) Upsert(ctx context.Context, entries []vectorstore.Entry) error {
-    objects := make([]*models.Object, len(entries))
-    for i, e := range entries {
-        objects[i] = &models.Object{
-            ID:         strfmt.UUID(e.ID),
-            Class:      "WeaveChunk",
-            Vector:     toFloat64(e.Vector),
-            Properties: e.Metadata,
-        }
-    }
-    _, err := s.client.Batch().ObjectsBatcher().WithObjects(objects...).Do(ctx)
+    _, err := s.pool.Exec(ctx, query,
+        p.ID.String(), p.Name, p.Slug, p.Description, p.Currency,
+        p.Status, p.TrialDays, p.AppID, p.Metadata,
+        p.CreatedAt, p.UpdatedAt,
+    )
     return err
 }
 
-func (s *WeaviateStore) Search(ctx context.Context, vector []float32, opts *vectorstore.SearchOptions) ([]vectorstore.SearchResult, error) {
-    // ... weaviate nearVector query
+func (s *Store) GetPlan(ctx context.Context, planID id.PlanID) (*plan.Plan, error) {
+    query := `SELECT id, name, slug, description, currency, status, trial_days, app_id, metadata, created_at, updated_at
+              FROM plans WHERE id = $1`
+
+    p := &plan.Plan{}
+    var rawID string
+    err := s.pool.QueryRow(ctx, query, planID.String()).Scan(
+        &rawID, &p.Name, &p.Slug, &p.Description, &p.Currency,
+        &p.Status, &p.TrialDays, &p.AppID, &p.Metadata,
+        &p.CreatedAt, &p.UpdatedAt,
+    )
+    if err != nil {
+        return nil, ledger.ErrPlanNotFound
+    }
+
+    // Parse the TypeID back
+    p.ID, _ = id.ParsePlanID(rawID)
+
+    // Load features and pricing in separate queries
+    p.Features, _ = s.loadFeatures(ctx, planID)
+    p.Pricing, _ = s.loadPricing(ctx, planID)
+
+    return p, nil
 }
 
-func (s *WeaviateStore) Delete(ctx context.Context, ids []string) error { /* ... */ }
-func (s *WeaviateStore) DeleteByMetadata(ctx context.Context, filter map[string]string) error { /* ... */ }
+func (s *Store) GetPlanBySlug(ctx context.Context, slug, appID string) (*plan.Plan, error) {
+    query := `SELECT id FROM plans WHERE slug = $1 AND app_id = $2`
+    var rawID string
+    err := s.pool.QueryRow(ctx, query, slug, appID).Scan(&rawID)
+    if err != nil {
+        return nil, ledger.ErrPlanNotFound
+    }
+    planID, _ := id.ParsePlanID(rawID)
+    return s.GetPlan(ctx, planID)
+}
 
-// Register:
-eng, _ := engine.New(engine.WithVectorStore(&WeaviateStore{client: weaviateClient}))
+func (s *Store) ListPlans(ctx context.Context, appID string, opts plan.ListOpts) ([]*plan.Plan, error) {
+    query := `SELECT id FROM plans WHERE app_id = $1`
+    args := []any{appID}
+
+    if opts.Status != "" {
+        query += ` AND status = $2`
+        args = append(args, opts.Status)
+    }
+    query += ` ORDER BY created_at DESC`
+
+    if opts.Limit > 0 {
+        query += fmt.Sprintf(` LIMIT %d OFFSET %d`, opts.Limit, opts.Offset)
+    }
+
+    rows, err := s.pool.Query(ctx, query, args...)
+    if err != nil {
+        return nil, err
+    }
+    defer rows.Close()
+
+    var plans []*plan.Plan
+    for rows.Next() {
+        var rawID string
+        if err := rows.Scan(&rawID); err != nil {
+            return nil, err
+        }
+        planID, _ := id.ParsePlanID(rawID)
+        p, err := s.GetPlan(ctx, planID)
+        if err != nil {
+            return nil, err
+        }
+        plans = append(plans, p)
+    }
+    return plans, nil
+}
 ```
 
-## Custom MetadataStore
+For `UpdatePlan`, `DeletePlan`, and `ArchivePlan`, follow the same pattern. `ArchivePlan` should set the status column to `"archived"`.
 
-Implement `store.Store` (which embeds `collection.Store`, `document.Store`, `chunk.Store`) to use a different database:
+## Implementing subscription methods
+
+Subscription methods follow the same CRUD pattern. The key method is `GetActiveSubscription`, which must find the subscription with status `"active"` or `"trialing"` for a given tenant:
 
 ```go
-import "github.com/xraph/weave/store"
+func (s *Store) GetActiveSubscription(ctx context.Context, tenantID, appID string) (*subscription.Subscription, error) {
+    query := `SELECT id, tenant_id, plan_id, status, current_period_start, current_period_end,
+                     trial_start, trial_end, canceled_at, cancel_at, ended_at, app_id, metadata,
+                     created_at, updated_at
+              FROM subscriptions
+              WHERE tenant_id = $1 AND app_id = $2 AND status IN ('active', 'trialing')
+              LIMIT 1`
 
-// Your struct must implement all methods from:
-// - collection.Store (CreateCollection, GetCollection, ListCollections, DeleteCollection, ...)
-// - document.Store (CreateDocument, GetDocument, UpdateDocument, ListDocuments, DeleteDocument, ...)
-// - chunk.Store (CreateChunkBatch, ListChunksByDocument, DeleteChunksByDocument, ...)
-// - store.Store (Migrate, Ping, Close)
+    sub := &subscription.Subscription{}
+    var rawID, rawPlanID string
+    err := s.pool.QueryRow(ctx, query, tenantID, appID).Scan(
+        &rawID, &sub.TenantID, &rawPlanID, &sub.Status,
+        &sub.CurrentPeriodStart, &sub.CurrentPeriodEnd,
+        &sub.TrialStart, &sub.TrialEnd, &sub.CanceledAt,
+        &sub.CancelAt, &sub.EndedAt, &sub.AppID, &sub.Metadata,
+        &sub.CreatedAt, &sub.UpdatedAt,
+    )
+    if err != nil {
+        return nil, ledger.ErrNoActiveSubscription
+    }
 
-type MyStore struct{ /* ... */ }
+    sub.ID, _ = id.ParseSubscriptionID(rawID)
+    sub.PlanID, _ = id.ParsePlanID(rawPlanID)
+    return sub, nil
+}
 
-var _ store.Store = (*MyStore)(nil) // compile-time check
+func (s *Store) CancelSubscription(ctx context.Context, subID id.SubscriptionID, cancelAt time.Time) error {
+    query := `UPDATE subscriptions SET cancel_at = $1, updated_at = NOW() WHERE id = $2`
+    tag, err := s.pool.Exec(ctx, query, cancelAt, subID.String())
+    if err != nil {
+        return err
+    }
+    if tag.RowsAffected() == 0 {
+        return ledger.ErrSubscriptionNotFound
+    }
 
-eng, _ := engine.New(engine.WithStore(&MyStore{}))
+    // If cancellation is immediate, also set status and canceled_at
+    if time.Now().After(cancelAt) {
+        immediateQuery := `UPDATE subscriptions SET status = 'canceled', canceled_at = NOW() WHERE id = $1`
+        _, err = s.pool.Exec(ctx, immediateQuery, subID.String())
+    }
+    return err
+}
 ```
 
-See [store/store.go](https://github.com/xraph/weave/blob/main/store/store.go) for the full interface definition.
+## Implementing meter methods
+
+The meter methods handle high-throughput usage event ingestion. `IngestBatch` is the hot path -- it receives batches of events from the flush worker.
+
+```go
+func (s *Store) IngestBatch(ctx context.Context, events []*meter.UsageEvent) error {
+    if len(events) == 0 {
+        return nil
+    }
+
+    // Use COPY for maximum throughput, or batch INSERT
+    query := `INSERT INTO usage_events (id, tenant_id, app_id, feature_key, quantity, timestamp, idempotency_key, metadata)
+              VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+              ON CONFLICT (idempotency_key) DO NOTHING`
+
+    batch := &pgx.Batch{}
+    for _, e := range events {
+        batch.Queue(query,
+            e.ID.String(), e.TenantID, e.AppID, e.FeatureKey,
+            e.Quantity, e.Timestamp, e.IdempotencyKey, e.Metadata,
+        )
+    }
+
+    br := s.pool.SendBatch(ctx, batch)
+    defer br.Close()
+
+    for range events {
+        if _, err := br.Exec(); err != nil {
+            return err
+        }
+    }
+    return nil
+}
+
+func (s *Store) Aggregate(ctx context.Context, tenantID, appID, featureKey string, period plan.Period) (int64, error) {
+    startOfPeriod := getStartOfPeriod(time.Now(), period)
+
+    query := `SELECT COALESCE(SUM(quantity), 0) FROM usage_events
+              WHERE tenant_id = $1 AND app_id = $2 AND feature_key = $3 AND timestamp >= $4`
+
+    var total int64
+    err := s.pool.QueryRow(ctx, query, tenantID, appID, featureKey, startOfPeriod).Scan(&total)
+    return total, err
+}
+
+func (s *Store) AggregateMulti(ctx context.Context, tenantID, appID string, featureKeys []string, period plan.Period) (map[string]int64, error) {
+    startOfPeriod := getStartOfPeriod(time.Now(), period)
+
+    query := `SELECT feature_key, COALESCE(SUM(quantity), 0)
+              FROM usage_events
+              WHERE tenant_id = $1 AND app_id = $2 AND feature_key = ANY($3) AND timestamp >= $4
+              GROUP BY feature_key`
+
+    rows, err := s.pool.Query(ctx, query, tenantID, appID, featureKeys, startOfPeriod)
+    if err != nil {
+        return nil, err
+    }
+    defer rows.Close()
+
+    result := make(map[string]int64)
+    for rows.Next() {
+        var key string
+        var total int64
+        if err := rows.Scan(&key, &total); err != nil {
+            return nil, err
+        }
+        result[key] = total
+    }
+    return result, nil
+}
+
+func (s *Store) QueryUsage(ctx context.Context, tenantID, appID string, opts meter.QueryOpts) ([]*meter.UsageEvent, error) {
+    query := `SELECT id, tenant_id, app_id, feature_key, quantity, timestamp, idempotency_key, metadata
+              FROM usage_events
+              WHERE tenant_id = $1 AND app_id = $2`
+    args := []any{tenantID, appID}
+    argIdx := 3
+
+    if opts.FeatureKey != "" {
+        query += fmt.Sprintf(` AND feature_key = $%d`, argIdx)
+        args = append(args, opts.FeatureKey)
+        argIdx++
+    }
+    if !opts.Start.IsZero() {
+        query += fmt.Sprintf(` AND timestamp >= $%d`, argIdx)
+        args = append(args, opts.Start)
+        argIdx++
+    }
+    if !opts.End.IsZero() {
+        query += fmt.Sprintf(` AND timestamp < $%d`, argIdx)
+        args = append(args, opts.End)
+        argIdx++
+    }
+
+    query += ` ORDER BY timestamp DESC`
+    if opts.Limit > 0 {
+        query += fmt.Sprintf(` LIMIT %d OFFSET %d`, opts.Limit, opts.Offset)
+    }
+
+    rows, err := s.pool.Query(ctx, query, args...)
+    if err != nil {
+        return nil, err
+    }
+    defer rows.Close()
+
+    var events []*meter.UsageEvent
+    for rows.Next() {
+        e := &meter.UsageEvent{}
+        var rawID string
+        if err := rows.Scan(&rawID, &e.TenantID, &e.AppID, &e.FeatureKey, &e.Quantity, &e.Timestamp, &e.IdempotencyKey, &e.Metadata); err != nil {
+            return nil, err
+        }
+        e.ID, _ = id.ParseUsageEventID(rawID)
+        events = append(events, e)
+    }
+    return events, nil
+}
+
+func (s *Store) PurgeUsage(ctx context.Context, before time.Time) (int64, error) {
+    query := `DELETE FROM usage_events WHERE timestamp < $1`
+    tag, err := s.pool.Exec(ctx, query, before)
+    if err != nil {
+        return 0, err
+    }
+    return tag.RowsAffected(), nil
+}
+
+// Helper: compute the start of a billing period
+func getStartOfPeriod(t time.Time, period plan.Period) time.Time {
+    switch period {
+    case plan.PeriodMonthly:
+        return time.Date(t.Year(), t.Month(), 1, 0, 0, 0, 0, t.Location())
+    case plan.PeriodYearly:
+        return time.Date(t.Year(), 1, 1, 0, 0, 0, 0, t.Location())
+    default:
+        return time.Time{}
+    }
+}
+```
+
+**Performance tips for IngestBatch:**
+- Use PostgreSQL `COPY` protocol for bulk inserts (10x faster than batch INSERT).
+- Add a composite index on `(tenant_id, app_id, feature_key, timestamp)` for fast aggregation.
+- Use `ON CONFLICT (idempotency_key) DO NOTHING` to handle duplicate events.
+- Consider partitioning the `usage_events` table by month for fast `PurgeUsage`.
+
+## Implementing entitlement cache
+
+The entitlement cache stores computed `entitlement.Result` values so that repeated checks are fast. You can implement this with Redis, a local sync.Map, or even a simple TTL map:
+
+```go
+import "github.com/xraph/ledger/entitlement"
+
+func (s *Store) GetCached(ctx context.Context, tenantID, appID, featureKey string) (*entitlement.Result, error) {
+    key := fmt.Sprintf("ent:%s:%s:%s", tenantID, appID, featureKey)
+
+    val, err := s.redis.Get(ctx, key).Bytes()
+    if err != nil {
+        return nil, ledger.ErrCacheMiss
+    }
+
+    var result entitlement.Result
+    if err := json.Unmarshal(val, &result); err != nil {
+        return nil, ledger.ErrCacheMiss
+    }
+    return &result, nil
+}
+
+func (s *Store) SetCached(ctx context.Context, tenantID, appID, featureKey string, result *entitlement.Result, ttl time.Duration) error {
+    key := fmt.Sprintf("ent:%s:%s:%s", tenantID, appID, featureKey)
+
+    data, err := json.Marshal(result)
+    if err != nil {
+        return err
+    }
+    return s.redis.Set(ctx, key, data, ttl).Err()
+}
+
+func (s *Store) Invalidate(ctx context.Context, tenantID, appID string) error {
+    pattern := fmt.Sprintf("ent:%s:%s:*", tenantID, appID)
+    keys, err := s.redis.Keys(ctx, pattern).Result()
+    if err != nil {
+        return err
+    }
+    if len(keys) > 0 {
+        return s.redis.Del(ctx, keys...).Err()
+    }
+    return nil
+}
+
+func (s *Store) InvalidateFeature(ctx context.Context, tenantID, appID, featureKey string) error {
+    key := fmt.Sprintf("ent:%s:%s:%s", tenantID, appID, featureKey)
+    return s.redis.Del(ctx, key).Err()
+}
+```
+
+If you do not need caching, return `ledger.ErrCacheMiss` from `GetCached` and no-op the other methods. The engine will fall back to computing entitlements from the subscription and usage data on every check.
+
+## Implementing invoice methods
+
+Invoice methods follow standard CRUD patterns. The notable ones are `MarkInvoicePaid` and `MarkInvoiceVoided`, which transition invoice status:
+
+```go
+func (s *Store) MarkInvoicePaid(ctx context.Context, invID id.InvoiceID, paidAt time.Time, paymentRef string) error {
+    query := `UPDATE invoices SET status = 'paid', paid_at = $1, payment_ref = $2, updated_at = NOW()
+              WHERE id = $3 AND status != 'voided'`
+    tag, err := s.pool.Exec(ctx, query, paidAt, paymentRef, invID.String())
+    if err != nil {
+        return err
+    }
+    if tag.RowsAffected() == 0 {
+        return ledger.ErrInvoiceNotFound
+    }
+    return nil
+}
+
+func (s *Store) MarkInvoiceVoided(ctx context.Context, invID id.InvoiceID, reason string) error {
+    query := `UPDATE invoices SET status = 'voided', voided_at = NOW(), void_reason = $1, updated_at = NOW()
+              WHERE id = $2 AND status != 'paid'`
+    tag, err := s.pool.Exec(ctx, query, reason, invID.String())
+    if err != nil {
+        return err
+    }
+    if tag.RowsAffected() == 0 {
+        return ledger.ErrInvoiceNotFound
+    }
+    return nil
+}
+```
+
+## Implementing coupon methods
+
+Coupon methods are straightforward CRUD. The `GetCoupon` method looks up by code and app ID:
+
+```go
+func (s *Store) GetCoupon(ctx context.Context, code, appID string) (*coupon.Coupon, error) {
+    query := `SELECT id, code, name, type, amount, percentage, currency,
+                     max_redemptions, times_redeemed, valid_from, valid_until,
+                     app_id, metadata, created_at, updated_at
+              FROM coupons WHERE code = $1 AND app_id = $2`
+
+    c := &coupon.Coupon{}
+    var rawID string
+    err := s.pool.QueryRow(ctx, query, code, appID).Scan(
+        &rawID, &c.Code, &c.Name, &c.Type, &c.Amount, &c.Percentage,
+        &c.Currency, &c.MaxRedemptions, &c.TimesRedeemed,
+        &c.ValidFrom, &c.ValidUntil, &c.AppID, &c.Metadata,
+        &c.CreatedAt, &c.UpdatedAt,
+    )
+    if err != nil {
+        return nil, ledger.ErrCouponNotFound
+    }
+    c.ID, _ = id.ParseCouponID(rawID)
+    return c, nil
+}
+```
+
+## Core methods
+
+The three core methods handle database lifecycle:
+
+```go
+func (s *Store) Migrate(ctx context.Context) error {
+    // Run your DDL statements or migration tool
+    migrations := []string{
+        `CREATE TABLE IF NOT EXISTS plans (
+            id TEXT PRIMARY KEY,
+            name TEXT NOT NULL,
+            slug TEXT NOT NULL,
+            description TEXT,
+            currency TEXT NOT NULL DEFAULT 'usd',
+            status TEXT NOT NULL DEFAULT 'active',
+            trial_days INTEGER DEFAULT 0,
+            app_id TEXT NOT NULL,
+            metadata JSONB,
+            created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+            updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+        )`,
+        `CREATE TABLE IF NOT EXISTS subscriptions (
+            id TEXT PRIMARY KEY,
+            tenant_id TEXT NOT NULL,
+            plan_id TEXT NOT NULL REFERENCES plans(id),
+            status TEXT NOT NULL DEFAULT 'active',
+            current_period_start TIMESTAMPTZ NOT NULL,
+            current_period_end TIMESTAMPTZ NOT NULL,
+            trial_start TIMESTAMPTZ,
+            trial_end TIMESTAMPTZ,
+            canceled_at TIMESTAMPTZ,
+            cancel_at TIMESTAMPTZ,
+            ended_at TIMESTAMPTZ,
+            app_id TEXT NOT NULL,
+            metadata JSONB,
+            created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+            updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+        )`,
+        `CREATE TABLE IF NOT EXISTS usage_events (
+            id TEXT PRIMARY KEY,
+            tenant_id TEXT NOT NULL,
+            app_id TEXT NOT NULL,
+            feature_key TEXT NOT NULL,
+            quantity BIGINT NOT NULL,
+            timestamp TIMESTAMPTZ NOT NULL,
+            idempotency_key TEXT UNIQUE,
+            metadata JSONB
+        )`,
+        `CREATE INDEX IF NOT EXISTS idx_usage_aggregate
+            ON usage_events (tenant_id, app_id, feature_key, timestamp)`,
+        // ... invoices, coupons, features, pricing tables
+    }
+
+    for _, ddl := range migrations {
+        if _, err := s.pool.Exec(ctx, ddl); err != nil {
+            return fmt.Errorf("migrate: %w", err)
+        }
+    }
+    return nil
+}
+
+func (s *Store) Ping(ctx context.Context) error {
+    return s.pool.Ping(ctx)
+}
+
+func (s *Store) Close() error {
+    s.pool.Close()
+    return nil
+}
+```
+
+## Compile-time interface check
+
+Always add this line at the top of your store file:
+
+```go
+var _ store.Store = (*Store)(nil)
+```
+
+This ensures that if the `store.Store` interface changes (new methods added), your code fails to compile with a clear error message rather than panicking at runtime.
+
+## Testing your store implementation
+
+Test your store against the same scenarios the engine exercises. Here is a test scaffold:
+
+```go
+package pgstore_test
+
+import (
+    "context"
+    "testing"
+    "time"
+
+    "github.com/xraph/ledger"
+    "github.com/xraph/ledger/plan"
+    "github.com/xraph/ledger/subscription"
+    "github.com/xraph/ledger/types"
+)
+
+func TestStore(t *testing.T) {
+    ctx := context.Background()
+    s := newTestStore(t) // your constructor with a test database
+    defer s.Close()
+
+    if err := s.Migrate(ctx); err != nil {
+        t.Fatal("migrate:", err)
+    }
+
+    // Test Ping
+    if err := s.Ping(ctx); err != nil {
+        t.Fatal("ping:", err)
+    }
+
+    // Test plan CRUD
+    t.Run("Plans", func(t *testing.T) {
+        p := &plan.Plan{
+            Name:     "Test Plan",
+            Slug:     "test",
+            Currency: "usd",
+            Status:   plan.StatusActive,
+            AppID:    "testapp",
+            Entity:   types.NewEntity(),
+        }
+        p.ID = id.NewPlanID()
+
+        if err := s.CreatePlan(ctx, p); err != nil {
+            t.Fatal("create:", err)
+        }
+
+        got, err := s.GetPlan(ctx, p.ID)
+        if err != nil {
+            t.Fatal("get:", err)
+        }
+        if got.Name != p.Name {
+            t.Errorf("name = %q, want %q", got.Name, p.Name)
+        }
+
+        // Test duplicate
+        if err := s.CreatePlan(ctx, p); err != ledger.ErrAlreadyExists {
+            t.Errorf("duplicate error = %v, want ErrAlreadyExists", err)
+        }
+
+        // Test not found
+        fakeID := id.NewPlanID()
+        if _, err := s.GetPlan(ctx, fakeID); err != ledger.ErrPlanNotFound {
+            t.Errorf("not found error = %v, want ErrPlanNotFound", err)
+        }
+    })
+
+    // Test subscription lifecycle
+    t.Run("Subscriptions", func(t *testing.T) {
+        // ... create plan first, then subscription
+    })
+
+    // Test meter ingestion and aggregation
+    t.Run("Metering", func(t *testing.T) {
+        // ... ingest events, verify aggregation
+    })
+
+    // Test entitlement cache
+    t.Run("EntitlementCache", func(t *testing.T) {
+        // GetCached should return ErrCacheMiss before any SetCached
+        _, err := s.GetCached(ctx, "t1", "a1", "feat")
+        if err != ledger.ErrCacheMiss {
+            t.Errorf("expected cache miss, got %v", err)
+        }
+
+        // SetCached then GetCached should return the value
+        result := &entitlement.Result{Allowed: true, Feature: "feat"}
+        s.SetCached(ctx, "t1", "a1", "feat", result, 5*time.Minute)
+
+        got, err := s.GetCached(ctx, "t1", "a1", "feat")
+        if err != nil {
+            t.Fatal("get cached:", err)
+        }
+        if !got.Allowed {
+            t.Error("expected allowed = true")
+        }
+    })
+}
+```
+
+## Next steps
+
+- [End-to-End Billing Example](/docs/guides/full-example) -- test your store with the full billing pipeline.
+- [Custom Plugin](/docs/guides/custom-plugin) -- add audit logging, metrics, or webhooks.
+- Review the [memory store source](https://github.com/xraph/ledger/blob/main/store/memory/store.go) for a complete reference implementation.

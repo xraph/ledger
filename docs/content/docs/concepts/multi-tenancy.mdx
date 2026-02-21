@@ -1,69 +1,368 @@
 ---
 title: Multi-Tenancy
-description: How Cortex scopes agents, skills, traits, and all entities to app and tenant contexts.
+description: How Ledger isolates billing data across organizations and customers for secure multi-tenant SaaS.
 ---
 
-Every Cortex entity is scoped to an **app** (logical application boundary) and optionally to a **tenant** (user/organization boundary). This scoping is enforced at the store layer — cross-tenant access is structurally impossible.
+Ledger is built for multi-tenant SaaS applications. Every billing entity is scoped to an **organization** (tenant boundary), ensuring complete data isolation. This scoping is enforced at the store layer — cross-tenant access is structurally impossible.
+
+## Tenant isolation
+
+All billing entities belong to a specific tenant:
+
+```go
+type Plan struct {
+    ID           PlanID `json:"id"`
+    TenantID     string `json:"tenant_id"` // Organization/tenant identifier
+    Name         string `json:"name"`
+    // ...
+}
+
+type Customer struct {
+    ID       CustomerID `json:"id"`
+    TenantID string     `json:"tenant_id"`
+    Email    string     `json:"email"`
+    // ...
+}
+
+type Subscription struct {
+    ID         SubscriptionID `json:"id"`
+    TenantID   string         `json:"tenant_id"`
+    CustomerID CustomerID     `json:"customer_id"`
+    // ...
+}
+```
 
 ## Context injection
 
-Scope identifiers are injected into the Go context using helper functions from the root `cortex` package:
+Tenant identifiers are injected into the Go context using helper functions:
 
 ```go
-import "github.com/xraph/cortex"
+import "github.com/xraph/ledger"
 
-ctx = cortex.WithTenant(ctx, "org-123")
-ctx = cortex.WithApp(ctx, "myapp")
+ctx = ledger.WithTenant(ctx, "org-acme-corp")
 ```
 
 ## Extraction
 
-Retrieve scope values from any context:
+Retrieve the tenant value from any context:
 
 ```go
-tenantID := cortex.TenantFromContext(ctx) // "org-123"
-appID    := cortex.AppFromContext(ctx)    // "myapp"
+tenantID := ledger.TenantFromContext(ctx) // "org-acme-corp"
 ```
 
-Both functions return an empty string if no value is set.
-
-## AppID vs TenantID
-
-| Scope | Purpose | Required | Example |
-|-------|---------|----------|---------|
-| **AppID** | Logical application boundary. All domain entities (agents, skills, traits, behaviors, personas) carry an `AppID` field. | Yes | `"myapp"`, `"staging"` |
-| **TenantID** | User or organization boundary. Used for execution entities (runs, conversations, checkpoints) to isolate per-user data. | Optional | `"org-123"`, `"user-456"` |
+Returns an empty string if no tenant is set.
 
 ## Store enforcement
 
-The PostgreSQL store enforces app scoping on every query:
+The PostgreSQL store enforces tenant scoping on every query:
 
-- **Agent, Skill, Trait, Behavior, Persona** — all `GetByName` and `List` queries filter by `app_id`
-- **Run, Memory, Checkpoint** — queries filter by `tenant_id` when provided
-- **Cross-scope access** — returns `ErrNotFound` even if the entity exists under a different app/tenant
+- All `Create` operations automatically set `tenant_id` from context
+- All `Get`, `List`, `Update`, and `Delete` queries filter by `tenant_id`
+- Cross-tenant access returns `ErrNotFound` even if the entity exists
+
+Example store implementation:
+
+```go
+func (s *PostgresStore) GetSubscription(ctx context.Context, id SubscriptionID) (*Subscription, error) {
+    tenantID := ledger.TenantFromContext(ctx)
+    if tenantID == "" {
+        return nil, ledger.ErrNoTenant
+    }
+
+    var sub Subscription
+    err := s.db.GetContext(ctx, &sub,
+        "SELECT * FROM subscriptions WHERE id = $1 AND tenant_id = $2",
+        id, tenantID,
+    )
+
+    if err == sql.ErrNoRows {
+        return nil, ledger.ErrSubscriptionNotFound
+    }
+
+    return &sub, err
+}
+```
+
+## Tenant hierarchy
+
+For complex B2B2C scenarios, Ledger supports hierarchical tenancy:
+
+```
+Organization (tenant_id: "org-acme")
+  ├── Workspace A (tenant_id: "org-acme/workspace-a")
+  ├── Workspace B (tenant_id: "org-acme/workspace-b")
+  └── Workspace C (tenant_id: "org-acme/workspace-c")
+```
+
+Use path-like tenant IDs and query prefixes:
+
+```go
+// List all plans for organization and its workspaces
+plans, err := store.ListPlans(ctx, PlanFilters{
+    TenantPrefix: "org-acme",
+})
+```
 
 ## API integration
 
-When using the Forge extension, the API layer extracts the app ID from the request context (typically set by Forge middleware) and passes it to all engine operations. This means:
+The HTTP API extracts tenant ID from the request (typically from auth headers or JWT claims) and injects it into the context:
 
-- Each API request is automatically scoped to the caller's app
-- Agents in app A cannot see or modify agents in app B
-- Run history is isolated per tenant within each app
+```go
+func TenantMiddleware(next http.Handler) http.Handler {
+    return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+        // Extract from JWT claim, header, or subdomain
+        tenantID := extractTenantID(r)
+
+        // Inject into context
+        ctx := ledger.WithTenant(r.Context(), tenantID)
+
+        // All downstream handlers automatically scoped
+        next.ServeHTTP(w, r.WithContext(ctx))
+    })
+}
+```
+
+Common extraction strategies:
+
+### From JWT claims
+
+```go
+func extractTenantID(r *http.Request) string {
+    claims := jwt.GetClaims(r.Context())
+    return claims["tenant_id"].(string)
+}
+```
+
+### From subdomain
+
+```go
+func extractTenantID(r *http.Request) string {
+    host := r.Host
+    parts := strings.Split(host, ".")
+    if len(parts) > 0 {
+        return parts[0] // "acme" from "acme.app.com"
+    }
+    return ""
+}
+```
+
+### From header
+
+```go
+func extractTenantID(r *http.Request) string {
+    return r.Header.Get("X-Tenant-ID")
+}
+```
+
+## Database schema
+
+All tables include a `tenant_id` column with composite indexes:
+
+```sql
+CREATE TABLE subscriptions (
+    id TEXT PRIMARY KEY,
+    tenant_id TEXT NOT NULL,
+    customer_id TEXT NOT NULL,
+    plan_id TEXT NOT NULL,
+    status TEXT NOT NULL,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+-- Composite indexes for tenant-scoped queries
+CREATE INDEX idx_subscriptions_tenant_customer ON subscriptions(tenant_id, customer_id);
+CREATE INDEX idx_subscriptions_tenant_status ON subscriptions(tenant_id, status);
+CREATE INDEX idx_subscriptions_tenant_created ON subscriptions(tenant_id, created_at);
+```
+
+## Per-tenant plans
+
+Each tenant can have its own set of plans:
+
+```go
+// Tenant A creates a "Startup" plan
+ctxA := ledger.WithTenant(ctx, "tenant-a")
+planA := &Plan{
+    ID:       id.NewPlanID(),
+    TenantID: "tenant-a",
+    Name:     "Startup",
+}
+store.CreatePlan(ctxA, planA)
+
+// Tenant B creates a different "Startup" plan
+ctxB := ledger.WithTenant(ctx, "tenant-b")
+planB := &Plan{
+    ID:       id.NewPlanID(),
+    TenantID: "tenant-b",
+    Name:     "Startup", // Same name, different tenant
+}
+store.CreatePlan(ctxB, planB)
+
+// Plans are isolated
+plansA, _ := store.ListPlans(ctxA, PlanFilters{}) // Only sees planA
+plansB, _ := store.ListPlans(ctxB, PlanFilters{}) // Only sees planB
+```
+
+## Shared plans (optional)
+
+For marketplace scenarios where plans are shared across tenants, use a global tenant:
+
+```go
+// Create global plan (no tenant)
+globalCtx := ledger.WithTenant(ctx, "")
+globalPlan := &Plan{
+    ID:       id.NewPlanID(),
+    TenantID: "", // Global
+    Name:     "Enterprise",
+}
+store.CreatePlan(globalCtx, globalPlan)
+
+// Tenants can subscribe to global plans
+sub := &Subscription{
+    ID:         id.NewSubscriptionID(),
+    TenantID:   "tenant-a",
+    CustomerID: customerID,
+    PlanID:     globalPlan.ID,
+}
+store.CreateSubscription(ctxA, sub)
+```
+
+## Usage isolation
+
+Usage events are strictly scoped to the customer's tenant:
+
+```go
+// Tenant A records usage
+ctxA := ledger.WithTenant(ctx, "tenant-a")
+eventA := &UsageEvent{
+    ID:         id.NewEventID(),
+    TenantID:   "tenant-a",
+    CustomerID: customerA,
+    EventName:  "api_call",
+    Value:      1,
+}
+meter.RecordEvent(ctxA, eventA)
+
+// Tenant B cannot see tenant A's usage
+ctxB := ledger.WithTenant(ctx, "tenant-b")
+events, _ := store.ListUsageEvents(ctxB, UsageFilters{
+    CustomerID: customerA, // Wrong tenant
+})
+// events is empty — tenant isolation enforced
+```
+
+## Invoice isolation
+
+Invoices are tenant-scoped and can only be accessed by the owning tenant:
+
+```go
+// Generate invoice for tenant A customer
+ctxA := ledger.WithTenant(ctx, "tenant-a")
+invoice := GenerateInvoice(ctxA, subscriptionA)
+
+// Tenant B cannot access the invoice
+ctxB := ledger.WithTenant(ctx, "tenant-b")
+_, err := store.GetInvoice(ctxB, invoice.ID)
+// err == ErrInvoiceNotFound
+```
+
+## Payment provider isolation
+
+Each tenant can have its own payment provider configuration:
+
+```go
+type TenantConfig struct {
+    TenantID string `json:"tenant_id"`
+
+    // Stripe configuration for this tenant
+    StripeAccountID string `json:"stripe_account_id,omitempty"`
+    StripeSecretKey string `json:"stripe_secret_key,omitempty"`
+
+    // Paddle configuration for this tenant
+    PaddleVendorID string `json:"paddle_vendor_id,omitempty"`
+    PaddleAPIKey   string `json:"paddle_api_key,omitempty"`
+}
+```
+
+Payments are processed using the tenant's provider credentials:
+
+```go
+func (s *BillingService) ProcessPayment(ctx context.Context, invoiceID InvoiceID) error {
+    tenantID := ledger.TenantFromContext(ctx)
+    config := s.getTenantConfig(tenantID)
+
+    // Use tenant-specific Stripe account
+    client := stripe.NewClient(config.StripeSecretKey)
+    // ...
+}
+```
+
+## Security best practices
+
+1. **Always set tenant context** — Never query without tenant context in production
+2. **Validate tenant in auth** — Ensure JWT/session matches requested tenant
+3. **Index tenant_id** — All queries filter by tenant, so index it
+4. **Audit cross-tenant access** — Log all queries and check for missing tenant context
+5. **Test isolation** — Verify cross-tenant access returns empty/not-found
+6. **Encrypt tenant data** — Use database-level encryption for sensitive tenant data
 
 ## Example: multi-tenant setup
 
 ```go
-// Tenant 1 creates an agent
-ctx1 := cortex.WithApp(context.Background(), "myapp")
-ctx1 = cortex.WithTenant(ctx1, "tenant-1")
-eng.CreateAgent(ctx1, agent1Config)
+// Tenant 1: Create customer and subscription
+ctx1 := ledger.WithTenant(context.Background(), "tenant-acme")
 
-// Tenant 2 creates a different agent
-ctx2 := cortex.WithApp(context.Background(), "myapp")
-ctx2 = cortex.WithTenant(ctx2, "tenant-2")
-eng.CreateAgent(ctx2, agent2Config)
+customer1 := &Customer{
+    ID:       id.NewCustomerID(),
+    TenantID: "tenant-acme",
+    Email:    "user@acme.com",
+    Name:     "Acme User",
+}
+store.CreateCustomer(ctx1, customer1)
 
-// Tenant 1 cannot see tenant 2's runs
-runs, _ := eng.ListRuns(ctx1, &run.ListFilter{TenantID: "tenant-2"})
-// runs is empty — tenant isolation enforced
+sub1 := &Subscription{
+    ID:         id.NewSubscriptionID(),
+    TenantID:   "tenant-acme",
+    CustomerID: customer1.ID,
+    PlanID:     planID,
+    Status:     "active",
+}
+store.CreateSubscription(ctx1, sub1)
+
+// Tenant 2: Different customer and subscription
+ctx2 := ledger.WithTenant(context.Background(), "tenant-globex")
+
+customer2 := &Customer{
+    ID:       id.NewCustomerID(),
+    TenantID: "tenant-globex",
+    Email:    "user@globex.com",
+    Name:     "Globex User",
+}
+store.CreateCustomer(ctx2, customer2)
+
+// Tenant 1 cannot see tenant 2's customers
+customers, _ := store.ListCustomers(ctx1, CustomerFilters{})
+// customers contains only customer1
 ```
+
+## Tenant analytics
+
+Each tenant can query their own billing analytics:
+
+```go
+// Revenue by month for tenant
+revenue, err := analytics.GetMonthlyRevenue(ctx, MonthlyRevenueFilters{
+    StartMonth: "2024-01",
+    EndMonth:   "2024-12",
+})
+
+// MRR for tenant
+mrr, err := analytics.GetMRR(ctx)
+
+// Churn rate for tenant
+churn, err := analytics.GetChurnRate(ctx, ChurnFilters{
+    Period: "month",
+})
+```
+
+All analytics are automatically scoped to the tenant from context.

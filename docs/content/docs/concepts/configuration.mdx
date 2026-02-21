@@ -1,99 +1,342 @@
 ---
 title: Configuration
-description: Options and defaults for the Cortex engine and Forge extension.
+description: Configuring Ledger for production deployment and development environments.
 ---
 
-## Engine configuration
+## Overview
 
-`cortex.Config` holds global defaults that apply to all agents unless overridden at the agent level:
+Ledger is configured through environment variables and a structured configuration system. The configuration controls database connections, payment provider integrations, API settings, and operational parameters.
 
-```go
-type Config struct {
-    DefaultModel         string        // LLM model (default: "smart")
-    DefaultMaxSteps      int           // max reasoning steps per run (default: 25)
-    DefaultMaxTokens     int           // max output tokens per LLM call (default: 4096)
-    DefaultTemperature   float64       // LLM sampling temperature (default: 0.7)
-    DefaultReasoningLoop string        // reasoning strategy (default: "react")
-    ShutdownTimeout      time.Duration // graceful shutdown timeout (default: 30s)
-    RunConcurrency       int           // max concurrent runs (default: 4)
-}
-```
-
-### Defaults
-
-```go
-cortex.DefaultConfig() // returns:
-// Config{
-//     DefaultModel:         "smart",
-//     DefaultMaxSteps:      25,
-//     DefaultMaxTokens:     4096,
-//     DefaultTemperature:   0.7,
-//     DefaultReasoningLoop: "react",
-//     ShutdownTimeout:      30 * time.Second,
-//     RunConcurrency:       4,
-// }
-```
-
-### Overriding defaults
-
-Pass a custom config via engine options:
-
-```go
-eng, err := engine.New(
-    engine.WithConfig(cortex.Config{
-        DefaultModel:    "gpt-4o",
-        DefaultMaxSteps: 50,
-        RunConcurrency:  8,
-    }),
-    engine.WithStore(pgStore),
-)
-```
-
-## Engine options
-
-| Option | Description |
-|--------|-------------|
-| `engine.WithStore(s)` | Sets the composite store (required) |
-| `engine.WithConfig(cfg)` | Sets the engine configuration |
-| `engine.WithExtension(ext)` | Registers a plugin extension |
-| `engine.WithLogger(l)` | Sets the structured logger |
-
-## Agent-level overrides
-
-Each `agent.Config` can override engine-level defaults:
-
-```go
-agentCfg := &agent.Config{
-    Model:       "claude-3-opus",  // overrides DefaultModel
-    MaxSteps:    50,               // overrides DefaultMaxSteps
-    MaxTokens:   8192,             // overrides DefaultMaxTokens
-    Temperature: 0.3,              // overrides DefaultTemperature
-}
-```
-
-If an agent field is zero-valued, the engine default applies.
-
-## Extension configuration
-
-The Forge extension wrapper has its own `Config`:
+## Configuration structure
 
 ```go
 type Config struct {
-    DisableRoutes  bool   // prevents HTTP route registration
-    DisableMigrate bool   // prevents auto-migration on start
-    BasePath       string // URL prefix for all cortex routes
+    // Database configuration
+    Database DatabaseConfig
+
+    // HTTP server configuration
+    Server ServerConfig
+
+    // Payment provider configuration
+    Payments PaymentConfig
+
+    // Metering configuration
+    Metering MeteringConfig
+
+    // Feature flags
+    Features FeatureConfig
 }
 ```
 
-### Extension options
+## Database configuration
 
-| Option | Description |
-|--------|-------------|
-| `extension.WithStore(s)` | Sets the composite store |
-| `extension.WithExtension(x)` | Registers a Cortex plugin extension |
-| `extension.WithEngineOption(opt)` | Passes an engine option directly |
-| `extension.WithConfig(cfg)` | Sets the extension configuration |
-| `extension.WithDisableRoutes()` | Disables HTTP route registration |
-| `extension.WithDisableMigrate()` | Disables auto-migration |
-| `extension.WithBasePath(path)` | Sets the URL prefix |
-| `extension.WithLogger(l)` | Sets the structured logger |
+```go
+type DatabaseConfig struct {
+    // PostgreSQL connection string
+    URL string // required
+
+    // Connection pool settings
+    MaxOpenConns    int           // default: 25
+    MaxIdleConns    int           // default: 5
+    ConnMaxLifetime time.Duration // default: 5m
+    ConnMaxIdleTime time.Duration // default: 5m
+
+    // Migration settings
+    AutoMigrate bool // default: true in dev, false in prod
+}
+```
+
+### Environment variables
+
+```bash
+# Database
+DATABASE_URL=postgres://user:pass@localhost:5432/ledger?sslmode=disable
+DATABASE_MAX_OPEN_CONNS=25
+DATABASE_MAX_IDLE_CONNS=5
+DATABASE_AUTO_MIGRATE=true
+```
+
+## Server configuration
+
+```go
+type ServerConfig struct {
+    // HTTP server settings
+    Host string // default: "0.0.0.0"
+    Port int    // default: 8080
+
+    // Request limits
+    MaxRequestSize  int64         // default: 10MB
+    ReadTimeout     time.Duration // default: 30s
+    WriteTimeout    time.Duration // default: 30s
+    IdleTimeout     time.Duration // default: 120s
+
+    // CORS settings
+    AllowedOrigins []string
+    AllowedMethods []string
+    AllowedHeaders []string
+
+    // Rate limiting
+    RateLimit int // requests per minute, default: 1000
+}
+```
+
+### Environment variables
+
+```bash
+# Server
+SERVER_HOST=0.0.0.0
+SERVER_PORT=8080
+SERVER_MAX_REQUEST_SIZE=10485760
+SERVER_READ_TIMEOUT=30s
+SERVER_WRITE_TIMEOUT=30s
+
+# CORS
+CORS_ALLOWED_ORIGINS=https://app.example.com,https://dashboard.example.com
+CORS_ALLOWED_METHODS=GET,POST,PUT,DELETE,PATCH
+CORS_ALLOWED_HEADERS=Content-Type,Authorization
+
+# Rate limiting
+RATE_LIMIT_PER_MINUTE=1000
+```
+
+## Payment provider configuration
+
+Ledger supports multiple payment providers (Stripe, Paddle, etc.).
+
+```go
+type PaymentConfig struct {
+    // Active provider: "stripe", "paddle", or "mock"
+    Provider string // required
+
+    // Stripe configuration
+    Stripe StripeConfig
+
+    // Paddle configuration
+    Paddle PaddleConfig
+
+    // Webhook configuration
+    WebhookSecret string // required for production
+}
+
+type StripeConfig struct {
+    SecretKey      string // required
+    PublishableKey string // optional, for client-side
+    WebhookSecret  string // required for webhooks
+
+    // API settings
+    APIVersion string // default: latest
+    Timeout    time.Duration // default: 30s
+}
+```
+
+### Environment variables
+
+```bash
+# Stripe
+PAYMENT_PROVIDER=stripe
+STRIPE_SECRET_KEY=sk_test_...
+STRIPE_PUBLISHABLE_KEY=pk_test_...
+STRIPE_WEBHOOK_SECRET=whsec_...
+STRIPE_API_VERSION=2024-11-20.acacia
+
+# Paddle (alternative)
+PAYMENT_PROVIDER=paddle
+PADDLE_VENDOR_ID=12345
+PADDLE_API_KEY=...
+PADDLE_WEBHOOK_SECRET=...
+```
+
+## Metering configuration
+
+Controls usage event ingestion and processing.
+
+```go
+type MeteringConfig struct {
+    // Buffer settings for high-throughput ingestion
+    BufferSize     int           // events buffered before flush, default: 1000
+    FlushInterval  time.Duration // max time before flush, default: 5s
+    MaxWorkers     int           // concurrent flush workers, default: 4
+
+    // Event validation
+    ValidateSchema bool // default: true
+    MaxEventSize   int  // bytes, default: 64KB
+
+    // Aggregation settings
+    AggregateInterval time.Duration // default: 1h
+    RetentionPeriod   time.Duration // raw events, default: 90d
+}
+```
+
+### Environment variables
+
+```bash
+# Metering
+METERING_BUFFER_SIZE=1000
+METERING_FLUSH_INTERVAL=5s
+METERING_MAX_WORKERS=4
+METERING_VALIDATE_SCHEMA=true
+METERING_MAX_EVENT_SIZE=65536
+METERING_AGGREGATE_INTERVAL=1h
+METERING_RETENTION_PERIOD=2160h # 90 days
+```
+
+## Feature flags
+
+```go
+type FeatureConfig struct {
+    // Enable experimental features
+    EnableTrials       bool // default: true
+    EnableMeteredBilling bool // default: true
+    EnableInvoicing    bool // default: true
+    EnableWebhooks     bool // default: true
+
+    // Multi-tenancy
+    EnableTenantIsolation bool // default: true
+    MaxTenantsPerOrg      int  // default: unlimited (0)
+
+    // Caching
+    EnableEntitlementCache bool          // default: true
+    CacheTTL               time.Duration // default: 1m
+}
+```
+
+### Environment variables
+
+```bash
+# Features
+ENABLE_TRIALS=true
+ENABLE_METERED_BILLING=true
+ENABLE_INVOICING=true
+ENABLE_WEBHOOKS=true
+ENABLE_TENANT_ISOLATION=true
+ENABLE_ENTITLEMENT_CACHE=true
+CACHE_TTL=1m
+```
+
+## Complete example
+
+### Development configuration
+
+```bash
+# .env.development
+DATABASE_URL=postgres://ledger:ledger@localhost:5432/ledger_dev?sslmode=disable
+DATABASE_AUTO_MIGRATE=true
+
+SERVER_HOST=localhost
+SERVER_PORT=8080
+
+PAYMENT_PROVIDER=mock
+ENABLE_WEBHOOKS=false
+
+METERING_BUFFER_SIZE=100
+METERING_FLUSH_INTERVAL=1s
+```
+
+### Production configuration
+
+```bash
+# .env.production
+DATABASE_URL=postgres://ledger:securepass@db.example.com:5432/ledger?sslmode=require
+DATABASE_MAX_OPEN_CONNS=50
+DATABASE_MAX_IDLE_CONNS=10
+DATABASE_AUTO_MIGRATE=false
+
+SERVER_HOST=0.0.0.0
+SERVER_PORT=443
+SERVER_READ_TIMEOUT=60s
+SERVER_WRITE_TIMEOUT=60s
+
+CORS_ALLOWED_ORIGINS=https://app.example.com
+RATE_LIMIT_PER_MINUTE=5000
+
+PAYMENT_PROVIDER=stripe
+STRIPE_SECRET_KEY=sk_live_...
+STRIPE_WEBHOOK_SECRET=whsec_...
+
+METERING_BUFFER_SIZE=5000
+METERING_FLUSH_INTERVAL=10s
+METERING_MAX_WORKERS=8
+
+ENABLE_ENTITLEMENT_CACHE=true
+CACHE_TTL=5m
+```
+
+## Loading configuration
+
+### From environment
+
+```go
+import "github.com/xraph/ledger/config"
+
+func main() {
+    cfg, err := config.LoadFromEnv()
+    if err != nil {
+        log.Fatal(err)
+    }
+
+    // Use configuration
+    app, err := ledger.New(cfg)
+    if err != nil {
+        log.Fatal(err)
+    }
+}
+```
+
+### From file
+
+```go
+import "github.com/xraph/ledger/config"
+
+func main() {
+    cfg, err := config.LoadFromFile("config.yaml")
+    if err != nil {
+        log.Fatal(err)
+    }
+
+    app, err := ledger.New(cfg)
+    if err != nil {
+        log.Fatal(err)
+    }
+}
+```
+
+### Programmatic
+
+```go
+cfg := &config.Config{
+    Database: config.DatabaseConfig{
+        URL: "postgres://localhost:5432/ledger",
+    },
+    Server: config.ServerConfig{
+        Port: 8080,
+    },
+    Payments: config.PaymentConfig{
+        Provider: "stripe",
+        Stripe: config.StripeConfig{
+            SecretKey: os.Getenv("STRIPE_SECRET_KEY"),
+        },
+    },
+}
+
+app, err := ledger.New(cfg)
+```
+
+## Validation
+
+Configuration is validated on load. Common validation rules:
+
+- `DATABASE_URL` must be a valid PostgreSQL connection string
+- `PAYMENT_PROVIDER` must be one of: `stripe`, `paddle`, `mock`
+- Payment provider credentials must be present for the selected provider
+- Port numbers must be in valid range (1-65535)
+- Timeouts and intervals must be positive durations
+- Buffer sizes and worker counts must be positive integers
+
+## Security best practices
+
+1. **Never commit secrets** — Use environment variables or secret management
+2. **Rotate credentials** — Regular rotation of API keys and database passwords
+3. **Use SSL/TLS** — Enable `sslmode=require` for database in production
+4. **Validate webhooks** — Always configure webhook secrets for payment providers
+5. **Rate limiting** — Enable and tune rate limits for public APIs
+6. **Least privilege** — Database user should have minimal required permissions

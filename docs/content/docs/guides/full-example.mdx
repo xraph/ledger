@@ -1,202 +1,345 @@
 ---
-title: End-to-End RAG Pipeline
-description: Complete walkthrough — create a collection, ingest documents, retrieve context, and build a prompt for an LLM.
+title: End-to-End Billing Example
+description: Complete walkthrough of a billing pipeline from plan creation through payment collection.
 ---
 
-This guide builds a complete RAG pipeline from scratch using PostgreSQL, pgvector, and the OpenAI embedder.
+This guide builds a complete usage-based billing pipeline from scratch. You will create a plan with metered and boolean features, subscribe a tenant, record usage, check entitlements, and generate an invoice.
 
-## 1. Set up the engine
+## Prerequisites
+
+- Go 1.22 or later
+- A Go module (`go mod init`)
+
+```bash
+go get github.com/xraph/ledger
+```
+
+## 1. Initialize the engine
+
+Create a Ledger engine backed by the in-memory store. In production you would swap this for a PostgreSQL store.
 
 ```go
 package main
 
 import (
     "context"
-    "database/sql"
     "fmt"
     "log"
-    "os"
+    "log/slog"
+    "time"
 
-    "github.com/jackc/pgx/v5/pgxpool"
-    "github.com/uptrace/bun"
-    "github.com/uptrace/bun/dialect/pgdialect"
-    "github.com/uptrace/bun/driver/pgdriver"
-
-    "github.com/xraph/weave"
-    "github.com/xraph/weave/assembler"
-    "github.com/xraph/weave/embedder"
-    "github.com/xraph/weave/engine"
-    "github.com/xraph/weave/collection"
-    pgstore "github.com/xraph/weave/store/postgres"
-    pgvec "github.com/xraph/weave/vectorstore/pgvector"
+    "github.com/xraph/ledger"
+    "github.com/xraph/ledger/plan"
+    "github.com/xraph/ledger/store/memory"
+    "github.com/xraph/ledger/subscription"
+    "github.com/xraph/ledger/types"
 )
 
 func main() {
     ctx := context.Background()
 
-    // PostgreSQL metadata store
-    sqldb := sql.OpenDB(pgdriver.NewConnector(
-        pgdriver.WithDSN(os.Getenv("DATABASE_URL")),
-    ))
-    db := bun.NewDB(sqldb, pgdialect.New())
-    metaStore := pgstore.New(db)
+    // Create an in-memory store (swap for postgres.New(pool) in production)
+    store := memory.New()
 
-    // pgvector store
-    pool, err := pgxpool.New(ctx, os.Getenv("DATABASE_URL"))
-    if err != nil {
-        log.Fatal(err)
-    }
-    vecStore := pgvec.New(pool)
-
-    // OpenAI embedder
-    emb := embedder.NewOpenAI(
-        embedder.WithOpenAIKey(os.Getenv("OPENAI_API_KEY")),
+    // Build the billing engine
+    engine := ledger.New(store,
+        ledger.WithLogger(slog.Default()),
+        ledger.WithMeterConfig(50, 2*time.Second),       // flush every 50 events or 2s
+        ledger.WithEntitlementCacheTTL(30*time.Second),   // cache entitlement checks for 30s
     )
 
-    // Build engine
-    eng, err := engine.New(
-        engine.WithStore(metaStore),
-        engine.WithVectorStore(vecStore),
-        engine.WithEmbedder(emb),
-    )
-    if err != nil {
-        log.Fatal(err)
+    // Start background workers (meter flush, migrations)
+    if err := engine.Start(ctx); err != nil {
+        log.Fatal("start:", err)
     }
+    defer engine.Stop()
 
-    // Run migrations
-    if err := metaStore.Migrate(ctx); err != nil {
-        log.Fatal("migrate:", err)
-    }
-    if err := vecStore.Migrate(ctx); err != nil {
-        log.Fatal("migrate vectors:", err)
-    }
-
-    // Set tenant scope
-    ctx = weave.WithTenant(ctx, "acme-corp")
-    ctx = weave.WithApp(ctx, "support-bot")
-
-    run(ctx, eng)
+    runBillingPipeline(ctx, engine)
 }
 ```
 
-## 2. Create a collection
+`WithMeterConfig` controls how usage events are batched before being flushed to the store. The first argument is the batch size threshold, the second is the maximum time between flushes. `WithEntitlementCacheTTL` sets how long entitlement check results are cached to avoid repeated database queries.
+
+## 2. Create a SaaS plan
+
+Define a plan with a base subscription fee, metered API calls with graduated pricing tiers, and a boolean feature for priority support.
 
 ```go
-func run(ctx context.Context, eng *engine.Engine) {
-    col := &collection.Collection{
-        Name:           "product-docs",
-        EmbeddingModel: "text-embedding-3-small",
-        EmbeddingDims:  1536,
-        ChunkStrategy:  "recursive",
-        ChunkSize:      512,
-        ChunkOverlap:   50,
+func runBillingPipeline(ctx context.Context, engine *ledger.Ledger) {
+    // ── Step 1: Create a plan ─────────────────────────
+    proPlan := &plan.Plan{
+        Name:        "Pro Plan",
+        Slug:        "pro",
+        Description: "For growing teams that need more API calls and priority support.",
+        Currency:    "usd",
+        Status:      plan.StatusActive,
+        AppID:       "myapp",
+        TrialDays:   14,
+        Features: []plan.Feature{
+            {
+                Key:       "api_calls",
+                Name:      "API Calls",
+                Type:      plan.FeatureMetered,
+                Limit:     10000,             // 10k included per month
+                Period:    plan.PeriodMonthly,
+                SoftLimit: true,              // allow overage (billed extra)
+            },
+            {
+                Key:   "seats",
+                Name:  "Team Seats",
+                Type:  plan.FeatureSeat,
+                Limit: 10,
+            },
+            {
+                Key:   "priority_support",
+                Name:  "Priority Support",
+                Type:  plan.FeatureBoolean,
+                Limit: 1, // enabled (0 would mean disabled)
+            },
+        },
+        Pricing: &plan.Pricing{
+            BaseAmount:    types.USD(4999), // $49.99 per month
+            BillingPeriod: plan.PeriodMonthly,
+            Tiers: []plan.PriceTier{
+                {
+                    // First 10,000 API calls are included in the base price
+                    FeatureKey: "api_calls",
+                    Type:       plan.TierGraduated,
+                    UpTo:       10000,
+                    UnitAmount: types.Zero("usd"),
+                    Priority:   1,
+                },
+                {
+                    // 10,001 - 50,000 at $0.005 each
+                    FeatureKey: "api_calls",
+                    Type:       plan.TierGraduated,
+                    UpTo:       50000,
+                    UnitAmount: types.USD(0), // would be sub-cent; use FlatAmount per tier
+                    FlatAmount: types.USD(20000), // $200 flat for this tier
+                    Priority:   2,
+                },
+                {
+                    // 50,001+ at $0.002 each (unlimited)
+                    FeatureKey: "api_calls",
+                    Type:       plan.TierGraduated,
+                    UpTo:       -1, // unlimited
+                    UnitAmount: types.USD(0),
+                    FlatAmount: types.USD(10000), // $100 flat per additional 50k
+                    Priority:   3,
+                },
+            },
+        },
+        Metadata: map[string]string{
+            "stripe_product_id": "prod_abc123",
+        },
     }
-    if err := eng.CreateCollection(ctx, col); err != nil {
-        log.Fatal("create collection:", err)
+
+    if err := engine.CreatePlan(ctx, proPlan); err != nil {
+        log.Fatal("create plan:", err)
     }
-    fmt.Println("created collection:", col.ID)
+    fmt.Printf("Plan created: %s (%s)\n", proPlan.Name, proPlan.ID)
 ```
 
-## 3. Ingest documents
+Key points:
+
+- **Metered features** (`FeatureMetered`) track usage over a billing period. Set `SoftLimit: true` to allow overage rather than hard-blocking at the limit.
+- **Boolean features** (`FeatureBoolean`) are on/off toggles. A `Limit` of `1` means enabled, `0` means disabled.
+- **Seat features** (`FeatureSeat`) track a count of concurrent seats.
+- **Graduated pricing** charges different rates as usage moves through tiers. Each `PriceTier` defines a range (`UpTo`) and a unit or flat amount.
+- **Money values** are always in the smallest currency unit. `types.USD(4999)` is $49.99.
+
+## 3. Create a subscription
+
+Subscribe a tenant to the plan. The engine auto-generates a TypeID and sets the billing period.
 
 ```go
-    documents := []struct{ title, content string }{
-        {
-            title:   "Return Policy",
-            content: "Our return policy allows returns within 30 days of purchase. Items must be in original condition with all tags attached. Refunds are processed within 5-7 business days.",
-        },
-        {
-            title:   "Shipping Policy",
-            content: "Standard shipping takes 5-7 business days. Expedited shipping takes 2-3 business days. We ship to all 50 US states and internationally to 45 countries.",
-        },
-        {
-            title:   "Warranty Information",
-            content: "All products come with a 1-year limited warranty. The warranty covers manufacturing defects but not accidental damage. Contact support@acme.com to file a warranty claim.",
+    // ── Step 2: Subscribe a tenant ────────────────────
+    now := time.Now()
+    trialEnd := now.AddDate(0, 0, proPlan.TrialDays)
+
+    sub := &subscription.Subscription{
+        TenantID: "acme-corp",
+        PlanID:   proPlan.ID,
+        Status:   subscription.StatusTrialing,
+        AppID:    "myapp",
+        TrialStart: &now,
+        TrialEnd:   &trialEnd,
+        Metadata: map[string]string{
+            "stripe_subscription_id": "sub_xyz789",
         },
     }
 
-    for _, doc := range documents {
-        result, err := eng.Ingest(ctx, &engine.IngestInput{
-            CollectionID: col.ID,
-            Title:        doc.title,
-            Content:      doc.content,
-        })
-        if err != nil {
-            log.Printf("ingest %q: %v", doc.title, err)
-            continue
+    if err := engine.CreateSubscription(ctx, sub); err != nil {
+        log.Fatal("create subscription:", err)
+    }
+    fmt.Printf("Subscription created: %s (status: %s)\n", sub.ID, sub.Status)
+    fmt.Printf("  Trial ends: %s\n", trialEnd.Format(time.RFC3339))
+    fmt.Printf("  Period: %s - %s\n",
+        sub.CurrentPeriodStart.Format(time.DateOnly),
+        sub.CurrentPeriodEnd.Format(time.DateOnly),
+    )
+```
+
+The engine automatically:
+- Assigns a `sub_*` TypeID if none is set.
+- Sets `CurrentPeriodStart` and `CurrentPeriodEnd` (defaults to one month).
+- Invalidates the entitlement cache for this tenant so subsequent checks reflect the new subscription.
+
+## 4. Set tenant context and record usage
+
+Ledger extracts `tenant_id` and `app_id` from Go context values. Every call to `Meter`, `Entitled`, and `Remaining` requires these values.
+
+```go
+    // ── Step 3: Set tenant context ────────────────────
+    tenantCtx := context.WithValue(ctx, "tenant_id", "acme-corp")
+    tenantCtx = context.WithValue(tenantCtx, "app_id", "myapp")
+
+    // ── Step 4: Record usage events ───────────────────
+    // Simulate API call usage throughout the day
+    for i := 0; i < 150; i++ {
+        if err := engine.Meter(tenantCtx, "api_calls", 1); err != nil {
+            log.Printf("meter error: %v", err)
         }
-        fmt.Printf("ingested %q: %d chunks\n", doc.title, result.ChunkCount)
     }
+    fmt.Println("Recorded 150 API call events")
+
+    // Record a batch of usage (e.g. from a nightly job)
+    if err := engine.Meter(tenantCtx, "api_calls", 500); err != nil {
+        log.Printf("meter error: %v", err)
+    }
+    fmt.Println("Recorded batch of 500 API calls")
+
+    // Wait for the meter flush worker to persist events
+    time.Sleep(3 * time.Second)
 ```
 
-## 4. Retrieve relevant context
+`Meter()` is non-blocking. Events are buffered in a channel and flushed to the store in batches by a background goroutine. If the buffer is full (default capacity: 10,000), the call returns `ledger.ErrMeterBufferFull`.
+
+## 5. Check entitlements
+
+Query whether the tenant can use a feature. The engine checks the subscription, plan, and current usage.
 
 ```go
-    userQuery := "How long do I have to return a product?"
+    // ── Step 5: Check entitlements ────────────────────
 
-    results, err := eng.Retrieve(ctx, userQuery,
-        engine.WithCollection(col.ID),
-        engine.WithTopK(5),
-        engine.WithMinScore(0.7),
+    // Check metered feature
+    result, err := engine.Entitled(tenantCtx, "api_calls")
+    if err != nil {
+        log.Fatal("entitlement check:", err)
+    }
+    fmt.Printf("\nAPI Calls entitlement:\n")
+    fmt.Printf("  Allowed:   %t\n", result.Allowed)
+    fmt.Printf("  Used:      %d\n", result.Used)
+    fmt.Printf("  Limit:     %d\n", result.Limit)
+    fmt.Printf("  Remaining: %d\n", result.Remaining)
+    if result.SoftLimit {
+        fmt.Printf("  (soft limit - overage allowed)\n")
+    }
+
+    // Check boolean feature
+    supportResult, err := engine.Entitled(tenantCtx, "priority_support")
+    if err != nil {
+        log.Fatal("entitlement check:", err)
+    }
+    fmt.Printf("\nPriority Support: %t\n", supportResult.Allowed)
+
+    // Use the Remaining shorthand
+    remaining, err := engine.Remaining(tenantCtx, "api_calls")
+    if err != nil {
+        log.Fatal("remaining:", err)
+    }
+    fmt.Printf("API calls remaining this month: %d\n", remaining)
+```
+
+The `Entitled` method returns an `entitlement.Result` struct:
+
+| Field       | Type   | Description |
+|-------------|--------|-------------|
+| `Allowed`   | `bool` | Whether the tenant can use the feature |
+| `Feature`   | `string` | The feature key that was checked |
+| `Used`      | `int64` | Current usage in this billing period |
+| `Limit`     | `int64` | Plan limit (`-1` means unlimited) |
+| `Remaining` | `int64` | Units remaining (`-1` means unlimited) |
+| `SoftLimit` | `bool` | Whether overage is allowed |
+| `Reason`    | `string` | Human-readable reason if denied |
+
+Results are cached for the duration of `entitlementCacheTTL` to keep latency under 1ms for hot paths.
+
+## 6. Generate an invoice
+
+Generate an invoice for the current subscription period. The engine calculates base fees and metered usage charges.
+
+```go
+    // ── Step 6: Generate an invoice ───────────────────
+    inv, err := engine.GenerateInvoice(tenantCtx, sub.ID)
+    if err != nil {
+        log.Fatal("generate invoice:", err)
+    }
+
+    fmt.Printf("\nInvoice: %s\n", inv.ID)
+    fmt.Printf("  Status:   %s\n", inv.Status)
+    fmt.Printf("  Currency: %s\n", inv.Currency)
+    fmt.Printf("  Period:   %s - %s\n",
+        inv.PeriodStart.Format(time.DateOnly),
+        inv.PeriodEnd.Format(time.DateOnly),
     )
-    if err != nil {
-        log.Fatal("retrieve:", err)
-    }
-
-    fmt.Printf("retrieved %d chunks\n", len(results))
-    for _, r := range results {
-        fmt.Printf("  [%.2f] %s\n", r.Score, r.Chunk.Content[:60])
+    fmt.Printf("  Subtotal: %s\n", inv.Subtotal.String())
+    fmt.Printf("  Tax:      %s\n", inv.TaxAmount.String())
+    fmt.Printf("  Discount: %s\n", inv.DiscountAmount.String())
+    fmt.Printf("  Total:    %s\n", inv.Total.String())
+    fmt.Printf("  Line items:\n")
+    for _, li := range inv.LineItems {
+        fmt.Printf("    - [%s] %s: qty=%d, amount=%s\n",
+            li.Type, li.Description, li.Quantity, li.Amount.String())
     }
 ```
 
-## 5. Assemble context and call LLM
+The generated invoice includes:
+
+- A **base subscription fee** line item from `Pricing.BaseAmount`.
+- **Overage line items** for metered features where current usage exceeds the included limit.
+- The invoice starts in `StatusDraft`. Use the store's `MarkInvoicePaid` method after collecting payment.
+
+## 7. Cancel the subscription
+
+Cancel at the end of the current billing period, or immediately.
 
 ```go
-    // Convert to retriever.Result for the assembler
-    retResults := make([]retriever.Result, len(results))
-    for i, r := range results {
-        retResults[i] = retriever.Result{Chunk: r.Chunk, Score: r.Score}
+    // ── Step 7: Cancel at end of period ───────────────
+    if err := engine.CancelSubscription(tenantCtx, sub.ID, false); err != nil {
+        log.Fatal("cancel:", err)
     }
+    fmt.Println("\nSubscription scheduled for cancellation at period end")
 
-    // Assemble with 3000-token budget
-    a := assembler.New(assembler.WithMaxTokens(3000))
-    assembled, err := a.Assemble(ctx, retResults)
-    if err != nil {
-        log.Fatal("assemble:", err)
-    }
+    // Retrieve updated subscription
+    updated, _ := engine.GetSubscription(tenantCtx, sub.ID)
+    fmt.Printf("  Cancel at: %s\n", updated.CancelAt.Format(time.RFC3339))
 
-    // Build the final prompt
-    prompt := fmt.Sprintf(`You are a helpful customer support assistant.
-
-Context:
-%s
-
-Question: %s
-
-Answer based only on the context above.`, assembled.Context, userQuery)
-
-    fmt.Println("--- PROMPT ---")
-    fmt.Println(prompt)
-    // Pass prompt to your LLM of choice
+    // To cancel immediately instead:
+    // engine.CancelSubscription(tenantCtx, sub.ID, true)
 }
 ```
 
-## 6. Cross-collection search
+Passing `false` to `CancelSubscription` schedules cancellation at `CurrentPeriodEnd`. Passing `true` cancels immediately and sets `CanceledAt` to now.
 
-For applications with multiple collections (e.g. per-product-line docs), use `HybridSearch`:
+## Complete flow diagram
 
-```go
-results, err := eng.HybridSearch(ctx, userQuery,
-    &engine.HybridSearchParams{
-        Collections: []id.CollectionID{col1ID, col2ID},
-        TopK:        10,
-        MinScore:    0.7,
-    },
-)
+```
+CreatePlan          Create the product catalog
+     |
+CreateSubscription  Bind a tenant to a plan
+     |
+Meter(...)          Record usage events (non-blocking, batched)
+     |
+Entitled(...)       Gate features by checking usage vs. limits
+     |
+GenerateInvoice     Produce a detailed invoice at period end
+     |
+MarkInvoicePaid     Record payment after collection
 ```
 
-Results are merged and re-ranked by score before being returned.
+## Next steps
 
-## Complete code
-
-The full runnable example is in `examples/rag-pipeline/main.go` in the Weave repository.
+- [Custom Store](/docs/guides/custom-store) -- implement a PostgreSQL, MySQL, or Redis storage backend.
+- [Custom Plugin](/docs/guides/custom-plugin) -- add Slack alerts, metrics, or webhook emission.
+- [Forge Extension](/docs/guides/forge-extension) -- mount Ledger into a Forge application with automatic tenant isolation.

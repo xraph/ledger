@@ -1,0 +1,140 @@
+---
+title: Billing System Overview
+description: How Ledger models usage-based billing as a composition of plans, subscriptions, metering, and invoicing.
+---
+
+Ledger takes a comprehensive approach to usage-based billing. Instead of treating billing as a single monolithic system, you compose independent subsystems that work together to meter usage, enforce entitlements, generate invoices, and process payments.
+
+## Philosophy
+
+Modern SaaS billing is not a single concern. It is the product of:
+
+- **Plans** that define what customers can access (features and pricing)
+- **Subscriptions** that track customer commitments and lifecycle
+- **Usage metering** that records consumption in real-time
+- **Entitlement checking** that enforces access control
+- **Invoice generation** that calculates charges from usage
+- **Payment processing** that collects revenue
+
+Ledger makes each of these a first-class, independently scalable subsystem.
+
+## The six subsystems
+
+| Subsystem | Package | Go type | Description |
+|-----------|---------|---------|-------------|
+| [Plans & Pricing](/docs/subsystems/plans) | `plan` | `plan.Plan` | Feature sets and pricing tiers |
+| [Subscriptions](/docs/subsystems/subscriptions) | `subscription` | `subscription.Subscription` | Customer commitments and lifecycle |
+| [Usage Metering](/docs/subsystems/metering) | `meter` | `meter.Event` | High-throughput event ingestion |
+| [Invoice Generation](/docs/subsystems/invoicing) | `invoice` | `invoice.Invoice` | Automated billing calculations |
+| [Payment Processing](/docs/subsystems/payments) | `payment` | `payment.Processor` | Stripe/Paddle integration |
+| [Entitlement Checking](/docs/subsystems/entitlements) | `entitlement` | `entitlement.Check` | Sub-millisecond access control |
+
+## Architecture hierarchy
+
+Plans, Subscriptions, and Invoices are **core entities** stored independently with their own CRUD APIs. They are connected through foreign key relationships.
+
+Usage Events are **append-only data** optimized for write throughput. Entitlement checks are **read-optimized** with aggressive caching.
+
+Payment Processors are **plugin implementations** that adapt third-party payment providers to Ledger's interface.
+
+```
+Customer
+  └── Subscriptions[]
+        ├── Plan (via PlanID)
+        ├── Usage Events[] (meter readings)
+        ├── Invoices[] (generated monthly)
+        └── Entitlements (cached from plan features)
+```
+
+## Type-safe identifiers
+
+All entities use TypeID identifiers with semantic prefixes:
+
+| Prefix | Entity | Example |
+|--------|--------|---------|
+| `cus_` | Customer | `cus_01h455vbjdx6ycf56rnatbxqkh` |
+| `pln_` | Plan | `pln_01h455vbjdx6ycf56rnatbxqki` |
+| `sub_` | Subscription | `sub_01h455vbjdx6ycf56rnatbxqkj` |
+| `inv_` | Invoice | `inv_01h455vbjdx6ycf56rnatbxqkk` |
+| `usg_` | Usage Event | `usg_01h455vbjdx6ycf56rnatbxqkl` |
+| `pmt_` | Payment | `pmt_01h455vbjdx6ycf56rnatbxqkm` |
+
+TypeIDs are UUIDv7-based, K-sortable, and globally unique.
+
+## Money handling
+
+Ledger uses **integer cents only** for all monetary values. This eliminates floating-point rounding errors:
+
+```go
+// Store prices in cents
+price := money.Money{
+    Amount:   2999, // $29.99
+    Currency: "USD",
+}
+
+// Never use floats
+price := 29.99 // WRONG
+```
+
+## Multi-tenancy
+
+Every entity is scoped to a tenant and application:
+
+```go
+ctx = ledger.WithTenant(ctx, "acme-corp")
+ctx = ledger.WithApp(ctx, "saas-platform")
+
+// All queries respect tenant isolation
+subscription, _ := store.GetSubscription(ctx, subID)
+```
+
+Tenant isolation is enforced at the database level with row-level security policies.
+
+## High-throughput design
+
+Ledger is optimized for:
+
+- **10,000+ usage events/second** via batched writes and partitioned tables
+- **Sub-millisecond entitlement checks** with Redis caching
+- **Concurrent invoice generation** with job queues
+- **Idempotent payment processing** with distributed locks
+
+## Declarative vs imperative
+
+Traditional billing (imperative):
+```
+Create subscription for customer X with plan Y.
+When API calls are made, increment counter.
+At month end, calculate total and charge card.
+```
+
+Ledger (declarative):
+```go
+plan := &plan.Plan{
+    Features: []plan.Feature{
+        {Name: "api-calls", Type: plan.FeatureMetered},
+    },
+    Pricing: plan.Pricing{
+        Model: plan.PricingGraduated,
+        Tiers: []plan.Tier{
+            {UpTo: 1000, UnitPrice: 0},
+            {UpTo: 10000, UnitPrice: 10}, // $0.01 per call
+            {UpTo: -1, UnitPrice: 5},     // $0.005 per call
+        },
+    },
+}
+
+subscription := &subscription.Subscription{
+    CustomerID: customerID,
+    PlanID:     plan.ID,
+    Status:     subscription.StatusActive,
+}
+
+meter.Record(ctx, &meter.Event{
+    SubscriptionID: subscription.ID,
+    Meter:          "api-calls",
+    Value:          1,
+})
+```
+
+The declarative approach separates concerns, scales independently, and makes the system testable.

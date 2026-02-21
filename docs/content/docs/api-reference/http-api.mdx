@@ -1,28 +1,147 @@
 ---
-title: HTTP API Reference
-description: Complete reference for all 12 Weave REST endpoints — collections, documents, retrieval, and search.
+title: HTTP API
+description: REST API reference for all Ledger billing endpoints.
 ---
 
-All endpoints are under `/v1` and return JSON. Authentication and tenant resolution depend on your Forge middleware configuration.
+All Ledger HTTP endpoints are served under the `/ledger` prefix and return JSON. Webhook endpoints are served under `/webhooks`. Authentication and tenant resolution depend on your middleware configuration (see [Multi-tenancy](/docs/concepts/multi-tenancy)).
 
-## Collections
+## Authentication
 
-### `POST /v1/collections`
+Ledger does not enforce a specific authentication scheme. Authentication is handled at the middleware layer before requests reach Ledger routes. Common patterns:
 
-Create a collection.
+- **Bearer token** -- Pass `Authorization: Bearer <token>` header. Your middleware validates the token and injects tenant/app context.
+- **API key** -- Pass `X-API-Key: <key>` header. Middleware resolves the key to a tenant.
+- **Forge scope** -- When running inside the Forgery ecosystem, Forge automatically extracts tenant and app identifiers from the authenticated scope.
 
-**Request**
+All requests must carry tenant context. Requests without valid tenant context receive `401 Unauthorized`.
+
+## Pagination
+
+List endpoints support cursor-based pagination with `limit` and `offset` query parameters.
+
+| Parameter | Type | Default | Description |
+|-----------|------|---------|-------------|
+| `limit` | int | 20 | Maximum number of results to return (max: 100) |
+| `offset` | int | 0 | Number of results to skip |
+
+**Response envelope for list endpoints:**
 
 ```json
 {
-  "name": "string (required)",
-  "description": "string",
-  "embedding_model": "string (default: text-embedding-3-small)",
-  "embedding_dims": 1536,
-  "chunk_strategy": "recursive | fixed | sliding | semantic | code",
-  "chunk_size": 512,
-  "chunk_overlap": 50,
-  "metadata": { "key": "value" }
+  "data": [],
+  "pagination": {
+    "total": 150,
+    "limit": 20,
+    "offset": 0,
+    "has_more": true
+  }
+}
+```
+
+## Error response format
+
+All error responses follow a consistent JSON structure:
+
+```json
+{
+  "error": {
+    "code": "subscription_not_found",
+    "message": "Subscription sub_01h2xcejqtf2nbrexx3vqjhp44 does not exist",
+    "type": "not_found",
+    "param": "subscription_id",
+    "details": {}
+  }
+}
+```
+
+| Field | Description |
+|-------|-------------|
+| `code` | Machine-readable error code (snake_case) |
+| `message` | Human-readable error message |
+| `type` | Error category: `validation`, `not_found`, `conflict`, `payment`, `provider`, `server` |
+| `param` | The parameter that caused the error (optional) |
+| `details` | Additional context (optional) |
+
+**HTTP status code mapping:**
+
+| HTTP status | Condition |
+|-------------|-----------|
+| `400 Bad Request` | Invalid input, missing required fields, validation errors |
+| `401 Unauthorized` | Missing or invalid authentication |
+| `402 Payment Required` | Payment failed, card declined |
+| `403 Forbidden` | Feature not enabled, quota exceeded |
+| `404 Not Found` | Resource does not exist for the current tenant |
+| `409 Conflict` | Duplicate resource (plan name, email, idempotency key) |
+| `500 Internal Server Error` | Store failure, provider API error |
+| `504 Gateway Timeout` | Payment provider timeout |
+
+See [Error Handling](/docs/concepts/errors) for the full error reference.
+
+---
+
+## Plans
+
+Plans define available features, usage limits, and pricing tiers. See [Plans](/docs/subsystems/plans) for details.
+
+### `POST /ledger/plans`
+
+Create a new billing plan.
+
+**Request body:**
+
+```json
+{
+  "name": "Pro",
+  "slug": "pro",
+  "description": "Professional plan with advanced features",
+  "currency": "usd",
+  "status": "active",
+  "trial_days": 14,
+  "features": [
+    {
+      "key": "api_calls",
+      "name": "API Calls",
+      "type": "metered",
+      "limit": 100000,
+      "period": "monthly",
+      "soft_limit": false
+    },
+    {
+      "key": "seats",
+      "name": "Team Seats",
+      "type": "seat",
+      "limit": 10,
+      "period": "none"
+    },
+    {
+      "key": "sso",
+      "name": "Single Sign-On",
+      "type": "boolean",
+      "limit": 1,
+      "period": "none"
+    }
+  ],
+  "pricing": {
+    "base_amount": { "amount": 4999, "currency": "usd" },
+    "billing_period": "monthly",
+    "tiers": [
+      {
+        "feature_key": "api_calls",
+        "type": "graduated",
+        "up_to": 100000,
+        "unit_amount": { "amount": 0, "currency": "usd" },
+        "flat_amount": { "amount": 0, "currency": "usd" }
+      },
+      {
+        "feature_key": "api_calls",
+        "type": "graduated",
+        "up_to": -1,
+        "unit_amount": { "amount": 1, "currency": "usd" },
+        "flat_amount": { "amount": 0, "currency": "usd" }
+      }
+    ]
+  },
+  "metadata": { "tier": "professional" }
 }
 ```
 
@@ -30,99 +149,137 @@ Create a collection.
 
 ```json
 {
-  "id": "col_01h455vbjdx6ycf56rnatbxqkh",
-  "tenant_id": "tenant-1",
+  "id": "plan_01hqx3qfz5ekth2h5y6z6r099x",
+  "name": "Pro",
+  "slug": "pro",
+  "description": "Professional plan with advanced features",
+  "currency": "usd",
+  "status": "active",
+  "trial_days": 14,
+  "features": [...],
+  "pricing": {...},
   "app_id": "myapp",
-  "name": "product-docs",
-  "embedding_model": "text-embedding-3-small",
-  "embedding_dims": 1536,
-  "chunk_strategy": "recursive",
-  "chunk_size": 512,
-  "chunk_overlap": 50,
-  "document_count": 0,
-  "chunk_count": 0,
-  "created_at": "2024-01-15T10:30:00Z",
-  "updated_at": "2024-01-15T10:30:00Z"
+  "metadata": { "tier": "professional" },
+  "created_at": "2025-01-15T10:30:00Z",
+  "updated_at": "2025-01-15T10:30:00Z"
 }
 ```
 
+**Errors:**
+
+| Status | Code | Condition |
+|--------|------|-----------|
+| `400` | `invalid_input` | Missing required fields (name, currency) |
+| `400` | `duplicate_feature` | Duplicate feature key in features array |
+| `400` | `invalid_pricing` | Invalid pricing configuration |
+| `409` | `already_exists` | Plan with this slug already exists |
+
 ---
 
-### `GET /v1/collections`
+### `GET /ledger/plans`
 
-List collections for the current tenant.
+List plans for the current app.
 
-**Query parameters**
+**Query parameters:**
 
-| Param | Type | Description |
-|-------|------|-------------|
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| `status` | string | Filter by status: `active`, `archived`, `draft` |
 | `limit` | int | Max results (default: 20) |
 | `offset` | int | Pagination offset |
-
-**Response** `200 OK` — array of Collection objects.
-
----
-
-### `GET /v1/collections/:collectionId`
-
-Get a collection by ID.
-
-**Response** `200 OK` — Collection object.
-
-**Error** `404 Not Found` if collection does not exist for the current tenant.
-
----
-
-### `DELETE /v1/collections/:collectionId`
-
-Delete a collection and all associated documents, chunks, and vectors.
-
-**Response** `204 No Content`
-
----
-
-### `GET /v1/collections/:collectionId/stats`
-
-Get aggregate statistics for a collection.
 
 **Response** `200 OK`
 
 ```json
 {
-  "collection_id": "col_01h455...",
-  "collection_name": "product-docs",
-  "document_count": 42,
-  "chunk_count": 1204,
-  "embedding_model": "text-embedding-3-small",
-  "chunk_strategy": "recursive"
+  "data": [
+    {
+      "id": "plan_01hqx3qfz5ekth2h5y6z6r099x",
+      "name": "Pro",
+      "slug": "pro",
+      "status": "active",
+      "currency": "usd",
+      "features": [...],
+      "pricing": {...},
+      "created_at": "2025-01-15T10:30:00Z",
+      "updated_at": "2025-01-15T10:30:00Z"
+    }
+  ],
+  "pagination": { "total": 3, "limit": 20, "offset": 0, "has_more": false }
 }
 ```
 
 ---
 
-### `POST /v1/collections/:collectionId/reindex`
+### `GET /ledger/plans/{name}`
 
-Re-embed and re-store all chunks in a collection. Use after changing the embedding model.
+Get a plan by slug name.
 
-**Response** `204 No Content`
+**Response** `200 OK` -- Plan object.
+
+**Errors:** `404 Not Found` if plan does not exist.
 
 ---
 
-## Documents
+### `PUT /ledger/plans/{name}`
 
-### `POST /v1/collections/:collectionId/documents`
+Update a plan by slug name. Only provided fields are updated.
 
-Ingest a document — runs the full load → chunk → embed → store pipeline synchronously.
-
-**Request**
+**Request body:**
 
 ```json
 {
-  "title": "string",
-  "content": "string (required)",
-  "source": "string",
-  "source_type": "string (MIME type)",
-  "metadata": { "key": "value" }
+  "description": "Updated description",
+  "trial_days": 30,
+  "features": [...],
+  "pricing": {...},
+  "metadata": { "tier": "professional", "version": "2" }
+}
+```
+
+**Response** `200 OK` -- Updated Plan object.
+
+**Errors:**
+
+| Status | Code | Condition |
+|--------|------|-----------|
+| `400` | `invalid_input` | Invalid field values |
+| `400` | `plan_archived` | Cannot update an archived plan |
+| `404` | `plan_not_found` | Plan does not exist |
+
+---
+
+### `DELETE /ledger/plans/{id}`
+
+Delete a plan by ID. Plans with active subscriptions cannot be deleted; archive them instead.
+
+**Response** `204 No Content`
+
+**Errors:**
+
+| Status | Code | Condition |
+|--------|------|-----------|
+| `400` | `plan_in_use` | Plan has active subscriptions |
+| `404` | `plan_not_found` | Plan does not exist |
+
+---
+
+## Subscriptions
+
+Subscriptions connect tenants to plans and track billing periods. See [Subscriptions](/docs/subsystems/subscriptions) for details.
+
+### `POST /ledger/subscriptions`
+
+Create a new subscription.
+
+**Request body:**
+
+```json
+{
+  "tenant_id": "acme-corp",
+  "plan_id": "plan_01hqx3qfz5ekth2h5y6z6r099x",
+  "status": "active",
+  "metadata": { "source": "self-serve" }
 }
 ```
 
@@ -130,164 +287,1209 @@ Ingest a document — runs the full load → chunk → embed → store pipeline 
 
 ```json
 {
-  "document_id": "doc_01h455vbjdx6ycf56rnatbxqki",
-  "chunk_count": 12,
-  "state": "ready"
+  "id": "sub_01hqx3qg8w5kjyhwkrp5j4wsy3",
+  "tenant_id": "acme-corp",
+  "plan_id": "plan_01hqx3qfz5ekth2h5y6z6r099x",
+  "status": "active",
+  "current_period_start": "2025-01-15T10:30:00Z",
+  "current_period_end": "2025-02-15T10:30:00Z",
+  "app_id": "myapp",
+  "created_at": "2025-01-15T10:30:00Z",
+  "updated_at": "2025-01-15T10:30:00Z"
 }
 ```
 
-**Error** `400 Bad Request` if content is empty.
+**Errors:**
+
+| Status | Code | Condition |
+|--------|------|-----------|
+| `400` | `invalid_input` | Missing tenant_id or plan_id |
+| `404` | `plan_not_found` | Referenced plan does not exist |
+| `409` | `subscription_exists` | Tenant already has an active subscription |
 
 ---
 
-### `POST /v1/collections/:collectionId/documents/batch`
+### `GET /ledger/subscriptions`
 
-Ingest multiple documents.
+List subscriptions. Filtered by current tenant context.
 
-**Request**
+**Query parameters:**
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| `tenant_id` | string | Filter by tenant ID |
+| `status` | string | Filter by status: `active`, `trialing`, `past_due`, `canceled`, `expired`, `paused` |
+| `limit` | int | Max results (default: 20) |
+| `offset` | int | Pagination offset |
+
+**Response** `200 OK` -- Paginated array of Subscription objects.
+
+---
+
+### `GET /ledger/subscriptions/{id}`
+
+Get a subscription by ID.
+
+**Response** `200 OK` -- Subscription object.
+
+**Errors:** `404 Not Found` if subscription does not exist.
+
+---
+
+### `PUT /ledger/subscriptions/{id}`
+
+Update a subscription. Use this for metadata changes; use dedicated action endpoints for status changes.
+
+**Request body:**
 
 ```json
 {
-  "documents": [
-    { "title": "Doc A", "content": "..." },
-    { "title": "Doc B", "content": "..." }
+  "metadata": { "support_tier": "premium" }
+}
+```
+
+**Response** `200 OK` -- Updated Subscription object.
+
+---
+
+### `POST /ledger/subscriptions/{id}/cancel`
+
+Cancel a subscription. By default, cancels at the end of the current billing period. Set `immediately` to cancel right away.
+
+**Request body:**
+
+```json
+{
+  "immediately": false
+}
+```
+
+**Response** `200 OK`
+
+```json
+{
+  "id": "sub_01hqx3qg8w5kjyhwkrp5j4wsy3",
+  "status": "active",
+  "cancel_at": "2025-02-15T10:30:00Z"
+}
+```
+
+When `immediately` is `true`, the status changes to `canceled` and `canceled_at` is set to the current time. The entitlement cache is automatically invalidated.
+
+**Errors:**
+
+| Status | Code | Condition |
+|--------|------|-----------|
+| `400` | `subscription_canceled` | Already canceled |
+| `404` | `subscription_not_found` | Subscription does not exist |
+
+---
+
+### `POST /ledger/subscriptions/{id}/pause`
+
+Pause a subscription. Paused subscriptions retain their period but do not accrue usage or generate invoices.
+
+**Request body:**
+
+```json
+{
+  "resume_at": "2025-03-01T00:00:00Z"
+}
+```
+
+**Response** `200 OK` -- Subscription object with `status: "paused"`.
+
+**Errors:**
+
+| Status | Code | Condition |
+|--------|------|-----------|
+| `400` | `invalid_state` | Subscription is not active |
+| `404` | `subscription_not_found` | Subscription does not exist |
+
+---
+
+### `POST /ledger/subscriptions/{id}/resume`
+
+Resume a paused subscription.
+
+**Response** `200 OK` -- Subscription object with `status: "active"`.
+
+**Errors:**
+
+| Status | Code | Condition |
+|--------|------|-----------|
+| `400` | `invalid_state` | Subscription is not paused |
+| `404` | `subscription_not_found` | Subscription does not exist |
+
+---
+
+### `POST /ledger/subscriptions/{id}/change-plan`
+
+Change the plan for an active subscription. Handles proration and entitlement cache invalidation.
+
+**Request body:**
+
+```json
+{
+  "plan_id": "plan_01hqx3qfz5ekth2h5y6z6r099y",
+  "prorate": true
+}
+```
+
+**Response** `200 OK` -- Updated Subscription object with the new plan.
+
+**Errors:**
+
+| Status | Code | Condition |
+|--------|------|-----------|
+| `400` | `invalid_upgrade` | Invalid plan transition |
+| `400` | `invalid_downgrade` | Invalid plan downgrade |
+| `404` | `subscription_not_found` | Subscription does not exist |
+| `404` | `plan_not_found` | Target plan does not exist |
+
+---
+
+## Metering
+
+Track and query usage events for metered features. See [Metering](/docs/subsystems/metering) for details.
+
+### `POST /ledger/meter/events`
+
+Ingest a single usage event. The event is buffered and flushed to the store asynchronously.
+
+**Request body:**
+
+```json
+{
+  "feature_key": "api_calls",
+  "quantity": 1,
+  "idempotency_key": "req_abc123",
+  "metadata": { "endpoint": "/v1/users" }
+}
+```
+
+**Response** `202 Accepted`
+
+```json
+{
+  "id": "uevt_01hqx3qh4r5kjyhwkrp5j4wsyb",
+  "status": "buffered"
+}
+```
+
+The `202` status indicates the event has been accepted into the buffer and will be persisted asynchronously. Tenant and app context are extracted from the request context.
+
+**Errors:**
+
+| Status | Code | Condition |
+|--------|------|-----------|
+| `400` | `invalid_input` | Missing feature_key or invalid quantity |
+| `409` | `duplicate_event` | Duplicate idempotency key |
+| `429` | `meter_buffer_full` | Buffer is full, try again later |
+
+---
+
+### `POST /ledger/meter/events/batch`
+
+Ingest multiple usage events in a single request.
+
+**Request body:**
+
+```json
+{
+  "events": [
+    { "feature_key": "api_calls", "quantity": 5, "idempotency_key": "batch_001" },
+    { "feature_key": "storage_gb", "quantity": 2, "idempotency_key": "batch_002" }
   ]
 }
 ```
 
-**Response** `201 Created` — array of IngestResult objects.
-
----
-
-### `GET /v1/collections/:collectionId/documents`
-
-List documents in a collection.
-
-**Query parameters**
-
-| Param | Type | Description |
-|-------|------|-------------|
-| `state` | string | Filter by state: `pending`, `processing`, `ready`, `failed` |
-| `limit` | int | Max results (default: 20) |
-| `offset` | int | Pagination offset |
-
-**Response** `200 OK` — array of Document objects.
-
----
-
-### `GET /v1/documents/:documentId`
-
-Get a document by ID.
-
-**Response** `200 OK`
+**Response** `202 Accepted`
 
 ```json
 {
-  "id": "doc_01h455...",
-  "collection_id": "col_01h455...",
-  "tenant_id": "tenant-1",
-  "title": "Return Policy",
-  "source": "policy.md",
-  "source_type": "text/markdown",
-  "content_hash": "sha256:abc...",
-  "content_length": 1024,
-  "chunk_count": 12,
-  "state": "ready",
-  "error": "",
-  "metadata": {},
-  "created_at": "2024-01-15T10:30:00Z",
-  "updated_at": "2024-01-15T10:30:05Z"
+  "accepted": 2,
+  "rejected": 0,
+  "results": [
+    { "id": "uevt_01hqx3qh4r5kjyhwkrp5j4wsyb", "status": "buffered" },
+    { "id": "uevt_01hqx3qh4r5kjyhwkrp5j4wsyc", "status": "buffered" }
+  ]
 }
 ```
 
 ---
 
-### `DELETE /v1/documents/:documentId`
+### `GET /ledger/meter/usage/{subscriptionId}/{meter}`
 
-Delete a document and all its chunks from both metadata and vector stores.
+Get aggregated usage for a specific meter within the current billing period.
+
+**Response** `200 OK`
+
+```json
+{
+  "feature_key": "api_calls",
+  "subscription_id": "sub_01hqx3qg8w5kjyhwkrp5j4wsy3",
+  "current_usage": 45230,
+  "limit": 100000,
+  "remaining": 54770,
+  "period_start": "2025-01-15T00:00:00Z",
+  "period_end": "2025-02-15T00:00:00Z"
+}
+```
+
+---
+
+### `GET /ledger/meter/usage/{subscriptionId}/{meter}/history`
+
+Get historical usage for a meter across billing periods.
+
+**Query parameters:**
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| `start` | datetime | Start of date range (ISO 8601) |
+| `end` | datetime | End of date range (ISO 8601) |
+| `granularity` | string | `daily`, `weekly`, `monthly` |
+
+**Response** `200 OK`
+
+```json
+{
+  "feature_key": "api_calls",
+  "data": [
+    { "period": "2025-01-01", "usage": 32100 },
+    { "period": "2025-01-02", "usage": 28500 },
+    { "period": "2025-01-03", "usage": 41200 }
+  ]
+}
+```
+
+---
+
+### `GET /ledger/meter/events`
+
+Query raw usage events.
+
+**Query parameters:**
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| `feature_key` | string | Filter by feature key |
+| `start` | datetime | Start of date range (ISO 8601) |
+| `end` | datetime | End of date range (ISO 8601) |
+| `limit` | int | Max results (default: 20) |
+| `offset` | int | Pagination offset |
+
+**Response** `200 OK` -- Paginated array of UsageEvent objects.
+
+---
+
+## Entitlements
+
+Check feature access and quota for the current tenant. See [Entitlements](/docs/subsystems/entitlements) for details.
+
+### `POST /ledger/entitlements/check`
+
+Check if the current tenant is entitled to use a feature. Returns sub-millisecond with cache hit.
+
+**Request body:**
+
+```json
+{
+  "feature_key": "api_calls"
+}
+```
+
+**Response** `200 OK`
+
+```json
+{
+  "allowed": true,
+  "feature": "api_calls",
+  "used": 45230,
+  "limit": 100000,
+  "remaining": 54770,
+  "soft_limit": false
+}
+```
+
+When access is denied:
+
+```json
+{
+  "allowed": false,
+  "feature": "api_calls",
+  "used": 100500,
+  "limit": 100000,
+  "remaining": 0,
+  "soft_limit": false,
+  "reason": "quota exceeded"
+}
+```
+
+**Errors:**
+
+| Status | Code | Condition |
+|--------|------|-----------|
+| `400` | `invalid_input` | Missing feature_key |
+| `403` | `no_active_subscription` | No active subscription for tenant |
+
+---
+
+### `POST /ledger/entitlements/check-batch`
+
+Check multiple features in a single request.
+
+**Request body:**
+
+```json
+{
+  "feature_keys": ["api_calls", "seats", "sso"]
+}
+```
+
+**Response** `200 OK`
+
+```json
+{
+  "results": {
+    "api_calls": { "allowed": true, "used": 45230, "limit": 100000, "remaining": 54770 },
+    "seats": { "allowed": true, "used": 3, "limit": 10, "remaining": 7 },
+    "sso": { "allowed": true, "used": 0, "limit": 1, "remaining": 1 }
+  }
+}
+```
+
+---
+
+### `GET /ledger/entitlements/{customerId}`
+
+Get all entitlements for a customer, including usage across all features in their current plan.
+
+**Response** `200 OK`
+
+```json
+{
+  "customer_id": "cst_01hqx3qgn9v3rywqk8zxr7t9kj",
+  "plan": "Pro",
+  "plan_id": "plan_01hqx3qfz5ekth2h5y6z6r099x",
+  "entitlements": [
+    { "feature": "api_calls", "allowed": true, "used": 45230, "limit": 100000, "remaining": 54770, "type": "metered" },
+    { "feature": "seats", "allowed": true, "used": 3, "limit": 10, "remaining": 7, "type": "seat" },
+    { "feature": "sso", "allowed": true, "used": 0, "limit": 1, "remaining": 1, "type": "boolean" }
+  ]
+}
+```
+
+---
+
+### `POST /ledger/entitlements/{customerId}/invalidate`
+
+Invalidate the entitlement cache for a customer. Use after manual plan changes or data corrections.
 
 **Response** `204 No Content`
 
 ---
 
-## Retrieval
+## Invoices
 
-### `POST /v1/collections/:collectionId/retrieve`
+Generate, manage, and finalize invoices. See [Invoicing](/docs/subsystems/invoicing) for details.
 
-Semantic retrieval within a collection.
+### `POST /ledger/invoices`
 
-**Request**
+Generate an invoice for a subscription. Aggregates usage charges, applies base fees, calculates taxes, and creates line items.
+
+**Request body:**
 
 ```json
 {
-  "query": "string (required)",
-  "top_k": 5,
-  "min_score": 0.75,
-  "strategy": "similarity | mmr | hybrid"
+  "subscription_id": "sub_01hqx3qg8w5kjyhwkrp5j4wsy3"
+}
+```
+
+**Response** `201 Created`
+
+```json
+{
+  "id": "inv_01hqx3qgf2c8mhwy9s6zwmf3yh",
+  "tenant_id": "acme-corp",
+  "subscription_id": "sub_01hqx3qg8w5kjyhwkrp5j4wsy3",
+  "status": "draft",
+  "currency": "usd",
+  "subtotal": { "amount": 4999, "currency": "usd", "display": "$49.99" },
+  "tax_amount": { "amount": 0, "currency": "usd", "display": "$0.00" },
+  "discount_amount": { "amount": 0, "currency": "usd", "display": "$0.00" },
+  "total": { "amount": 4999, "currency": "usd", "display": "$49.99" },
+  "line_items": [
+    {
+      "id": "li_01hqx3qgf2c8mhwy9s6zwmf3yi",
+      "description": "Base subscription fee",
+      "quantity": 1,
+      "unit_amount": { "amount": 4999, "currency": "usd" },
+      "amount": { "amount": 4999, "currency": "usd" },
+      "type": "base"
+    }
+  ],
+  "period_start": "2025-01-15T00:00:00Z",
+  "period_end": "2025-02-15T00:00:00Z",
+  "app_id": "myapp",
+  "created_at": "2025-02-15T10:00:00Z",
+  "updated_at": "2025-02-15T10:00:00Z"
+}
+```
+
+**Errors:**
+
+| Status | Code | Condition |
+|--------|------|-----------|
+| `400` | `invalid_input` | Missing subscription_id |
+| `404` | `subscription_not_found` | Subscription does not exist |
+| `404` | `plan_not_found` | Associated plan does not exist |
+
+---
+
+### `GET /ledger/invoices`
+
+List invoices for the current tenant.
+
+**Query parameters:**
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| `status` | string | Filter by status: `draft`, `pending`, `paid`, `past_due`, `voided` |
+| `start` | datetime | Filter by period start (ISO 8601) |
+| `end` | datetime | Filter by period end (ISO 8601) |
+| `limit` | int | Max results (default: 20) |
+| `offset` | int | Pagination offset |
+
+**Response** `200 OK` -- Paginated array of Invoice objects.
+
+---
+
+### `GET /ledger/invoices/{id}`
+
+Get an invoice by ID.
+
+**Response** `200 OK` -- Invoice object with full line items.
+
+**Errors:** `404 Not Found` if invoice does not exist.
+
+---
+
+### `GET /ledger/invoices/{number}`
+
+Get an invoice by invoice number. Invoice numbers are human-readable identifiers (e.g., `INV-2025-0042`).
+
+**Response** `200 OK` -- Invoice object.
+
+**Errors:** `404 Not Found` if invoice does not exist.
+
+---
+
+### `POST /ledger/invoices/{id}/finalize`
+
+Finalize a draft invoice. Finalized invoices cannot be modified and are ready for payment collection.
+
+**Response** `200 OK` -- Invoice object with `status: "pending"`.
+
+**Errors:**
+
+| Status | Code | Condition |
+|--------|------|-----------|
+| `400` | `invoice_finalized` | Invoice is already finalized |
+| `400` | `invoice_incomplete` | Invoice has incomplete data |
+| `404` | `invoice_not_found` | Invoice does not exist |
+
+---
+
+### `POST /ledger/invoices/{id}/void`
+
+Void an invoice. Voided invoices cannot be paid or modified.
+
+**Request body:**
+
+```json
+{
+  "reason": "Customer requested cancellation"
+}
+```
+
+**Response** `200 OK` -- Invoice object with `status: "voided"`.
+
+**Errors:**
+
+| Status | Code | Condition |
+|--------|------|-----------|
+| `400` | `invoice_paid` | Cannot void a paid invoice |
+| `400` | `invoice_voided` | Invoice is already voided |
+| `404` | `invoice_not_found` | Invoice does not exist |
+
+---
+
+### `POST /ledger/invoices/{id}/pay`
+
+Record a manual payment for an invoice.
+
+**Request body:**
+
+```json
+{
+  "payment_ref": "ch_3P2x4N2eZvKYlo2C0r4JqHBX",
+  "paid_at": "2025-02-15T12:00:00Z"
+}
+```
+
+**Response** `200 OK` -- Invoice object with `status: "paid"`.
+
+**Errors:**
+
+| Status | Code | Condition |
+|--------|------|-----------|
+| `400` | `invoice_paid` | Invoice is already paid |
+| `400` | `invoice_voided` | Cannot pay a voided invoice |
+| `404` | `invoice_not_found` | Invoice does not exist |
+
+---
+
+### `GET /ledger/invoices/{id}/pdf`
+
+Download a PDF rendering of an invoice.
+
+**Response** `200 OK` with `Content-Type: application/pdf`.
+
+Requires an `InvoiceFormatter` plugin registered with format `"pdf"`.
+
+**Errors:**
+
+| Status | Code | Condition |
+|--------|------|-----------|
+| `404` | `invoice_not_found` | Invoice does not exist |
+| `501` | `not_implemented` | No PDF formatter plugin registered |
+
+---
+
+## Payments
+
+Process and manage payments through Stripe, Paddle, or other providers. See [Payments](/docs/subsystems/payments) for details.
+
+### `POST /ledger/payments`
+
+Create a payment for an invoice. Routes to the configured payment provider.
+
+**Request body:**
+
+```json
+{
+  "invoice_id": "inv_01hqx3qgf2c8mhwy9s6zwmf3yh",
+  "customer_id": "cst_01hqx3qgn9v3rywqk8zxr7t9kj",
+  "amount": { "amount": 4999, "currency": "usd" },
+  "payment_method_id": "pm_1234567890",
+  "idempotency_key": "inv:inv_01hqx3qgf2c8mhwy9s6zwmf3yh"
+}
+```
+
+**Response** `201 Created`
+
+```json
+{
+  "id": "pay_01hqx3qgw4ekqhxyz6z6r099xa",
+  "invoice_id": "inv_01hqx3qgf2c8mhwy9s6zwmf3yh",
+  "customer_id": "cst_01hqx3qgn9v3rywqk8zxr7t9kj",
+  "amount": { "amount": 4999, "currency": "usd", "display": "$49.99" },
+  "status": "pending",
+  "processor_name": "stripe",
+  "processor_id": "pi_3P2x4N2eZvKYlo2C0r4JqHBX",
+  "created_at": "2025-02-15T12:00:00Z"
+}
+```
+
+**Errors:**
+
+| Status | Code | Condition |
+|--------|------|-----------|
+| `400` | `invalid_input` | Missing required fields |
+| `400` | `invoice_paid` | Invoice is already paid |
+| `402` | `payment_failed` | Payment processing failed |
+| `404` | `invoice_not_found` | Invoice does not exist |
+| `500` | `provider_not_configured` | No payment provider configured |
+
+---
+
+### `GET /ledger/payments`
+
+List payments for the current tenant.
+
+**Query parameters:**
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| `status` | string | Filter by status: `pending`, `succeeded`, `failed`, `refunded`, `canceled` |
+| `invoice_id` | string | Filter by invoice ID |
+| `customer_id` | string | Filter by customer ID |
+| `limit` | int | Max results (default: 20) |
+| `offset` | int | Pagination offset |
+
+**Response** `200 OK` -- Paginated array of Payment objects.
+
+---
+
+### `GET /ledger/payments/{id}`
+
+Get a payment by ID.
+
+**Response** `200 OK` -- Payment object.
+
+**Errors:** `404 Not Found` if payment does not exist.
+
+---
+
+### `POST /ledger/payments/{id}/refund`
+
+Issue a full or partial refund for a payment.
+
+**Request body:**
+
+```json
+{
+  "amount": { "amount": 2500, "currency": "usd" },
+  "reason": "Customer requested partial refund"
+}
+```
+
+Omit `amount` for a full refund.
+
+**Response** `200 OK`
+
+```json
+{
+  "id": "pay_01hqx3qgw4ekqhxyz6z6r099xa",
+  "status": "refunded",
+  "refunded_amount": { "amount": 2500, "currency": "usd", "display": "$25.00" },
+  "refund_reason": "Customer requested partial refund"
+}
+```
+
+**Errors:**
+
+| Status | Code | Condition |
+|--------|------|-----------|
+| `400` | `invalid_state` | Payment is not in succeeded state |
+| `400` | `invalid_amount` | Refund amount exceeds payment amount |
+| `404` | `payment_not_found` | Payment does not exist |
+
+---
+
+### `POST /ledger/payment-methods`
+
+Add a payment method for a customer. The token is obtained from the payment provider's client-side SDK (e.g., Stripe.js).
+
+**Request body:**
+
+```json
+{
+  "customer_id": "cst_01hqx3qgn9v3rywqk8zxr7t9kj",
+  "token": "tok_visa_4242",
+  "set_default": true
+}
+```
+
+**Response** `201 Created`
+
+```json
+{
+  "id": "pm_01hqx3qgw4ekqhxyz6z6r099xb",
+  "customer_id": "cst_01hqx3qgn9v3rywqk8zxr7t9kj",
+  "type": "card",
+  "last4": "4242",
+  "brand": "visa",
+  "expiry_month": 12,
+  "expiry_year": 2027,
+  "is_default": true
+}
+```
+
+---
+
+### `GET /ledger/payment-methods`
+
+List payment methods for the current customer.
+
+**Query parameters:**
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| `customer_id` | string | Filter by customer ID (required) |
+
+**Response** `200 OK` -- Array of PaymentMethod objects.
+
+---
+
+### `DELETE /ledger/payment-methods/{id}`
+
+Remove a payment method.
+
+**Response** `204 No Content`
+
+**Errors:**
+
+| Status | Code | Condition |
+|--------|------|-----------|
+| `400` | `invalid_state` | Cannot delete the only payment method if there are pending invoices |
+| `404` | `not_found` | Payment method does not exist |
+
+---
+
+### `POST /webhooks/stripe`
+
+Handle Stripe webhook events. Verifies the webhook signature and updates payment/invoice status accordingly.
+
+**Headers:**
+
+| Header | Description |
+|--------|-------------|
+| `Stripe-Signature` | Stripe webhook signature for verification |
+
+**Request body:** Raw Stripe event JSON payload.
+
+**Handled events:**
+
+| Event type | Action |
+|------------|--------|
+| `payment_intent.succeeded` | Mark payment as succeeded, invoice as paid |
+| `payment_intent.payment_failed` | Mark payment as failed |
+| `charge.refunded` | Record refund |
+
+**Response** `200 OK` on success, `400 Bad Request` on invalid payload, `401 Unauthorized` on invalid signature.
+
+---
+
+### `POST /webhooks/paddle`
+
+Handle Paddle webhook events. Verifies the webhook signature and processes payment notifications.
+
+**Headers:**
+
+| Header | Description |
+|--------|-------------|
+| `Paddle-Signature` | Paddle webhook signature for verification |
+
+**Request body:** Raw Paddle event JSON payload.
+
+**Response** `200 OK` on success, `400 Bad Request` on invalid payload.
+
+---
+
+## Customers
+
+Manage customer profiles, billing addresses, and payment methods. See [Customer Management](/docs/subsystems/customers) for details.
+
+### `POST /ledger/customers`
+
+Create a new customer.
+
+**Request body:**
+
+```json
+{
+  "name": "Alice Johnson",
+  "email": "alice@example.com",
+  "currency": "usd",
+  "billing_address": {
+    "line1": "123 Main St",
+    "line2": "Suite 100",
+    "city": "San Francisco",
+    "state": "CA",
+    "postal_code": "94105",
+    "country": "US"
+  },
+  "tax_ids": [
+    { "type": "us_ein", "value": "12-3456789" }
+  ],
+  "metadata": { "source": "signup" }
+}
+```
+
+**Response** `201 Created`
+
+```json
+{
+  "id": "cst_01hqx3qgn9v3rywqk8zxr7t9kj",
+  "tenant_id": "acme-corp",
+  "app_id": "myapp",
+  "name": "Alice Johnson",
+  "email": "alice@example.com",
+  "currency": "usd",
+  "balance": { "amount": 0, "currency": "usd", "display": "$0.00" },
+  "billing_address": {...},
+  "tax_ids": [...],
+  "created_at": "2025-01-15T10:30:00Z",
+  "updated_at": "2025-01-15T10:30:00Z"
+}
+```
+
+**Errors:**
+
+| Status | Code | Condition |
+|--------|------|-----------|
+| `400` | `invalid_input` | Missing required fields (name, email) |
+| `400` | `invalid_email` | Invalid email format |
+| `409` | `duplicate_customer_email` | Customer with this email already exists |
+
+---
+
+### `GET /ledger/customers`
+
+List customers for the current app.
+
+**Query parameters:**
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| `limit` | int | Max results (default: 20) |
+| `offset` | int | Pagination offset |
+
+**Response** `200 OK` -- Paginated array of Customer objects.
+
+---
+
+### `GET /ledger/customers/{id}`
+
+Get a customer by ID.
+
+**Response** `200 OK` -- Customer object.
+
+**Errors:** `404 Not Found` if customer does not exist.
+
+---
+
+### `GET /ledger/customers/email/{email}`
+
+Look up a customer by email address.
+
+**Response** `200 OK` -- Customer object.
+
+**Errors:** `404 Not Found` if no customer with that email exists.
+
+---
+
+### `PUT /ledger/customers/{id}`
+
+Update a customer. Only provided fields are updated.
+
+**Request body:**
+
+```json
+{
+  "name": "Alice Smith",
+  "billing_address": {
+    "line1": "456 Oak Ave",
+    "city": "New York",
+    "state": "NY",
+    "postal_code": "10001",
+    "country": "US"
+  }
+}
+```
+
+**Response** `200 OK` -- Updated Customer object.
+
+**Errors:** `404 Not Found` if customer does not exist.
+
+---
+
+### `DELETE /ledger/customers/{id}`
+
+Delete a customer. Customers with active subscriptions cannot be deleted.
+
+**Response** `204 No Content`
+
+**Errors:**
+
+| Status | Code | Condition |
+|--------|------|-----------|
+| `400` | `has_active_subscriptions` | Customer has active subscriptions |
+| `404` | `customer_not_found` | Customer does not exist |
+
+---
+
+### `POST /ledger/customers/{id}/credit`
+
+Add account credit to a customer. Credits are applied automatically to future invoices.
+
+**Request body:**
+
+```json
+{
+  "amount": { "amount": 10000, "currency": "usd" },
+  "reason": "Loyalty credit"
 }
 ```
 
 **Response** `200 OK`
 
 ```json
-[
-  {
-    "chunk": {
-      "id": "chunk_01h455...",
-      "document_id": "doc_01h455...",
-      "collection_id": "col_01h455...",
-      "tenant_id": "tenant-1",
-      "content": "Our return policy allows...",
-      "index": 0,
-      "start_offset": 0,
-      "end_offset": 312,
-      "token_count": 48,
-      "metadata": {}
-    },
-    "score": 0.94
+{
+  "customer_id": "cst_01hqx3qgn9v3rywqk8zxr7t9kj",
+  "balance": { "amount": -10000, "currency": "usd", "display": "-$100.00" },
+  "credit_applied": { "amount": 10000, "currency": "usd", "display": "$100.00" }
+}
+```
+
+Negative balance indicates available credit.
+
+---
+
+### `GET /ledger/customers/{id}/subscriptions`
+
+List all subscriptions for a customer.
+
+**Response** `200 OK` -- Array of Subscription objects.
+
+---
+
+### `GET /ledger/customers/{id}/invoices`
+
+List all invoices for a customer.
+
+**Query parameters:**
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| `status` | string | Filter by invoice status |
+| `limit` | int | Max results (default: 20) |
+| `offset` | int | Pagination offset |
+
+**Response** `200 OK` -- Paginated array of Invoice objects.
+
+---
+
+### `GET /ledger/customers/{id}/usage`
+
+Get current period usage for all metered features.
+
+**Response** `200 OK`
+
+```json
+{
+  "customer_id": "cst_01hqx3qgn9v3rywqk8zxr7t9kj",
+  "period_start": "2025-01-15T00:00:00Z",
+  "period_end": "2025-02-15T00:00:00Z",
+  "usage": {
+    "api_calls": { "used": 45230, "limit": 100000, "remaining": 54770 },
+    "storage_gb": { "used": 12, "limit": 50, "remaining": 38 }
   }
-]
-```
-
-Results are sorted by `score` descending.
-
----
-
-### `POST /v1/search`
-
-Hybrid search across one or more collections.
-
-**Request**
-
-```json
-{
-  "query": "string (required)",
-  "collections": ["col_01h455...", "col_02x..."],
-  "top_k": 10,
-  "min_score": 0.7,
-  "strategy": "similarity | mmr | hybrid"
 }
 ```
 
-When `collections` is omitted, searches all collections visible to the current tenant.
-
-**Response** `200 OK` — array of ScoredChunk objects, merged and sorted by score.
-
 ---
 
-## Error format
+### `POST /ledger/customers/{id}/portal`
 
-All error responses use a consistent JSON envelope:
+Create a secure billing portal session for a customer. The portal allows customers to view invoices, update payment methods, and manage subscriptions.
+
+**Request body:**
 
 ```json
 {
-  "error": "human-readable message",
-  "code": "ERROR_CODE"
+  "return_url": "https://myapp.com/billing"
 }
 ```
 
-| HTTP status | `code` | Cause |
-|-------------|--------|-------|
-| `400` | `BAD_REQUEST` | Missing required field, empty content |
-| `404` | `NOT_FOUND` | Collection or document not found for tenant |
-| `500` | `INTERNAL_ERROR` | Store, embedder, or vector store failure |
+**Response** `200 OK`
+
+```json
+{
+  "url": "https://billing.example.com/portal/session/abc123",
+  "expires_at": "2025-02-15T11:30:00Z"
+}
+```
+
+---
+
+### `GET /ledger/customers/{id}/export`
+
+Export all customer data for GDPR compliance. Includes customer profile, subscriptions, invoices, payments, usage events, and entitlement checks.
+
+**Response** `200 OK`
+
+```json
+{
+  "customer": {...},
+  "subscriptions": [...],
+  "invoices": [...],
+  "payments": [...],
+  "usage_events": [...],
+  "entitlement_checks": [...],
+  "exported_at": "2025-02-15T10:00:00Z"
+}
+```
+
+---
+
+## Coupons
+
+Create and manage discount codes. See [Coupons](/docs/subsystems/coupons) for details.
+
+### `POST /ledger/coupons`
+
+Create a new coupon.
+
+**Request body:**
+
+```json
+{
+  "code": "SUMMER25",
+  "name": "Summer 2025 Promotion",
+  "type": "percentage",
+  "percentage": 25,
+  "currency": "usd",
+  "max_redemptions": 100,
+  "valid_from": "2025-06-01T00:00:00Z",
+  "valid_until": "2025-09-01T00:00:00Z",
+  "metadata": { "campaign": "summer_2025" }
+}
+```
+
+For fixed-amount coupons, use `"type": "amount"` with an `amount` field:
+
+```json
+{
+  "code": "FLAT10",
+  "name": "10 Dollars Off",
+  "type": "amount",
+  "amount": { "amount": 1000, "currency": "usd" },
+  "currency": "usd",
+  "max_redemptions": 500
+}
+```
+
+**Response** `201 Created`
+
+```json
+{
+  "id": "cpn_01hqx3qgw4ekqhxyz6z6r099xa",
+  "code": "SUMMER25",
+  "name": "Summer 2025 Promotion",
+  "type": "percentage",
+  "percentage": 25,
+  "currency": "usd",
+  "max_redemptions": 100,
+  "times_redeemed": 0,
+  "valid_from": "2025-06-01T00:00:00Z",
+  "valid_until": "2025-09-01T00:00:00Z",
+  "app_id": "myapp",
+  "created_at": "2025-01-15T10:30:00Z",
+  "updated_at": "2025-01-15T10:30:00Z"
+}
+```
+
+**Errors:**
+
+| Status | Code | Condition |
+|--------|------|-----------|
+| `400` | `invalid_input` | Missing required fields (code, type) |
+| `409` | `already_exists` | Coupon code already exists |
+
+---
+
+### `GET /ledger/coupons`
+
+List coupons for the current app.
+
+**Query parameters:**
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| `active` | bool | Filter to only currently valid coupons |
+| `limit` | int | Max results (default: 20) |
+| `offset` | int | Pagination offset |
+
+**Response** `200 OK` -- Paginated array of Coupon objects.
+
+---
+
+### `GET /ledger/coupons/{code}`
+
+Get a coupon by its code.
+
+**Response** `200 OK` -- Coupon object.
+
+**Errors:** `404 Not Found` if coupon code does not exist.
+
+---
+
+### `GET /ledger/coupons/id/{id}`
+
+Get a coupon by its ID.
+
+**Response** `200 OK` -- Coupon object.
+
+**Errors:** `404 Not Found` if coupon does not exist.
+
+---
+
+### `PUT /ledger/coupons/{id}`
+
+Update a coupon. Only provided fields are updated.
+
+**Request body:**
+
+```json
+{
+  "name": "Extended Summer Promotion",
+  "valid_until": "2025-10-01T00:00:00Z",
+  "max_redemptions": 200
+}
+```
+
+**Response** `200 OK` -- Updated Coupon object.
+
+**Errors:** `404 Not Found` if coupon does not exist.
+
+---
+
+### `DELETE /ledger/coupons/{id}`
+
+Delete a coupon.
+
+**Response** `204 No Content`
+
+**Errors:** `404 Not Found` if coupon does not exist.
+
+---
+
+### `POST /ledger/coupons/{code}/redeem`
+
+Redeem a coupon for a subscription. Validates the coupon is active, not expired, and has remaining redemptions.
+
+**Request body:**
+
+```json
+{
+  "subscription_id": "sub_01hqx3qg8w5kjyhwkrp5j4wsy3"
+}
+```
+
+**Response** `200 OK`
+
+```json
+{
+  "coupon_id": "cpn_01hqx3qgw4ekqhxyz6z6r099xa",
+  "code": "SUMMER25",
+  "discount_type": "percentage",
+  "discount_value": 25,
+  "subscription_id": "sub_01hqx3qg8w5kjyhwkrp5j4wsy3",
+  "applied_at": "2025-06-15T10:00:00Z"
+}
+```
+
+**Errors:**
+
+| Status | Code | Condition |
+|--------|------|-----------|
+| `400` | `coupon_expired` | Coupon has passed its valid_until date |
+| `400` | `coupon_not_started` | Coupon valid_from date is in the future |
+| `400` | `coupon_exhausted` | All redemptions have been used |
+| `400` | `coupon_invalid` | Coupon failed custom validation |
+| `404` | `coupon_not_found` | Coupon code does not exist |
+| `404` | `subscription_not_found` | Subscription does not exist |

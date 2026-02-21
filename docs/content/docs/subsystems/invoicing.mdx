@@ -1,0 +1,300 @@
+---
+title: Invoice Generation
+description: Automated billing calculations from usage, subscriptions, and pricing rules.
+---
+
+**Invoice Generation** transforms subscription and usage data into detailed invoices with line items, taxes, and payment instructions. It runs automatically at billing period boundaries and supports manual generation for prorations and adjustments.
+
+## Structure
+
+```go
+type Invoice struct {
+    ledger.Entity
+    ID             id.InvoiceID
+    SubscriptionID id.SubscriptionID
+    CustomerID     id.CustomerID
+    TenantID       string
+    AppID          string
+    Number         string // Human-readable: INV-2024-001234
+    Status         InvoiceStatus
+    PeriodStart    time.Time
+    PeriodEnd      time.Time
+    LineItems      []LineItem
+    Subtotal       money.Money
+    Tax            money.Money
+    Total          money.Money
+    AmountDue      money.Money
+    DueDate        time.Time
+    PaidAt         *time.Time
+    Metadata       map[string]any
+}
+```
+
+## Invoice lifecycle
+
+```go
+type InvoiceStatus string
+
+const (
+    StatusDraft    InvoiceStatus = "draft"
+    StatusOpen     InvoiceStatus = "open"
+    StatusPaid     InvoiceStatus = "paid"
+    StatusVoid     InvoiceStatus = "void"
+    StatusUncollectible InvoiceStatus = "uncollectible"
+)
+```
+
+| Status | Description |
+|--------|-------------|
+| `draft` | Being assembled, not finalized |
+| `open` | Finalized and awaiting payment |
+| `paid` | Payment received |
+| `void` | Canceled before payment |
+| `uncollectible` | Payment collection failed permanently |
+
+## Line items
+
+Each invoice contains multiple line items:
+
+```go
+type LineItem struct {
+    ID          string
+    Type        LineItemType
+    Description string
+    Quantity    float64
+    UnitPrice   money.Money
+    Amount      money.Money
+    Period      *Period
+    Metadata    map[string]any
+}
+
+type LineItemType string
+
+const (
+    LineItemSubscription LineItemType = "subscription"
+    LineItemUsage        LineItemType = "usage"
+    LineItemProration    LineItemType = "proration"
+    LineItemOneTime      LineItemType = "one_time"
+    LineItemTax          LineItemType = "tax"
+    LineItemDiscount     LineItemType = "discount"
+)
+```
+
+### Example: Monthly invoice with usage
+
+```go
+LineItems: []invoice.LineItem{
+    {
+        Type:        invoice.LineItemSubscription,
+        Description: "Starter Plan - Monthly",
+        Quantity:    1,
+        UnitPrice:   money.Money{Amount: 2999, Currency: "USD"},
+        Amount:      money.Money{Amount: 2999, Currency: "USD"},
+        Period:      &Period{Start: periodStart, End: periodEnd},
+    },
+    {
+        Type:        invoice.LineItemUsage,
+        Description: "API Calls (10,000 - 15,000)",
+        Quantity:    5000,
+        UnitPrice:   money.Money{Amount: 10, Currency: "USD"}, // $0.01
+        Amount:      money.Money{Amount: 50000, Currency: "USD"}, // $500
+        Period:      &Period{Start: periodStart, End: periodEnd},
+    },
+    {
+        Type:        invoice.LineItemTax,
+        Description: "Sales Tax (8.5%)",
+        Quantity:    1,
+        Amount:      money.Money{Amount: 28491, Currency: "USD"}, // $284.91
+    },
+}
+```
+
+## Automatic generation
+
+Invoices are generated automatically at billing period boundaries:
+
+```go
+// Background job runs daily
+func generateDueInvoices(ctx context.Context) {
+    subs, _ := store.GetSubscriptionsDueForBilling(ctx, time.Now())
+
+    for _, sub := range subs {
+        invoice, err := generator.Generate(ctx, &generator.Request{
+            SubscriptionID: sub.ID,
+            PeriodStart:    sub.CurrentPeriodStart,
+            PeriodEnd:      sub.CurrentPeriodEnd,
+        })
+
+        if err != nil {
+            log.Error("invoice generation failed", "sub", sub.ID, "error", err)
+            continue
+        }
+
+        // Finalize and send to payment processor
+        invoice.Status = invoice.StatusOpen
+        store.UpdateInvoice(ctx, invoice)
+
+        payment.CollectPayment(ctx, invoice)
+    }
+}
+```
+
+## Manual generation
+
+Generate invoices manually for upgrades, downgrades, or adjustments:
+
+```go
+// Generate prorated invoice for plan change
+invoice, err := generator.Generate(ctx, &generator.Request{
+    SubscriptionID: subscription.ID,
+    PeriodStart:    changeDate,
+    PeriodEnd:      subscription.CurrentPeriodEnd,
+    Type:           generator.TypeProration,
+    Reason:         "Plan upgrade: Starter → Pro",
+})
+```
+
+## Graduated pricing calculation
+
+For plans with graduated tiers, line items are split:
+
+```go
+// Plan: First 5K free, next 5K at $0.01, rest at $0.005
+// Usage: 15,000 calls
+
+LineItems: []invoice.LineItem{
+    {
+        Description: "API Calls (0 - 5,000)",
+        Quantity:    5000,
+        UnitPrice:   money.Money{Amount: 0, Currency: "USD"},
+        Amount:      money.Money{Amount: 0, Currency: "USD"},
+    },
+    {
+        Description: "API Calls (5,001 - 10,000)",
+        Quantity:    5000,
+        UnitPrice:   money.Money{Amount: 10, Currency: "USD"},
+        Amount:      money.Money{Amount: 50000, Currency: "USD"}, // $500
+    },
+    {
+        Description: "API Calls (10,001 - 15,000)",
+        Quantity:    5000,
+        UnitPrice:   money.Money{Amount: 5, Currency: "USD"},
+        Amount:      money.Money{Amount: 25000, Currency: "USD"}, // $250
+    },
+}
+```
+
+## Proration
+
+When a subscription changes mid-period, generate a prorated invoice:
+
+```go
+// Customer upgrades from Starter ($29.99) to Pro ($99.99) on day 15 of 30
+unusedDays := 15
+proratedCredit := (2999 * unusedDays) / 30  // -$14.995
+proratedCharge := (9999 * unusedDays) / 30  // +$49.995
+netCharge := proratedCharge - proratedCredit // $35
+
+LineItems: []invoice.LineItem{
+    {
+        Type:        invoice.LineItemProration,
+        Description: "Unused time on Starter Plan",
+        Amount:      money.Money{Amount: -1500, Currency: "USD"}, // -$15.00
+    },
+    {
+        Type:        invoice.LineItemProration,
+        Description: "Pro Plan (15 days)",
+        Amount:      money.Money{Amount: 5000, Currency: "USD"}, // $50.00
+    },
+}
+```
+
+## Tax calculation
+
+Taxes are computed based on customer location and product taxability:
+
+```go
+type TaxCalculator interface {
+    Calculate(ctx context.Context, invoice *Invoice) (money.Money, error)
+}
+
+// Stripe Tax integration
+taxCalculator := tax.NewStripeTax(stripeClient)
+taxAmount, err := taxCalculator.Calculate(ctx, invoice)
+
+invoice.Tax = taxAmount
+invoice.Total = invoice.Subtotal.Add(taxAmount)
+```
+
+## Discounts and credits
+
+Apply discounts or account credits:
+
+```go
+LineItems: []invoice.LineItem{
+    {
+        Type:        invoice.LineItemSubscription,
+        Description: "Pro Plan - Monthly",
+        Amount:      money.Money{Amount: 9999, Currency: "USD"},
+    },
+    {
+        Type:        invoice.LineItemDiscount,
+        Description: "20% off for 3 months",
+        Amount:      money.Money{Amount: -2000, Currency: "USD"},
+    },
+}
+```
+
+## Payment collection
+
+After generating an invoice, initiate payment:
+
+```go
+invoice.Status = invoice.StatusOpen
+store.CreateInvoice(ctx, invoice)
+
+// Attempt payment collection
+payment, err := processor.Charge(ctx, &payment.ChargeRequest{
+    InvoiceID:        invoice.ID,
+    CustomerID:       invoice.CustomerID,
+    Amount:           invoice.Total,
+    PaymentMethodID:  customer.DefaultPaymentMethod,
+})
+
+if err != nil {
+    // Payment failed - mark past due
+    subscription.Status = subscription.StatusPastDue
+} else {
+    // Payment succeeded
+    invoice.Status = invoice.StatusPaid
+    invoice.PaidAt = &payment.CompletedAt
+}
+```
+
+## Store interface
+
+```go
+type Store interface {
+    CreateInvoice(ctx context.Context, inv *Invoice) error
+    GetInvoice(ctx context.Context, invID id.InvoiceID) (*Invoice, error)
+    GetInvoiceByNumber(ctx context.Context, number string) (*Invoice, error)
+    GetInvoicesByCustomer(ctx context.Context, customerID id.CustomerID) ([]*Invoice, error)
+    GetInvoicesBySubscription(ctx context.Context, subID id.SubscriptionID) ([]*Invoice, error)
+    UpdateInvoice(ctx context.Context, inv *Invoice) error
+    VoidInvoice(ctx context.Context, invID id.InvoiceID) error
+    ListInvoices(ctx context.Context, filter *ListFilter) ([]*Invoice, error)
+}
+```
+
+## API routes
+
+| Method | Path | Description |
+|--------|------|-------------|
+| `POST` | `/ledger/invoices` | Generate invoice manually |
+| `GET` | `/ledger/invoices` | List invoices |
+| `GET` | `/ledger/invoices/{id}` | Get invoice by ID |
+| `GET` | `/ledger/invoices/{number}` | Get invoice by number |
+| `POST` | `/ledger/invoices/{id}/finalize` | Finalize draft invoice |
+| `POST` | `/ledger/invoices/{id}/void` | Void an open invoice |
+| `POST` | `/ledger/invoices/{id}/pay` | Mark invoice as paid |
+| `GET` | `/ledger/invoices/{id}/pdf` | Download PDF invoice |

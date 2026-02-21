@@ -1,126 +1,384 @@
 ---
 title: Entities
-description: The core data types in Cortex — Agents, Skills, Traits, Behaviors, Personas, Runs, and more.
+description: The core data types in Ledger — Plans, Subscriptions, Invoices, Usage Events, and more.
 ---
 
-All Cortex entities embed the `cortex.Entity` base type and carry a TypeID identifier. This page provides an overview of every entity and how they relate.
+All Ledger entities use TypeID identifiers for type-safe, sortable IDs. This page provides an overview of every entity and how they relate.
 
 ## Base entity
 
 ```go
 type Entity struct {
+    ID        string    `json:"id"`
     CreatedAt time.Time `json:"created_at"`
     UpdatedAt time.Time `json:"updated_at"`
 }
 ```
 
-Every entity struct embeds `cortex.Entity` to get automatic timestamp tracking.
+Every entity struct embeds base timestamp tracking and a TypeID identifier.
 
 ## Entity overview
 
-### Agent Config
+### Plan
 
-The top-level entity. An agent can operate in **flat mode** (system prompt + tools list) or **persona mode** (referencing a Persona for its identity).
+The top-level pricing entity. Defines features, pricing tiers, and billing configurations for customers.
 
 ```go
-type Config struct {
-    cortex.Entity
-    ID              id.AgentID
-    Name            string
-    Description     string
-    AppID           string
-    SystemPrompt    string         // flat mode
-    Model           string
-    Tools           []string       // flat mode
-    MaxSteps        int
-    MaxTokens       int
-    Temperature     float64
-    PersonaRef      string         // persona mode
-    InlineSkills    []string       // persona mode (inline)
-    InlineTraits    []string
-    InlineBehaviors []string
-    Enabled         bool
+type Plan struct {
+    Entity
+    ID          PlanID   `json:"id"` // pln_...
+    Name        string   `json:"name"`
+    Description string   `json:"description"`
+    Status      string   `json:"status"` // draft, active, archived
+
+    // Billing configuration
+    BillingPeriod   string `json:"billing_period"`   // month, year, etc
+    Currency        string `json:"currency"`         // USD, EUR, etc
+    TrialPeriodDays int    `json:"trial_period_days"`
+
+    // Features and pricing
+    Features     []Feature     `json:"features"`
+    PricingTiers []PricingTier `json:"pricing_tiers"`
+
+    // Metadata
+    Metadata map[string]any `json:"metadata"`
 }
 ```
 
-### Skill
+See [Plans](/docs/subsystems/plans) for details.
 
-Defines what an agent **can do**. Bundles tools, knowledge sources, and system prompt fragments. See [Skills](/docs/human-model/skills).
+### Feature
 
-### Trait
+A capability or resource included in a plan. Can be boolean (on/off) or metered (usage-based).
 
-Defines who an agent **is**. Personality dimensions on bipolar axes that influence runtime parameters. See [Traits](/docs/human-model/traits).
+```go
+type Feature struct {
+    ID          FeatureID `json:"id"` // fea_...
+    PlanID      PlanID    `json:"plan_id"`
+    Name        string    `json:"name"`
+    Key         string    `json:"key"` // unique identifier for code
+    Type        string    `json:"type"` // boolean, metered
 
-### Behavior
+    // For metered features
+    MeterType   string `json:"meter_type,omitempty"`   // counter, gauge, timer
+    Unit        string `json:"unit,omitempty"`         // api_calls, gb, minutes
+    Aggregation string `json:"aggregation,omitempty"`  // sum, max, unique_count
 
-Defines what an agent **does habitually**. Condition-triggered action patterns. See [Behaviors](/docs/human-model/behaviors).
+    // Limits
+    Limit       *int64 `json:"limit,omitempty"`        // max allowed usage
+    Overage     bool   `json:"overage"`                // allow usage above limit
 
-### Persona
+    Metadata map[string]any `json:"metadata"`
+}
+```
 
-The composition entity that brings everything together. See [Personas](/docs/human-model/personas).
+### PricingTier
 
-### Run, Step, ToolCall
+Defines the pricing structure for a plan — flat fee, per-seat, usage-based, or hybrid.
 
-Execution entities that record an agent's reasoning process:
+```go
+type PricingTier struct {
+    ID         TierID  `json:"id"` // tier_...
+    PlanID     PlanID  `json:"plan_id"`
+    Name       string  `json:"name"`
+    Type       string  `json:"type"` // flat, per_unit, tiered, volume
 
-- **Run** — A single execution of an agent with 6 lifecycle states
-- **Step** — One reasoning step within a run
-- **ToolCall** — A tool invocation within a step
+    // Flat pricing
+    FlatAmount Money `json:"flat_amount,omitempty"`
 
-See [Runs](/docs/execution/runs).
+    // Per-unit pricing
+    UnitAmount Money  `json:"unit_amount,omitempty"`
+    FeatureKey string `json:"feature_key,omitempty"` // which feature to meter
 
-### Message
+    // Tiered pricing brackets
+    Brackets []PricingBracket `json:"brackets,omitempty"`
 
-A conversation message with role, content, and timestamp. See [Memory](/docs/execution/memory).
+    Metadata map[string]any `json:"metadata"`
+}
 
-### Checkpoint
+type PricingBracket struct {
+    StartQuantity int64 `json:"start_quantity"`
+    EndQuantity   *int64 `json:"end_quantity,omitempty"` // nil = unlimited
+    UnitAmount    Money `json:"unit_amount"`
+}
+```
 
-A point where a run pauses for human approval. See [Checkpoints](/docs/execution/checkpoints).
+### Subscription
+
+A customer's active plan subscription with billing cycle and status tracking.
+
+```go
+type Subscription struct {
+    Entity
+    ID         SubscriptionID `json:"id"` // sub_...
+    CustomerID CustomerID     `json:"customer_id"`
+    PlanID     PlanID         `json:"plan_id"`
+    Status     string         `json:"status"` // trialing, active, past_due, canceled, expired
+
+    // Billing cycle
+    CurrentPeriodStart time.Time  `json:"current_period_start"`
+    CurrentPeriodEnd   time.Time  `json:"current_period_end"`
+    TrialEnd           *time.Time `json:"trial_end,omitempty"`
+
+    // Cancellation
+    CanceledAt       *time.Time `json:"canceled_at,omitempty"`
+    CancelAtPeriodEnd bool      `json:"cancel_at_period_end"`
+
+    // Payment
+    PaymentMethodID string `json:"payment_method_id,omitempty"`
+
+    // Entitlements (cached)
+    Entitlements map[string]Entitlement `json:"entitlements"`
+
+    Metadata map[string]any `json:"metadata"`
+}
+```
+
+See [Subscriptions](/docs/subsystems/subscriptions) for lifecycle details.
+
+### Customer
+
+Represents a billable entity (person, organization, team).
+
+```go
+type Customer struct {
+    Entity
+    ID    CustomerID `json:"id"` // cus_...
+    Email string     `json:"email"`
+    Name  string     `json:"name"`
+
+    // Organization (for B2B)
+    CompanyName string `json:"company_name,omitempty"`
+    TaxID       string `json:"tax_id,omitempty"`
+
+    // Billing details
+    BillingAddress Address `json:"billing_address"`
+    Currency       string  `json:"currency"` // default: USD
+
+    // Payment provider
+    StripeCustomerID string `json:"stripe_customer_id,omitempty"`
+    PaddleCustomerID string `json:"paddle_customer_id,omitempty"`
+
+    Metadata map[string]any `json:"metadata"`
+}
+```
+
+### Invoice
+
+A billing document for a subscription period, including usage charges.
+
+```go
+type Invoice struct {
+    Entity
+    ID             InvoiceID      `json:"id"` // inv_...
+    CustomerID     CustomerID     `json:"customer_id"`
+    SubscriptionID SubscriptionID `json:"subscription_id"`
+    Status         string         `json:"status"` // draft, open, paid, void, uncollectible
+
+    // Amounts (in cents)
+    Subtotal      Money `json:"subtotal"`
+    Tax           Money `json:"tax"`
+    Total         Money `json:"total"`
+    AmountPaid    Money `json:"amount_paid"`
+    AmountDue     Money `json:"amount_due"`
+    Currency      string `json:"currency"`
+
+    // Line items
+    Lines []InvoiceLine `json:"lines"`
+
+    // Dates
+    PeriodStart time.Time  `json:"period_start"`
+    PeriodEnd   time.Time  `json:"period_end"`
+    DueDate     time.Time  `json:"due_date"`
+    PaidAt      *time.Time `json:"paid_at,omitempty"`
+
+    // Payment
+    PaymentIntentID string `json:"payment_intent_id,omitempty"`
+
+    Metadata map[string]any `json:"metadata"`
+}
+
+type InvoiceLine struct {
+    ID          string `json:"id"`
+    Description string `json:"description"`
+    Quantity    int64  `json:"quantity"`
+    UnitAmount  Money  `json:"unit_amount"`
+    Amount      Money  `json:"amount"`
+    Type        string `json:"type"` // subscription, usage, one_time
+
+    // For usage lines
+    FeatureKey string     `json:"feature_key,omitempty"`
+    PeriodStart time.Time `json:"period_start,omitempty"`
+    PeriodEnd   time.Time `json:"period_end,omitempty"`
+}
+```
+
+See [Invoicing](/docs/subsystems/invoicing) for generation and payment flow.
+
+### UsageEvent
+
+A metered event submitted for billing calculation.
+
+```go
+type UsageEvent struct {
+    Entity
+    ID         EventID    `json:"id"` // evt_...
+    CustomerID CustomerID `json:"customer_id"`
+
+    // Event identification
+    EventName  string    `json:"event_name"` // e.g., "api_call", "storage_gb"
+    EventTime  time.Time `json:"event_time"`
+    IdempotencyKey string `json:"idempotency_key,omitempty"`
+
+    // Value
+    Value      float64           `json:"value"` // e.g., 1 for count, 2.5 for GB
+    Unit       string            `json:"unit"`  // api_calls, gb, minutes
+
+    // Context
+    Properties map[string]any `json:"properties,omitempty"`
+
+    // Processing
+    Processed   bool       `json:"processed"`
+    ProcessedAt *time.Time `json:"processed_at,omitempty"`
+}
+```
+
+See [Metering](/docs/subsystems/metering) for high-throughput event ingestion.
+
+### Entitlement
+
+Cached access rights for sub-millisecond checks.
+
+```go
+type Entitlement struct {
+    FeatureKey string `json:"feature_key"`
+    Enabled    bool   `json:"enabled"`
+
+    // For metered features
+    Limit       *int64 `json:"limit,omitempty"`
+    Usage       int64  `json:"usage"`
+    Remaining   *int64 `json:"remaining,omitempty"`
+    HasOverage  bool   `json:"has_overage"`
+}
+```
+
+Entitlements are computed from subscription + plan + usage and cached for fast access checks.
+
+### Payment
+
+Records a payment transaction.
+
+```go
+type Payment struct {
+    Entity
+    ID             PaymentID  `json:"id"` // pay_...
+    InvoiceID      InvoiceID  `json:"invoice_id"`
+    CustomerID     CustomerID `json:"customer_id"`
+    Amount         Money      `json:"amount"`
+    Currency       string     `json:"currency"`
+    Status         string     `json:"status"` // pending, succeeded, failed, refunded
+
+    // Provider details
+    ProviderID     string    `json:"provider_id"` // Stripe payment intent ID, etc
+    Provider       string    `json:"provider"`    // stripe, paddle
+    PaymentMethod  string    `json:"payment_method"` // card, bank_transfer, etc
+
+    // Timestamps
+    ProcessedAt *time.Time `json:"processed_at,omitempty"`
+    FailedAt    *time.Time `json:"failed_at,omitempty"`
+    FailureReason string   `json:"failure_reason,omitempty"`
+
+    Metadata map[string]any `json:"metadata"`
+}
+```
 
 ## Entity relationship diagram
 
 ```
-Persona
-  ├── SkillAssignment[] ──→ Skill
-  │                           └── ToolBinding[]
-  │                           └── KnowledgeRef[]
-  ├── TraitAssignment[] ──→ Trait
-  │                           └── Dimension[]
-  │                           └── Influence[]
-  ├── Behavior[]         ──→ Behavior
-  │                           └── Trigger[]
-  │                           └── Action[]
-  ├── CognitiveStyle
-  ├── CommunicationStyle
-  └── Perception
+Customer
+  ├── Subscription[] ──→ Plan
+  │         │              ├── Feature[]
+  │         │              └── PricingTier[]
+  │         │                    └── PricingBracket[]
+  │         │
+  │         ├── Entitlements (cached from Plan + Usage)
+  │         └── Invoice[]
+  │               ├── InvoiceLine[] (computed from Plan + Usage)
+  │               └── Payment[]
+  │
+  └── UsageEvent[] ──→ aggregated → Invoice Lines
+```
 
-Agent Config
-  ├── PersonaRef ──→ Persona (persona mode)
-  ├── SystemPrompt + Tools (flat mode)
-  └── Run[]
-        ├── Step[]
-        │     └── ToolCall[]
-        ├── Checkpoint[]
-        └── Message[] (via Memory)
+## TypeID prefixes
+
+All entities use TypeIDs with consistent prefixes:
+
+| Entity | Prefix | Example |
+|--------|--------|---------|
+| Plan | `pln_` | `pln_01h2xcejqtf2nbrexx3vqjhp41` |
+| Feature | `fea_` | `fea_01h2xcejqtf2nbrexx3vqjhp42` |
+| Pricing Tier | `tier_` | `tier_01h2xcejqtf2nbrexx3vqjhp43` |
+| Subscription | `sub_` | `sub_01h2xcejqtf2nbrexx3vqjhp44` |
+| Customer | `cus_` | `cus_01h2xcejqtf2nbrexx3vqjhp45` |
+| Invoice | `inv_` | `inv_01h2xcejqtf2nbrexx3vqjhp46` |
+| Usage Event | `evt_` | `evt_01h2xcejqtf2nbrexx3vqjhp47` |
+| Payment | `pay_` | `pay_01h2xcejqtf2nbrexx3vqjhp48` |
+
+TypeIDs are:
+- **Type-safe** — Prefix indicates entity type
+- **Sortable** — Encodes timestamp for chronological ordering
+- **Globally unique** — 128-bit UUID-like collision resistance
+- **URL-safe** — Base32 encoding without special characters
+
+## Money type
+
+All monetary values use the `Money` type (integer cents) to avoid floating-point precision errors:
+
+```go
+type Money int64 // Amount in smallest currency unit (cents)
+
+// Examples:
+amount := Money(1000) // $10.00
+amount := Money(99)   // $0.99
+amount := Money(12345) // $123.45
+```
+
+Helper functions:
+```go
+money.FromDollars(10.50)  // → Money(1050)
+money.ToDollars(Money(1050)) // → 10.50
+money.Format(Money(1050), "USD") // → "$10.50"
 ```
 
 ## Store interfaces
 
-Each entity type defines its own store interface. These are composed into the single `store.Store` composite:
+Each entity type defines its own store interface. These are composed into a single composite store:
 
 ```go
 type Store interface {
-    agent.Store      // Create, Get, GetByName, Update, Delete, List
-    skill.Store      // CreateSkill, GetSkill, GetSkillByName, ...
-    trait.Store      // CreateTrait, GetTrait, GetTraitByName, ...
-    behavior.Store   // CreateBehavior, GetBehavior, ...
-    persona.Store    // CreatePersona, GetPersona, ...
-    run.Store        // CreateRun, GetRun, UpdateRun, ListRuns, ...
-    memory.Store     // SaveConversation, LoadConversation, ...
-    checkpoint.Store // CreateCheckpoint, GetCheckpoint, ...
+    PlanStore
+    FeatureStore
+    SubscriptionStore
+    CustomerStore
+    InvoiceStore
+    UsageEventStore
+    PaymentStore
 
     Migrate(ctx context.Context) error
     Ping(ctx context.Context) error
     Close() error
+}
+```
+
+Example store methods:
+
+```go
+type PlanStore interface {
+    CreatePlan(ctx context.Context, plan *Plan) error
+    GetPlan(ctx context.Context, id PlanID) (*Plan, error)
+    GetPlanByName(ctx context.Context, name string) (*Plan, error)
+    UpdatePlan(ctx context.Context, plan *Plan) error
+    DeletePlan(ctx context.Context, id PlanID) error
+    ListPlans(ctx context.Context, filters PlanFilters) ([]Plan, error)
 }
 ```
