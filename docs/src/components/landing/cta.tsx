@@ -8,8 +8,8 @@ export function CTA() {
   return (
     <section className="relative w-full py-20 sm:py-28 overflow-hidden">
       {/* Background gradients */}
-      <div className="absolute inset-0 bg-gradient-to-b from-transparent via-violet-500/[0.03] to-transparent" />
-      <div className="absolute bottom-0 left-1/2 -translate-x-1/2 w-[600px] h-[300px] bg-gradient-to-t from-violet-500/8 to-transparent rounded-full blur-3xl" />
+      <div className="absolute inset-0 bg-gradient-to-b from-transparent via-emerald-500/[0.03] to-transparent" />
+      <div className="absolute bottom-0 left-1/2 -translate-x-1/2 w-[600px] h-[300px] bg-gradient-to-t from-emerald-500/8 to-transparent rounded-full blur-3xl" />
 
       <div className="relative container max-w-(--fd-layout-width) mx-auto px-4 sm:px-6">
         <motion.div
@@ -54,8 +54,8 @@ export function CTA() {
               href="/docs"
               className={cn(
                 "inline-flex items-center justify-center rounded-lg px-6 py-2.5 text-sm font-medium transition-colors",
-                "bg-violet-500 text-white hover:bg-violet-600",
-                "shadow-sm shadow-violet-500/20",
+                "bg-emerald-500 text-white hover:bg-emerald-600",
+                "shadow-sm shadow-emerald-500/20",
               )}
             >
               Get Started

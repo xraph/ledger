@@ -4,69 +4,72 @@ import { motion } from "framer-motion";
 import { CodeBlock } from "./code-block";
 import { SectionHeader } from "./section-header";
 
-const ingestCode = `package main
+const createTransactionCode = `package main
 
 import (
   "context"
   "log/slog"
+  "time"
 
-  "github.com/xraph/weave"
-  "github.com/xraph/weave/store/postgres"
-  "github.com/xraph/weave/vectorstore/pgvector"
+  "github.com/xraph/ledger"
+  "github.com/xraph/ledger/store/postgres"
+  "github.com/shopspring/decimal"
 )
 
 func main() {
   ctx := context.Background()
 
-  engine, _ := weave.NewEngine(
-    weave.WithStore(postgres.New(pool)),
-    weave.WithVectorStore(pgvector.New(pool)),
-    weave.WithEmbedder(myEmbedder),
-    weave.WithLogger(slog.Default()),
+  engine, _ := ledger.NewEngine(
+    ledger.WithStore(postgres.New(pool)),
+    ledger.WithValidator(ledger.DoubleEntry),
+    ledger.WithLogger(slog.Default()),
   )
 
-  ctx = weave.WithTenant(ctx, "tenant-1")
-  ctx = weave.WithApp(ctx, "myapp")
+  ctx = ledger.WithTenant(ctx, "tenant-1")
+  ctx = ledger.WithApp(ctx, "accounting")
 
-  // Ingest a document — chunk, embed, store
-  doc, _ := engine.Ingest(ctx, "col-123",
-    weave.IngestInput{
-      Title:   "Product FAQ",
-      Content: "Our return policy...",
-      Source:  "faq.md",
+  // Create a double-entry transaction
+  txn, _ := engine.CreateTransaction(ctx,
+    ledger.Transaction{
+      Date:        time.Now(),
+      Description: "Customer payment",
+      Entries: []ledger.Entry{
+        {Account: "cash", Debit: decimal.NewFromFloat(100)},
+        {Account: "revenue", Credit: decimal.NewFromFloat(100)},
+      },
     })
-  // doc.State=ready chunks=12
+  // txn.ID=txn_01j8x... Status=posted
 }`;
 
-const retrieveCode = `package main
+const reportCode = `package main
 
 import (
   "context"
   "fmt"
 
-  "github.com/xraph/weave"
+  "github.com/xraph/ledger"
 )
 
-func queryContext(
-  engine *weave.Engine,
+func generateReport(
+  engine *ledger.Engine,
   ctx context.Context,
 ) {
-  ctx = weave.WithTenant(ctx, "tenant-1")
+  ctx = ledger.WithTenant(ctx, "tenant-1")
 
-  // Semantic retrieval with score threshold
-  results, _ := engine.Retrieve(ctx, "col-123",
-    &weave.RetrieveInput{
-      Query:    "What is the return policy?",
-      TopK:     5,
-      MinScore: 0.75,
+  // Generate balance sheet report
+  report, _ := engine.GenerateReport(ctx,
+    &ledger.ReportInput{
+      Type:     ledger.BalanceSheet,
+      Date:     time.Now(),
+      Accounts: []string{"assets", "liabilities", "equity"},
     })
 
-  for _, r := range results {
-    fmt.Printf("[%.2f] %s\\n",
-      r.Score, r.Content[:80])
+  for _, line := range report.Lines {
+    fmt.Printf("%s: %s\\n",
+      line.Account, line.Balance.String())
   }
-  // [0.94] Our return policy allows...
-  // [0.87] Items must be returned...
+  // assets.cash: 10,500.00
+  // liabilities.payable: 3,200.00
 }`;
 
 export function CodeShowcase() {
@@ -75,12 +78,12 @@ export function CodeShowcase() {
       <div className="container max-w-(--fd-layout-width) mx-auto px-4 sm:px-6">
         <SectionHeader
           badge="Developer Experience"
-          title="Simple API. Powerful retrieval."
-          description="Ingest a document and retrieve semantically similar chunks in under 20 lines. Weave handles the rest."
+          title="Simple API. Powerful accounting."
+          description="Create transactions and generate financial reports in under 20 lines. Ledger handles the rest."
         />
 
         <div className="mt-14 grid grid-cols-1 lg:grid-cols-2 gap-6">
-          {/* Ingestion side */}
+          {/* Transaction side */}
           <motion.div
             initial={{ opacity: 0, x: -20 }}
             whileInView={{ opacity: 1, x: 0 }}
@@ -88,15 +91,15 @@ export function CodeShowcase() {
             transition={{ duration: 0.5, delay: 0.1 }}
           >
             <div className="mb-3 flex items-center gap-2">
-              <div className="size-2 rounded-full bg-violet-500" />
+              <div className="size-2 rounded-full bg-emerald-500" />
               <span className="text-xs font-medium text-fd-muted-foreground uppercase tracking-wider">
-                Ingestion
+                Transactions
               </span>
             </div>
-            <CodeBlock code={ingestCode} filename="main.go" />
+            <CodeBlock code={createTransactionCode} filename="main.go" />
           </motion.div>
 
-          {/* Retrieval side */}
+          {/* Reporting side */}
           <motion.div
             initial={{ opacity: 0, x: 20 }}
             whileInView={{ opacity: 1, x: 0 }}
@@ -104,12 +107,12 @@ export function CodeShowcase() {
             transition={{ duration: 0.5, delay: 0.2 }}
           >
             <div className="mb-3 flex items-center gap-2">
-              <div className="size-2 rounded-full bg-green-500" />
+              <div className="size-2 rounded-full bg-blue-500" />
               <span className="text-xs font-medium text-fd-muted-foreground uppercase tracking-wider">
-                Retrieval
+                Reporting
               </span>
             </div>
-            <CodeBlock code={retrieveCode} filename="retrieve.go" />
+            <CodeBlock code={reportCode} filename="report.go" />
           </motion.div>
         </div>
       </div>

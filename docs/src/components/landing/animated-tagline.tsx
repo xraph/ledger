@@ -48,7 +48,7 @@ export function AnimatedTagline({ className }: { className?: string }) {
                 className={cn(
                   "inline-block",
                   wordIdx === 0 &&
-                    "bg-gradient-to-r from-violet-400 via-purple-500 to-indigo-500 bg-clip-text text-transparent",
+                    "bg-gradient-to-r from-emerald-400 via-teal-500 to-green-500 bg-clip-text text-transparent",
                   wordIdx !== 0 && "text-fd-foreground",
                   char === " " && "w-[0.25em]",
                 )}

@@ -24,8 +24,8 @@ function GitHubIcon({ className }: { className?: string }) {
   );
 }
 
-// ─── Mini RAG Pipeline Diagram ───────────────────────────────
-function MiniRAGPipeline() {
+// ─── Mini Ledger Pipeline Diagram ───────────────────────────────
+function MiniLedgerPipeline() {
   return (
     <motion.div
       initial={{ opacity: 0 }}
@@ -34,14 +34,14 @@ function MiniRAGPipeline() {
       className="relative w-full max-w-md mx-auto"
     >
       {/* Background glow */}
-      <div className="absolute inset-0 -m-8 bg-gradient-to-br from-violet-500/5 via-transparent to-indigo-500/5 rounded-3xl blur-2xl" />
+      <div className="absolute inset-0 -m-8 bg-gradient-to-br from-emerald-500/5 via-transparent to-teal-500/5 rounded-3xl blur-2xl" />
 
       <div className="relative space-y-6 p-4">
-        {/* Row 1: Ingest → Chunk → Embed → Store */}
+        {/* Row 1: Validate → Journalize → Post → Balance */}
         <div className="flex items-center justify-center gap-0">
           <FlowNode
-            label="Ingest()"
-            color="violet"
+            label="Validate()"
+            color="emerald"
             size="sm"
             delay={0.4}
             icon={
@@ -52,33 +52,27 @@ function MiniRAGPipeline() {
                 aria-hidden="true"
               >
                 <path
-                  d="M6 1v7M3 5l3 3 3-3"
+                  d="M2 6l3 3 5-6"
                   stroke="currentColor"
                   strokeWidth="1.5"
                   strokeLinecap="round"
                   strokeLinejoin="round"
                 />
-                <path
-                  d="M2 10h8"
-                  stroke="currentColor"
-                  strokeWidth="1.5"
-                  strokeLinecap="round"
-                />
               </svg>
             }
           />
-          <FlowLine length={24} color="violet" delay={1} />
-          <FlowNode label="Chunk" color="purple" size="sm" delay={0.55} />
-          <FlowLine length={24} color="violet" delay={2} />
-          <FlowNode label="Embed" color="violet" size="sm" delay={0.7} />
-          <FlowLine length={24} color="violet" delay={3} />
-          <FlowNode label="Store" color="violet" size="sm" pulse delay={0.85} />
+          <FlowLine length={24} color="emerald" delay={1} />
+          <FlowNode label="Journal" color="teal" size="sm" delay={0.55} />
+          <FlowLine length={24} color="emerald" delay={2} />
+          <FlowNode label="Post" color="emerald" size="sm" delay={0.7} />
+          <FlowLine length={24} color="emerald" delay={3} />
+          <FlowNode label="Balance" color="emerald" size="sm" pulse delay={0.85} />
         </div>
 
-        {/* Row 2: Pipeline events */}
+        {/* Row 2: Transaction events */}
         <div className="flex items-start justify-center">
           <div className="space-y-2.5">
-            {/* Event 1: doc loaded */}
+            {/* Event 1: transaction validated */}
             <motion.div
               initial={{ opacity: 0, x: -10 }}
               animate={{ opacity: 1, x: 0 }}
@@ -86,25 +80,25 @@ function MiniRAGPipeline() {
               className="flex items-center gap-0"
             >
               <FlowLine length={28} color="green" delay={3} />
-              <FlowNode label="doc.loaded" color="gray" size="sm" delay={1.1} />
+              <FlowNode label="txn.valid" color="gray" size="sm" delay={1.1} />
               <FlowLine length={24} color="green" delay={4} />
-              <StatusBadge status="delivered" label="parsed" />
+              <StatusBadge status="delivered" label="verified" />
             </motion.div>
 
-            {/* Event 2: chunks stored */}
+            {/* Event 2: entries journalized */}
             <motion.div
               initial={{ opacity: 0, x: -10 }}
               animate={{ opacity: 1, x: 0 }}
               transition={{ delay: 1.2 }}
               className="flex items-center gap-0"
             >
-              <FlowLine length={28} color="violet" delay={5} />
-              <FlowNode label="chunks.12" color="gray" size="sm" delay={1.3} />
-              <FlowLine length={24} color="violet" delay={6} />
-              <StatusBadge status="retry" label="stored" />
+              <FlowLine length={28} color="emerald" delay={5} />
+              <FlowNode label="entry.02" color="gray" size="sm" delay={1.3} />
+              <FlowLine length={24} color="emerald" delay={6} />
+              <StatusBadge status="retry" label="posted" />
             </motion.div>
 
-            {/* Event 3: vectors indexed */}
+            {/* Event 3: balance updated */}
             <motion.div
               initial={{ opacity: 0, x: -10 }}
               animate={{ opacity: 1, x: 0 }}
@@ -112,19 +106,19 @@ function MiniRAGPipeline() {
               className="flex items-center gap-0"
             >
               <FlowLine length={28} color="green" delay={7} />
-              <FlowNode label="vec.ready" color="gray" size="sm" delay={1.5} />
+              <FlowNode label="bal.ok" color="gray" size="sm" delay={1.5} />
               <FlowLine length={24} color="green" delay={8} />
-              <StatusBadge status="delivered" label="indexed" />
+              <StatusBadge status="delivered" label="balanced" />
             </motion.div>
           </div>
         </div>
 
         {/* Floating capability badges */}
         <div className="flex flex-wrap items-center justify-center gap-2 pt-2">
-          <FloatingBadge label="pgvector" delay={1.6} />
+          <FloatingBadge label="Double-Entry" delay={1.6} />
           <FloatingBadge label="Multi-Tenant" delay={1.8} />
           <FloatingBadge label="Forge-Native" delay={2.0} />
-          <FloatingBadge label="Pluggable" delay={2.2} />
+          <FloatingBadge label="ACID Compliant" delay={2.2} />
         </div>
       </div>
     </motion.div>
@@ -140,7 +134,7 @@ export function Hero() {
 
       {/* Radial gradient overlays */}
       <div className="absolute inset-0 bg-gradient-to-b from-fd-background via-transparent to-fd-background" />
-      <div className="absolute top-0 left-1/2 -translate-x-1/2 w-[800px] h-[600px] bg-gradient-to-b from-violet-500/8 to-transparent rounded-full blur-3xl" />
+      <div className="absolute top-0 left-1/2 -translate-x-1/2 w-[800px] h-[600px] bg-gradient-to-b from-emerald-500/8 to-transparent rounded-full blur-3xl" />
 
       <div className="relative container max-w-(--fd-layout-width) mx-auto px-4 sm:px-6">
         <div className="grid gap-12 lg:grid-cols-2 lg:gap-16 items-center py-20 sm:py-28 md:py-32">
@@ -152,8 +146,8 @@ export function Hero() {
               animate={{ opacity: 1, y: 0 }}
               transition={{ duration: 0.4 }}
             >
-              <span className="inline-flex items-center rounded-full border border-violet-500/20 bg-violet-500/10 px-3.5 py-1 text-xs font-medium text-violet-600 dark:text-violet-400 mb-6">
-                Composable RAG pipeline engine for Go
+              <span className="inline-flex items-center rounded-full border border-emerald-500/20 bg-emerald-500/10 px-3.5 py-1 text-xs font-medium text-emerald-600 dark:text-emerald-400 mb-6">
+                Double-entry bookkeeping engine for Go
               </span>
             </motion.div>
 
@@ -167,8 +161,8 @@ export function Hero() {
               transition={{ duration: 0.5, delay: 0.6 }}
               className="mt-6 text-lg text-fd-muted-foreground leading-relaxed max-w-lg"
             >
-              Ingest documents, chunk text, generate embeddings, store vectors,
-              and retrieve semantic context &mdash; tenant-scoped,
+              Process transactions, manage accounts, enforce double-entry rules,
+              generate financial reports &mdash; tenant-scoped,
               plugin-extensible, and Forge-native.
             </motion.p>
 
@@ -196,8 +190,8 @@ export function Hero() {
                 href="/docs"
                 className={cn(
                   "inline-flex items-center justify-center rounded-lg px-5 py-2.5 text-sm font-medium transition-colors",
-                  "bg-violet-500 text-white hover:bg-violet-600",
-                  "shadow-sm shadow-violet-500/20",
+                  "bg-emerald-500 text-white hover:bg-emerald-600",
+                  "shadow-sm shadow-emerald-500/20",
                 )}
               >
                 Get Started
@@ -217,9 +211,9 @@ export function Hero() {
             </motion.div>
           </div>
 
-          {/* Right: Mini RAG pipeline diagram */}
+          {/* Right: Mini Ledger pipeline diagram */}
           <div className="relative lg:pl-8">
-            <MiniRAGPipeline />
+            <MiniLedgerPipeline />
           </div>
         </div>
       </div>
