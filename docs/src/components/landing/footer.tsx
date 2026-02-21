@@ -67,7 +67,7 @@ export function Footer() {
             {/* Social links */}
             <div className="flex items-center gap-3 mt-6">
               <a
-                href="https://github.com/xraph/weave"
+                href="https://github.com/xraph/ledger"
                 target="_blank"
                 rel="noreferrer"
                 className="text-fd-muted-foreground hover:text-fd-foreground transition-colors"
