@@ -23,8 +23,8 @@ export function CTA() {
             Start building with Ledger
           </h2>
           <p className="mt-4 text-lg text-fd-muted-foreground leading-relaxed">
-            Add production-grade transaction processing to your Go service in minutes.
-            Ledger handles double-entry bookkeeping, account management, and financial reporting
+            Add production-grade usage billing to your Go service in minutes.
+            Ledger handles metering, entitlements, subscriptions, and invoicing
             out of the box.
           </p>
 

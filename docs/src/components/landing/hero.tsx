@@ -37,11 +37,11 @@ function MiniLedgerPipeline() {
       <div className="absolute inset-0 -m-8 bg-gradient-to-br from-emerald-500/5 via-transparent to-teal-500/5 rounded-3xl blur-2xl" />
 
       <div className="relative space-y-6 p-4">
-        {/* Row 1: Validate → Journalize → Post → Balance */}
+        {/* Row 1: Meter → Check → Bill → Invoice */}
         <div className="flex items-center justify-center gap-0">
           <FlowNode
-            label="Validate()"
-            color="emerald"
+            label="Meter()"
+            color="green"
             size="sm"
             delay={0.4}
             icon={
@@ -52,27 +52,41 @@ function MiniLedgerPipeline() {
                 aria-hidden="true"
               >
                 <path
-                  d="M2 6l3 3 5-6"
+                  d="M6 2v4l2 2"
                   stroke="currentColor"
                   strokeWidth="1.5"
                   strokeLinecap="round"
                   strokeLinejoin="round"
                 />
+                <circle
+                  cx="6"
+                  cy="6"
+                  r="4"
+                  stroke="currentColor"
+                  strokeWidth="1.5"
+                  fill="none"
+                />
               </svg>
             }
           />
-          <FlowLine length={24} color="emerald" delay={1} />
-          <FlowNode label="Journal" color="teal" size="sm" delay={0.55} />
-          <FlowLine length={24} color="emerald" delay={2} />
-          <FlowNode label="Post" color="emerald" size="sm" delay={0.7} />
-          <FlowLine length={24} color="emerald" delay={3} />
-          <FlowNode label="Balance" color="emerald" size="sm" pulse delay={0.85} />
+          <FlowLine length={24} color="green" delay={1} />
+          <FlowNode label="Entitled" color="teal" size="sm" delay={0.55} />
+          <FlowLine length={24} color="green" delay={2} />
+          <FlowNode label="Track" color="green" size="sm" delay={0.7} />
+          <FlowLine length={24} color="green" delay={3} />
+          <FlowNode
+            label="Invoice"
+            color="green"
+            size="sm"
+            pulse
+            delay={0.85}
+          />
         </div>
 
-        {/* Row 2: Transaction events */}
+        {/* Row 2: Billing events */}
         <div className="flex items-start justify-center">
           <div className="space-y-2.5">
-            {/* Event 1: transaction validated */}
+            {/* Event 1: usage metered */}
             <motion.div
               initial={{ opacity: 0, x: -10 }}
               animate={{ opacity: 1, x: 0 }}
@@ -80,25 +94,25 @@ function MiniLedgerPipeline() {
               className="flex items-center gap-0"
             >
               <FlowLine length={28} color="green" delay={3} />
-              <FlowNode label="txn.valid" color="gray" size="sm" delay={1.1} />
+              <FlowNode label="api.1k" color="gray" size="sm" delay={1.1} />
               <FlowLine length={24} color="green" delay={4} />
-              <StatusBadge status="delivered" label="verified" />
+              <StatusBadge status="delivered" label="metered" />
             </motion.div>
 
-            {/* Event 2: entries journalized */}
+            {/* Event 2: quota checked */}
             <motion.div
               initial={{ opacity: 0, x: -10 }}
               animate={{ opacity: 1, x: 0 }}
               transition={{ delay: 1.2 }}
               className="flex items-center gap-0"
             >
-              <FlowLine length={28} color="emerald" delay={5} />
-              <FlowNode label="entry.02" color="gray" size="sm" delay={1.3} />
-              <FlowLine length={24} color="emerald" delay={6} />
-              <StatusBadge status="retry" label="posted" />
+              <FlowLine length={28} color="green" delay={5} />
+              <FlowNode label="quota.ok" color="gray" size="sm" delay={1.3} />
+              <FlowLine length={24} color="green" delay={6} />
+              <StatusBadge status="retry" label="<1ms" />
             </motion.div>
 
-            {/* Event 3: balance updated */}
+            {/* Event 3: invoice generated */}
             <motion.div
               initial={{ opacity: 0, x: -10 }}
               animate={{ opacity: 1, x: 0 }}
@@ -106,19 +120,19 @@ function MiniLedgerPipeline() {
               className="flex items-center gap-0"
             >
               <FlowLine length={28} color="green" delay={7} />
-              <FlowNode label="bal.ok" color="gray" size="sm" delay={1.5} />
+              <FlowNode label="inv.gen" color="gray" size="sm" delay={1.5} />
               <FlowLine length={24} color="green" delay={8} />
-              <StatusBadge status="delivered" label="balanced" />
+              <StatusBadge status="delivered" label="$49.00" />
             </motion.div>
           </div>
         </div>
 
         {/* Floating capability badges */}
         <div className="flex flex-wrap items-center justify-center gap-2 pt-2">
-          <FloatingBadge label="Double-Entry" delay={1.6} />
+          <FloatingBadge label="10K+ events/s" delay={1.6} />
           <FloatingBadge label="Multi-Tenant" delay={1.8} />
-          <FloatingBadge label="Forge-Native" delay={2.0} />
-          <FloatingBadge label="ACID Compliant" delay={2.2} />
+          <FloatingBadge label="<1ms Checks" delay={2.0} />
+          <FloatingBadge label="Type-Safe" delay={2.2} />
         </div>
       </div>
     </motion.div>
@@ -147,7 +161,7 @@ export function Hero() {
               transition={{ duration: 0.4 }}
             >
               <span className="inline-flex items-center rounded-full border border-emerald-500/20 bg-emerald-500/10 px-3.5 py-1 text-xs font-medium text-emerald-600 dark:text-emerald-400 mb-6">
-                Double-entry bookkeeping engine for Go
+                Usage-based billing engine for Go
               </span>
             </motion.div>
 
@@ -161,9 +175,9 @@ export function Hero() {
               transition={{ duration: 0.5, delay: 0.6 }}
               className="mt-6 text-lg text-fd-muted-foreground leading-relaxed max-w-lg"
             >
-              Process transactions, manage accounts, enforce double-entry rules,
-              generate financial reports &mdash; tenant-scoped,
-              plugin-extensible, and Forge-native.
+              Meter usage, check entitlements, manage subscriptions, generate
+              invoices &mdash; high-performance, multi-tenant, and
+              provider-agnostic.
             </motion.p>
 
             {/* Install command */}

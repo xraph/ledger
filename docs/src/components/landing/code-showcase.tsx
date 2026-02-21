@@ -4,7 +4,7 @@ import { motion } from "framer-motion";
 import { CodeBlock } from "./code-block";
 import { SectionHeader } from "./section-header";
 
-const createTransactionCode = `package main
+const setupBillingCode = `package main
 
 import (
   "context"
@@ -12,36 +12,41 @@ import (
   "time"
 
   "github.com/xraph/ledger"
+  "github.com/xraph/ledger/plan"
   "github.com/xraph/ledger/store/postgres"
-  "github.com/shopspring/decimal"
+  "github.com/xraph/ledger/types"
 )
 
 func main() {
   ctx := context.Background()
 
-  engine, _ := ledger.NewEngine(
-    ledger.WithStore(postgres.New(pool)),
-    ledger.WithValidator(ledger.DoubleEntry),
-    ledger.WithLogger(slog.Default()),
+  // Initialize billing engine
+  engine := ledger.New(
+    postgres.New(pool),
+    ledger.WithMeterConfig(100, 5*time.Second),
+    ledger.WithEntitlementCacheTTL(30*time.Second),
   )
 
-  ctx = ledger.WithTenant(ctx, "tenant-1")
-  ctx = ledger.WithApp(ctx, "accounting")
-
-  // Create a double-entry transaction
-  txn, _ := engine.CreateTransaction(ctx,
-    ledger.Transaction{
-      Date:        time.Now(),
-      Description: "Customer payment",
-      Entries: []ledger.Entry{
-        {Account: "cash", Debit: decimal.NewFromFloat(100)},
-        {Account: "revenue", Credit: decimal.NewFromFloat(100)},
+  // Create a usage-based plan
+  p := &plan.Plan{
+    Name: "Pro Plan",
+    Slug: "pro",
+    Features: []plan.Feature{
+      {
+        Key:   "api_calls",
+        Type:  plan.FeatureMetered,
+        Limit: 10000,
       },
-    })
-  // txn.ID=txn_01j8x... Status=posted
+    },
+    Pricing: &plan.Pricing{
+      BaseAmount: types.USD(4900), // $49.00
+    },
+  }
+
+  engine.CreatePlan(ctx, p)
 }`;
 
-const reportCode = `package main
+const usageTrackingCode = `package main
 
 import (
   "context"
@@ -50,26 +55,29 @@ import (
   "github.com/xraph/ledger"
 )
 
-func generateReport(
-  engine *ledger.Engine,
+func trackUsage(
+  engine *ledger.Ledger,
   ctx context.Context,
 ) {
-  ctx = ledger.WithTenant(ctx, "tenant-1")
+  // Set tenant context
+  ctx = context.WithValue(ctx, "tenant_id", "tenant_123")
+  ctx = context.WithValue(ctx, "app_id", "app_456")
 
-  // Generate balance sheet report
-  report, _ := engine.GenerateReport(ctx,
-    &ledger.ReportInput{
-      Type:     ledger.BalanceSheet,
-      Date:     time.Now(),
-      Accounts: []string{"assets", "liabilities", "equity"},
-    })
+  // Check entitlement (<1ms with cache)
+  result, _ := engine.Entitled(ctx, "api_calls")
 
-  for _, line := range report.Lines {
-    fmt.Printf("%s: %s\\n",
-      line.Account, line.Balance.String())
+  if result.Allowed {
+    fmt.Printf("Quota: %d/%d remaining\\n",
+      result.Remaining, result.Limit)
+
+    // Meter usage (non-blocking, batched)
+    engine.Meter(ctx, "api_calls", 1)
+
+    // Process API call...
+  } else {
+    fmt.Printf("Quota exceeded: %s\\n", result.Reason)
+    // Return 429 Too Many Requests
   }
-  // assets.cash: 10,500.00
-  // liabilities.payable: 3,200.00
 }`;
 
 export function CodeShowcase() {
@@ -78,12 +86,12 @@ export function CodeShowcase() {
       <div className="container max-w-(--fd-layout-width) mx-auto px-4 sm:px-6">
         <SectionHeader
           badge="Developer Experience"
-          title="Simple API. Powerful accounting."
-          description="Create transactions and generate financial reports in under 20 lines. Ledger handles the rest."
+          title="Simple API. Powerful billing."
+          description="Setup plans and track usage in under 20 lines. Ledger handles metering, entitlements, and invoicing."
         />
 
         <div className="mt-14 grid grid-cols-1 lg:grid-cols-2 gap-6">
-          {/* Transaction side */}
+          {/* Setup side */}
           <motion.div
             initial={{ opacity: 0, x: -20 }}
             whileInView={{ opacity: 1, x: 0 }}
@@ -93,13 +101,13 @@ export function CodeShowcase() {
             <div className="mb-3 flex items-center gap-2">
               <div className="size-2 rounded-full bg-emerald-500" />
               <span className="text-xs font-medium text-fd-muted-foreground uppercase tracking-wider">
-                Transactions
+                Setup Billing
               </span>
             </div>
-            <CodeBlock code={createTransactionCode} filename="main.go" />
+            <CodeBlock code={setupBillingCode} filename="main.go" />
           </motion.div>
 
-          {/* Reporting side */}
+          {/* Usage side */}
           <motion.div
             initial={{ opacity: 0, x: 20 }}
             whileInView={{ opacity: 1, x: 0 }}
@@ -109,10 +117,10 @@ export function CodeShowcase() {
             <div className="mb-3 flex items-center gap-2">
               <div className="size-2 rounded-full bg-blue-500" />
               <span className="text-xs font-medium text-fd-muted-foreground uppercase tracking-wider">
-                Reporting
+                Track Usage
               </span>
             </div>
-            <CodeBlock code={reportCode} filename="report.go" />
+            <CodeBlock code={usageTrackingCode} filename="usage.go" />
           </motion.div>
         </div>
       </div>

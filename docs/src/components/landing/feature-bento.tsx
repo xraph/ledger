@@ -16,9 +16,9 @@ interface FeatureCard {
 
 const features: FeatureCard[] = [
   {
-    title: "Document Ingestion Pipeline",
+    title: "Sub-Millisecond Entitlements",
     description:
-      "Load, chunk, embed, and store in one call. Weave handles the full lifecycle from raw content to searchable vectors.",
+      "Check feature access with <1ms latency using intelligent caching. Built for high-frequency permission checks.",
     icon: (
       <svg
         className="size-5"
@@ -30,137 +30,24 @@ const features: FeatureCard[] = [
         strokeLinejoin="round"
         aria-hidden="true"
       >
-        <path d="M12 2v10M8 8l4 4 4-4" />
-        <path d="M3 15v4a2 2 0 002 2h14a2 2 0 002-2v-4" />
+        <path d="M12 6v6l4 2" />
+        <circle cx="12" cy="12" r="10" />
       </svg>
     ),
-    code: `doc, err := engine.Ingest(ctx, "col-123",
-  weave.IngestInput{
-    Title:   "Product FAQ",
-    Content: "Our return policy...",
-    Source:  "faq.md",
-  })
-// doc.State=ready chunks=12`,
-    filename: "ingest.go",
-  },
-  {
-    title: "Semantic Retrieval",
-    description:
-      "Cosine similarity, MMR, and hybrid search. Retrieve the most relevant chunks across a collection with configurable top-K and score thresholds.",
-    icon: (
-      <svg
-        className="size-5"
-        viewBox="0 0 24 24"
-        fill="none"
-        stroke="currentColor"
-        strokeWidth="1.5"
-        strokeLinecap="round"
-        strokeLinejoin="round"
-        aria-hidden="true"
-      >
-        <circle cx="11" cy="11" r="8" />
-        <path d="M21 21l-4.35-4.35" />
-        <path d="M11 8v6M8 11h6" />
-      </svg>
-    ),
-    code: `results, err := engine.Retrieve(ctx, "col-123",
-  &weave.RetrieveInput{
-    Query:    "return policy",
-    TopK:     5,
-    MinScore: 0.75,
-  })
-// [0.94] Our return policy allows...`,
-    filename: "retrieve.go",
-  },
-  {
-    title: "Multi-Tenant Isolation",
-    description:
-      "Every collection, document, and chunk is scoped to a tenant via context. Cross-tenant queries are structurally impossible.",
-    icon: (
-      <svg
-        className="size-5"
-        viewBox="0 0 24 24"
-        fill="none"
-        stroke="currentColor"
-        strokeWidth="1.5"
-        strokeLinecap="round"
-        strokeLinejoin="round"
-        aria-hidden="true"
-      >
-        <path d="M17 21v-2a4 4 0 00-4-4H5a4 4 0 00-4 4v2" />
-        <circle cx="9" cy="7" r="4" />
-        <path d="M23 21v-2a4 4 0 00-3-3.87M16 3.13a4 4 0 010 7.75" />
-      </svg>
-    ),
-    code: `ctx = weave.WithTenant(ctx, "tenant-1")
-ctx = weave.WithApp(ctx, "myapp")
+    code: `// Check entitlement (<1ms with cache)
+result, _ := engine.Entitled(ctx, "api_calls")
 
-// All ingestions and retrievals are
-// automatically scoped to tenant-1`,
-    filename: "scope.go",
-  },
-  {
-    title: "Pluggable Backends",
-    description:
-      "Start with in-memory for development, swap to PostgreSQL + pgvector for production. Every subsystem is a Go interface.",
-    icon: (
-      <svg
-        className="size-5"
-        viewBox="0 0 24 24"
-        fill="none"
-        stroke="currentColor"
-        strokeWidth="1.5"
-        strokeLinecap="round"
-        strokeLinejoin="round"
-        aria-hidden="true"
-      >
-        <ellipse cx="12" cy="5" rx="9" ry="3" />
-        <path d="M21 12c0 1.66-4.03 3-9 3s-9-1.34-9-3" />
-        <path d="M3 5v14c0 1.66 4.03 3 9 3s9-1.34 9-3V5" />
-      </svg>
-    ),
-    code: `engine, _ := weave.NewEngine(
-  weave.WithStore(postgres.New(pool)),
-  weave.WithVectorStore(pgvector.New(pool)),
-  weave.WithEmbedder(myEmbedder),
-  weave.WithLogger(slog.Default()),
-)`,
-    filename: "main.go",
-  },
-  {
-    title: "Extension Hooks",
-    description:
-      "OnIngestCompleted, OnRetrievalStarted, and 12 other lifecycle events. Wire in metrics, audit trails, or custom logic.",
-    icon: (
-      <svg
-        className="size-5"
-        viewBox="0 0 24 24"
-        fill="none"
-        stroke="currentColor"
-        strokeWidth="1.5"
-        strokeLinecap="round"
-        strokeLinejoin="round"
-        aria-hidden="true"
-      >
-        <path d="M20.24 12.24a6 6 0 00-8.49-8.49L5 10.5V19h8.5z" />
-        <line x1="16" y1="8" x2="2" y2="22" />
-        <line x1="17.5" y1="15" x2="9" y2="15" />
-      </svg>
-    ),
-    code: `func (e *MetricsExt) OnIngestCompleted(
-  ctx context.Context,
-  colID string,
-  docs, chunks int,
-  elapsed time.Duration,
-) {
-  metrics.Inc("weave.chunks.created", chunks)
+if result.Allowed {
+  fmt.Printf("Remaining: %d/%d\\n",
+    result.Remaining, result.Limit)
+  // Process request...
 }`,
-    filename: "extension.go",
+    filename: "entitlement.go",
   },
   {
-    title: "Collection Management",
+    title: "High-Throughput Metering",
     description:
-      "Organize documents with per-collection embedding models, chunk strategies, and metadata. Reindex any collection at any time.",
+      "Ingest 10K+ usage events per second with batched processing. Non-blocking API calls with automatic flush.",
     icon: (
       <svg
         className="size-5"
@@ -172,20 +59,139 @@ ctx = weave.WithApp(ctx, "myapp")
         strokeLinejoin="round"
         aria-hidden="true"
       >
-        <path d="M3 6h18M3 12h18M3 18h18" />
-        <rect x="2" y="3" width="20" height="18" rx="2" />
+        <path d="M3 12h18M3 6h18M3 18h18" />
+        <circle cx="9" cy="12" r="1" />
+        <circle cx="15" cy="6" r="1" />
+        <circle cx="12" cy="18" r="1" />
       </svg>
     ),
-    code: `col, _ := engine.CreateCollection(ctx,
-  weave.CreateCollectionInput{
-    Name:            "product-docs",
-    EmbeddingModel:  "text-embedding-3-small",
-    ChunkStrategy:   "recursive",
-    ChunkSize:       512,
-    ChunkOverlap:    50,
-  })
-// Reindex: engine.Reindex(ctx, col.ID)`,
-    filename: "collection.go",
+    code: `// Meter usage (non-blocking, batched)
+engine.Meter(ctx, "api_calls", 100)
+engine.Meter(ctx, "storage_gb", 5)
+engine.Meter(ctx, "seats", 1)
+
+// Auto-batches every 100 events or 5s
+// 10K+ events/second throughput`,
+    filename: "metering.go",
+  },
+  {
+    title: "Flexible Pricing Models",
+    description:
+      "Graduated tiers, volume pricing, per-seat, flat-rate, and hybrid models. Define complex pricing with simple structs.",
+    icon: (
+      <svg
+        className="size-5"
+        viewBox="0 0 24 24"
+        fill="none"
+        stroke="currentColor"
+        strokeWidth="1.5"
+        strokeLinecap="round"
+        strokeLinejoin="round"
+        aria-hidden="true"
+      >
+        <path d="M12 2v20M17 5H9.5a3.5 3.5 0 000 7h5a3.5 3.5 0 010 7H6" />
+      </svg>
+    ),
+    code: `Pricing: &plan.Pricing{
+  BaseAmount: types.USD(4900), // $49
+  Tiers: []plan.PriceTier{
+    {UpTo: 1000, UnitAmount: types.Zero()},
+    {UpTo: 5000, UnitAmount: types.USD(10)},
+    {UpTo: -1, UnitAmount: types.USD(5)},
+  },
+}`,
+    filename: "pricing.go",
+  },
+  {
+    title: "Subscription Lifecycle",
+    description:
+      "Manage trials, upgrades, downgrades, and cancellations. Automatic proration and period management.",
+    icon: (
+      <svg
+        className="size-5"
+        viewBox="0 0 24 24"
+        fill="none"
+        stroke="currentColor"
+        strokeWidth="1.5"
+        strokeLinecap="round"
+        strokeLinejoin="round"
+        aria-hidden="true"
+      >
+        <path d="M4 4h16c1.1 0 2 .9 2 2v12c0 1.1-.9 2-2 2H4c-1.1 0-2-.9-2-2V6c0-1.1.9-2 2-2z" />
+        <path d="M22 6l-10 7L2 6" />
+      </svg>
+    ),
+    code: `// Create subscription with trial
+sub := &subscription.Subscription{
+  PlanID:     planID,
+  Status:     subscription.StatusTrialing,
+  TrialEnd:   time.Now().AddDate(0, 0, 14),
+}
+
+// Upgrade/downgrade
+engine.ChangePlan(ctx, subID, newPlanID)`,
+    filename: "subscription.go",
+  },
+  {
+    title: "Automatic Invoicing",
+    description:
+      "Generate invoices with line items, taxes, and discounts. Integrates with payment providers for collection.",
+    icon: (
+      <svg
+        className="size-5"
+        viewBox="0 0 24 24"
+        fill="none"
+        stroke="currentColor"
+        strokeWidth="1.5"
+        strokeLinecap="round"
+        strokeLinejoin="round"
+        aria-hidden="true"
+      >
+        <path d="M14 2H6a2 2 0 00-2 2v16a2 2 0 002 2h12a2 2 0 002-2V8z" />
+        <path d="M14 2v6h6M16 13H8M16 17H8M10 9H8" />
+      </svg>
+    ),
+    code: `// Generate invoice for period
+invoice, _ := engine.GenerateInvoice(
+  ctx, subscriptionID)
+
+// Invoice includes:
+// - Base subscription: $49.00
+// - API overage (5k): $50.00
+// - Discount (10%): -$9.90
+// Total: $89.10`,
+    filename: "invoice.go",
+  },
+  {
+    title: "Type-Safe Money",
+    description:
+      "Integer-only currency handling with zero floating-point errors. Multi-currency support with proper decimal handling.",
+    icon: (
+      <svg
+        className="size-5"
+        viewBox="0 0 24 24"
+        fill="none"
+        stroke="currentColor"
+        strokeWidth="1.5"
+        strokeLinecap="round"
+        strokeLinejoin="round"
+        aria-hidden="true"
+      >
+        <circle cx="12" cy="12" r="10" />
+        <path d="M16 8l-8 8M8 8l8 8" />
+      </svg>
+    ),
+    code: `// All amounts are integer cents
+amount := types.USD(4999)  // $49.99
+tax := amount.Multiply(0.08) // 8% tax
+total := amount.Add(tax)
+
+// Multi-currency support
+eur := types.EUR(3999)  // €39.99
+gbp := types.GBP(2999)  // £29.99
+
+// No floating-point errors ever`,
+    filename: "money.go",
     colSpan: 2,
   },
 ];
@@ -214,8 +220,8 @@ export function FeatureBento() {
       <div className="container max-w-(--fd-layout-width) mx-auto px-4 sm:px-6">
         <SectionHeader
           badge="Features"
-          title="Everything you need for RAG pipelines"
-          description="Weave handles the hard parts — ingestion, chunking, embedding, retrieval, and multi-tenancy — so you can focus on your application."
+          title="Everything you need for SaaS billing"
+          description="Ledger handles the hard parts — metering, entitlements, pricing, and invoicing — so you can focus on your product."
         />
 
         <motion.div
@@ -230,13 +236,13 @@ export function FeatureBento() {
               key={feature.title}
               variants={itemVariants}
               className={cn(
-                "group relative rounded-xl border border-fd-border bg-fd-card/50 backdrop-blur-sm p-6 hover:border-violet-500/20 hover:bg-fd-card/80 transition-all duration-300",
+                "group relative rounded-xl border border-fd-border bg-fd-card/50 backdrop-blur-sm p-6 hover:border-emerald-500/20 hover:bg-fd-card/80 transition-all duration-300",
                 feature.colSpan === 2 && "md:col-span-2",
               )}
             >
               {/* Header */}
               <div className="flex items-start gap-3 mb-4">
-                <div className="flex items-center justify-center size-9 rounded-lg bg-violet-500/10 text-violet-600 dark:text-violet-400 shrink-0">
+                <div className="flex items-center justify-center size-9 rounded-lg bg-emerald-500/10 text-emerald-600 dark:text-emerald-400 shrink-0">
                   {feature.icon}
                 </div>
                 <div>

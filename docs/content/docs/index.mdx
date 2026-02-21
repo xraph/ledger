@@ -1,50 +1,52 @@
 ---
 title: Introduction
-description: Human-emulating AI agent orchestration for Go.
+description: Modern billing engine for SaaS applications in Go.
 ---
 
-Cortex is a Go library for building AI agents that think and behave like humans. Instead of hand-crafting system prompts, you declare an agent's **skills**, **traits**, **behaviors**, and **persona** — the same building blocks that make people unique — and Cortex assembles them into a coherent identity at runtime.
+Ledger is a Go library for building usage-based billing systems for SaaS applications. Instead of managing complex pricing logic, you define **plans**, track **usage**, check **entitlements**, and generate **invoices** — and Ledger handles the billing orchestration at runtime.
 
-Cortex is a **library** — not a service. You bring your own LLM provider, database, and HTTP server. Cortex provides the agent orchestration plumbing.
+Ledger is a **library** — not a service. You bring your own database, payment provider, and HTTP server. Ledger provides the billing engine plumbing.
 
-## The Human Model
+## The Billing Model
 
-Cortex models AI agents the way you would describe a person:
+Ledger models SaaS billing the way modern applications need it:
 
-| Aspect | What it represents | Go type |
-|--------|-------------------|---------|
-| **Skill** | What the agent can do (capabilities + tools) | `skill.Skill` |
-| **Trait** | Who the agent is (personality dimensions) | `trait.Trait` |
-| **Behavior** | What the agent does habitually (trigger → action) | `behavior.Behavior` |
-| **Cognitive Style** | How the agent thinks (phase-based reasoning) | `cognitive.Style` |
-| **Communication Style** | How the agent talks (tone, formality, verbosity) | `communication.Style` |
-| **Perception** | How the agent sees (attention filters) | `perception.Model` |
-| **Persona** | The whole person (composes all of the above) | `persona.Persona` |
+| Component | What it represents | Go type |
+|-----------|-------------------|---------|
+| **Plan** | What you sell (features + pricing) | `plan.Plan` |
+| **Feature** | What customers can use (seats, API calls, storage) | `plan.Feature` |
+| **Subscription** | What customers have purchased | `subscription.Subscription` |
+| **Meter** | Usage tracking (API calls, storage, etc.) | `meter.UsageEvent` |
+| **Entitlement** | Permission checks (sub-millisecond latency) | `entitlement.Result` |
+| **Invoice** | What customers owe | `invoice.Invoice` |
+| **Coupon** | Discounts and promotions | `coupon.Coupon` |
+| **Provider** | Payment gateway integration | `provider.Provider` |
 
 ## What it does
 
-- **Declarative personality** — Define agents via composable Skills, Traits, and Behaviors instead of imperative prompt engineering.
-- **Persona composition** — Bundle skills, traits, behaviors, cognitive style, communication style, and perception into a reusable Persona. Assign it to any agent with one field.
-- **Execution tracking** — Every agent run is recorded as a Run with Steps and ToolCalls, providing full observability into reasoning chains.
-- **Human-in-the-loop** — Checkpoints pause a run for human approval before proceeding with sensitive actions.
-- **Multi-tenant isolation** — Every entity is scoped to a tenant and app via context. Cross-tenant access is structurally impossible.
-- **Plugin system** — 16 lifecycle hooks for metrics, audit trails, tracing, and custom processing. Extensions opt in to only the events they care about.
-- **Memory management** — Conversation history, working memory, and summary memory per agent per tenant.
-- **PostgreSQL store** — Production-ready persistence with embedded migrations and JSONB columns for flexible metadata.
-- **Forge integration** — Drop-in `forge.Extension` with DI-injected Engine and auto-registered HTTP routes.
-- **REST API** — 36 endpoints for managing agents, personas, skills, traits, behaviors, runs, checkpoints, and memory.
+- **Usage-based billing** — Track metered usage with high-throughput batched ingestion (10K+ events/sec).
+- **Sub-millisecond entitlements** — Check feature access with sub-millisecond latency using intelligent caching.
+- **Flexible pricing** — Graduated tiers, volume pricing, per-seat, flat-rate, and hybrid models.
+- **Subscription lifecycle** — Trials, upgrades, downgrades, cancellations, and proration.
+- **Invoice generation** — Automated invoice creation with line items, taxes, and discounts.
+- **Multi-tenancy** — Built-in tenant isolation with context propagation.
+- **Plugin system** — 16 lifecycle hooks for metrics, audit trails, webhooks, and custom logic.
+- **TypeID everywhere** — All entities use type-prefixed, K-sortable identifiers (`sub_`, `inv_`, `pln_`, etc.).
+- **Integer-only money** — No floating-point precision issues with currency amounts.
+- **Multiple stores** — PostgreSQL, SQLite, Redis, and in-memory implementations.
+- **Provider ready** — Integration points for Stripe, Paddle, and custom payment gateways.
 
 ## Design philosophy
 
-**Library, not service.** Cortex is a set of Go packages you import. You control `main`, the database connection, and the process lifecycle.
+**Library, not service.** Ledger is a set of Go packages you import. You control `main`, the database connection, and the process lifecycle.
 
-**Declarative over imperative.** You don't tell agents what to do — you tell them who they are. Skills define capabilities, Traits shape personality, Behaviors encode habits. Cortex assembles the system prompt and runtime parameters from these declarations.
+**Performance first.** Entitlement checks in under 1ms with caching. Usage ingestion at 10K+ events/second. Invoice generation in under 100ms.
 
-**Interfaces over implementations.** Every subsystem defines a Go interface. Swap any storage backend with a single type change.
+**Type-safe money.** All currency amounts use integer cents with the `types.Money` type. No floating-point errors.
 
-**Tenant-scoped by design.** `cortex.WithTenant` and `cortex.WithApp` inject context that is enforced at every layer.
+**Context-driven tenancy.** `context.Context` carries tenant and app IDs, enforced at every layer.
 
-**TypeID everywhere.** All entities use type-prefixed, K-sortable, UUIDv7-based identifiers (`agt_`, `skl_`, `trt_`, `bhv_`, `prs_`, `arun_`, etc.).
+**Pluggable everything.** Every subsystem defines a Go interface. Swap any storage backend or provider with a single type change.
 
 ## Quick look
 
@@ -54,42 +56,76 @@ package main
 import (
     "context"
     "log"
+    "time"
 
-    "github.com/xraph/cortex/engine"
-    "github.com/xraph/cortex/extension"
-    "github.com/xraph/cortex/store/postgres"
+    "github.com/xraph/ledger"
+    "github.com/xraph/ledger/plan"
+    "github.com/xraph/ledger/store/postgres"
+    "github.com/xraph/ledger/subscription"
+    "github.com/xraph/ledger/types"
 )
 
 func main() {
     ctx := context.Background()
 
-    // Create the store.
-    db := connectDB() // your *bun.DB
-    pgStore := postgres.New(db)
+    // Create the store
+    store := postgres.New(pool)
 
-    // Build the Cortex engine.
-    eng, err := engine.New(
-        engine.WithStore(pgStore),
+    // Build the billing engine
+    engine := ledger.New(store,
+        ledger.WithMeterConfig(100, 5*time.Second),
+        ledger.WithEntitlementCacheTTL(30*time.Second),
     )
-    if err != nil {
+
+    // Start the engine
+    if err := engine.Start(ctx); err != nil {
         log.Fatal(err)
     }
+    defer engine.Stop()
 
-    // Or use as a Forge extension:
-    ext := extension.New(
-        extension.WithStore(pgStore),
-    )
-    _ = ext // register with your Forge app
-    _ = eng
-    _ = ctx
+    // Create a plan
+    p := &plan.Plan{
+        Name: "Pro Plan",
+        Slug: "pro",
+        Features: []plan.Feature{
+            {
+                Key:   "api_calls",
+                Type:  plan.FeatureMetered,
+                Limit: 10000,
+            },
+        },
+        Pricing: &plan.Pricing{
+            BaseAmount: types.USD(4900), // $49.00
+        },
+    }
+
+    engine.CreatePlan(ctx, p)
+
+    // Create a subscription
+    sub := &subscription.Subscription{
+        TenantID: "tenant_123",
+        PlanID:   p.ID,
+        Status:   subscription.StatusActive,
+    }
+
+    engine.CreateSubscription(ctx, sub)
+
+    // Check entitlement (sub-millisecond)
+    ctx = context.WithValue(ctx, "tenant_id", "tenant_123")
+    result, _ := engine.Entitled(ctx, "api_calls")
+
+    if result.Allowed {
+        // Track usage (non-blocking)
+        engine.Meter(ctx, "api_calls", 1)
+    }
 }
 ```
 
 ## Where to go next
 
 <Cards>
-  <Card title="Getting started" href="/docs/getting-started" description="Install Cortex and create your first agent in minutes." />
+  <Card title="Getting started" href="/docs/getting-started" description="Install Ledger and create your first billing plan in minutes." />
   <Card title="Architecture" href="/docs/architecture" description="Understand how the packages fit together." />
-  <Card title="The Human Model" href="/docs/human-model/overview" description="Learn how Skills, Traits, and Personas compose an agent." />
-  <Card title="HTTP API reference" href="/docs/api-reference/http-api" description="Full HTTP API documentation for all 36 endpoints." />
+  <Card title="Plans & Pricing" href="/docs/concepts/plans" description="Learn how to model your SaaS pricing." />
+  <Card title="API reference" href="/docs/api-reference/go-packages" description="Full Go API documentation for all packages." />
 </Cards>

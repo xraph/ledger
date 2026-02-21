@@ -61,8 +61,9 @@ export function Footer() {
               <span className="font-bold text-lg">Ledger</span>
             </Link>
             <p className="text-sm text-fd-muted-foreground leading-relaxed max-w-xs">
-              Double-entry bookkeeping engine for Go. Process transactions, manage
-              accounts, and generate financial reports at scale.
+              Usage-based billing engine for Go. Meter events, check
+              entitlements, manage subscriptions, and generate invoices at
+              scale.
             </p>
             {/* Social links */}
             <div className="flex items-center gap-3 mt-6">

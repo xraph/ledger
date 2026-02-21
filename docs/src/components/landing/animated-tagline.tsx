@@ -3,7 +3,7 @@
 import { motion } from "framer-motion";
 import { cn } from "@/lib/cn";
 
-const words = ["Ledger", " your", " transactions"];
+const words = ["Bill", " your", " SaaS"];
 
 const charVariants = {
   hidden: {
