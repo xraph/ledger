@@ -181,7 +181,7 @@ export function Hero() {
             >
               <span className="text-fd-muted-foreground select-none">$</span>
               <code className="text-fd-foreground">
-                go get github.com/xraph/weave
+                go get github.com/xraph/ledger
               </code>
             </motion.div>
 
@@ -203,7 +203,7 @@ export function Hero() {
                 Get Started
               </Link>
               <a
-                href="https://github.com/xraph/weave"
+                href="https://github.com/xraph/ledger"
                 target="_blank"
                 rel="noreferrer"
                 className={cn(
