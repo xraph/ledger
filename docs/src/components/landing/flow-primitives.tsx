@@ -7,7 +7,15 @@ import { cn } from "@/lib/cn";
 interface FlowNodeProps {
   label: string;
   sublabel?: string;
-  color?: "teal" | "amber" | "green" | "red" | "blue" | "gray" | "purple" | "violet";
+  color?:
+    | "teal"
+    | "amber"
+    | "green"
+    | "red"
+    | "blue"
+    | "gray"
+    | "purple"
+    | "violet";
   size?: "sm" | "md" | "lg";
   icon?: React.ReactNode;
   pulse?: boolean;

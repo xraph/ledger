@@ -99,12 +99,7 @@ function MiniRAGPipeline() {
               className="flex items-center gap-0"
             >
               <FlowLine length={28} color="violet" delay={5} />
-              <FlowNode
-                label="chunks.12"
-                color="gray"
-                size="sm"
-                delay={1.3}
-              />
+              <FlowNode label="chunks.12" color="gray" size="sm" delay={1.3} />
               <FlowLine length={24} color="violet" delay={6} />
               <StatusBadge status="retry" label="stored" />
             </motion.div>
@@ -117,12 +112,7 @@ function MiniRAGPipeline() {
               className="flex items-center gap-0"
             >
               <FlowLine length={28} color="green" delay={7} />
-              <FlowNode
-                label="vec.ready"
-                color="gray"
-                size="sm"
-                delay={1.5}
-              />
+              <FlowNode label="vec.ready" color="gray" size="sm" delay={1.5} />
               <FlowLine length={24} color="green" delay={8} />
               <StatusBadge status="delivered" label="indexed" />
             </motion.div>
