@@ -1,0 +1,61 @@
+---
+title: Memory
+description: Conversation history, working memory, and summaries for agent context.
+---
+
+Cortex provides three types of memory for maintaining context across interactions:
+
+## Memory types
+
+### Conversation memory
+
+Stores the full message history between a user and an agent. Scoped by agent ID and tenant ID.
+
+### Working memory
+
+Temporary key-value storage for a single run. Used for intermediate reasoning state. Cleared when the run completes.
+
+### Summary memory
+
+Compressed summaries of past conversations. Used to provide context when the full conversation history is too long.
+
+## Message
+
+```go
+type Message struct {
+    Role      string         // "user", "assistant", "system", "tool"
+    Content   string
+    ToolCalls []any
+    Metadata  map[string]any
+    Timestamp time.Time
+}
+```
+
+## Store interface
+
+```go
+type Store interface {
+    // Conversation memory
+    SaveConversation(ctx context.Context, agentID id.AgentID, tenantID string, messages []Message) error
+    LoadConversation(ctx context.Context, agentID id.AgentID, tenantID string, limit int) ([]Message, error)
+    ClearConversation(ctx context.Context, agentID id.AgentID, tenantID string) error
+
+    // Working memory
+    SaveWorking(ctx context.Context, runID id.AgentRunID, key string, value any) error
+    LoadWorking(ctx context.Context, runID id.AgentRunID, key string) (any, error)
+    ClearWorking(ctx context.Context, runID id.AgentRunID) error
+
+    // Summary memory
+    SaveSummary(ctx context.Context, agentID id.AgentID, tenantID string, summary string) error
+    LoadSummaries(ctx context.Context, agentID id.AgentID, tenantID string) ([]string, error)
+}
+```
+
+The memory store has 8 methods across three memory types. All conversation and summary operations are scoped by agent ID and tenant ID.
+
+## API routes
+
+| Method | Path | Description |
+|--------|------|-------------|
+| `GET` | `/cortex/agents/{name}/memory` | Load conversation history |
+| `DELETE` | `/cortex/agents/{name}/memory` | Clear conversation history |

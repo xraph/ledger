@@ -1,0 +1,61 @@
+---
+title: Observability
+description: Built-in metrics extension with 11 lifecycle counters.
+---
+
+The `observability` package provides a `MetricsExtension` that records counters for all agent lifecycle events using the `go-utils` MetricFactory.
+
+## Setup
+
+```go
+import "github.com/xraph/cortex/observability"
+
+// Using default metrics collector
+metricsExt := observability.NewMetricsExtension()
+
+// Or with a custom factory
+factory := metrics.NewMetricsCollector("my-app")
+metricsExt := observability.NewMetricsExtensionWithFactory(factory)
+
+// Register with engine
+eng, err := engine.New(
+    engine.WithExtension(metricsExt),
+)
+```
+
+## Counters
+
+The extension records 11 counters:
+
+| Counter name | Hook | Description |
+|-------------|------|-------------|
+| `cortex.agent.run.started` | `OnRunStarted` | Agent runs initiated |
+| `cortex.agent.run.completed` | `OnRunCompleted` | Runs completed successfully |
+| `cortex.agent.run.failed` | `OnRunFailed` | Runs that failed |
+| `cortex.tool.called` | `OnToolCalled` | Tool invocations initiated |
+| `cortex.tool.completed` | `OnToolCompleted` | Tool calls completed |
+| `cortex.tool.failed` | `OnToolFailed` | Tool calls that failed |
+| `cortex.persona.resolved` | `OnPersonaResolved` | Personas resolved for runs |
+| `cortex.behavior.triggered` | `OnBehaviorTriggered` | Behaviors triggered |
+| `cortex.cognitive.phase_changed` | `OnCognitivePhaseChanged` | Cognitive phase transitions |
+| `cortex.checkpoint.created` | `OnCheckpointCreated` | Checkpoints created |
+| `cortex.checkpoint.resolved` | `OnCheckpointResolved` | Checkpoints resolved |
+
+## Interface compliance
+
+The `MetricsExtension` implements 11 hook interfaces plus the base `plugin.Extension`:
+
+```go
+var _ plugin.Extension             = (*MetricsExtension)(nil)
+var _ plugin.RunStarted            = (*MetricsExtension)(nil)
+var _ plugin.RunCompleted          = (*MetricsExtension)(nil)
+var _ plugin.RunFailed             = (*MetricsExtension)(nil)
+var _ plugin.ToolCalled            = (*MetricsExtension)(nil)
+var _ plugin.ToolCompleted         = (*MetricsExtension)(nil)
+var _ plugin.ToolFailed            = (*MetricsExtension)(nil)
+var _ plugin.PersonaResolved       = (*MetricsExtension)(nil)
+var _ plugin.BehaviorTriggered     = (*MetricsExtension)(nil)
+var _ plugin.CognitivePhaseChanged = (*MetricsExtension)(nil)
+var _ plugin.CheckpointCreated     = (*MetricsExtension)(nil)
+var _ plugin.CheckpointResolved    = (*MetricsExtension)(nil)
+```

@@ -1,0 +1,94 @@
+---
+title: Cognitive Style
+description: Define how an agent thinks — phase-based reasoning strategies.
+---
+
+**Cognitive Style** replaces rigid reasoning loop selection with a phase-based thinking strategy chain. Instead of picking a single strategy ("react" or "chain-of-thought"), you define multiple phases that transition based on conditions.
+
+## Structure
+
+```go
+type Style struct {
+    Phases              []Phase
+    DepthPreference     float64 // 0.0 = shallow, 1.0 = deep
+    FocusPreference     float64 // 0.0 = broad, 1.0 = narrow
+    ReflectionFrequency float64 // how often to self-reflect
+}
+```
+
+## Phases
+
+A phase represents one stage in a cognitive strategy chain:
+
+```go
+type Phase struct {
+    Strategy   Strategy
+    MaxSteps   int
+    Transition TransitionCondition
+}
+```
+
+### Strategies
+
+| Strategy | Description |
+|----------|-------------|
+| `analytical` | Structured, step-by-step analysis |
+| `creative` | Exploratory, lateral thinking |
+| `methodical` | Systematic, exhaustive approach |
+| `reactive` | Quick response, minimal deliberation |
+| `reflective` | Self-evaluating, iterative refinement |
+| `collaborative` | Seeks input, considers multiple perspectives |
+
+### Transition conditions
+
+| Condition | Description |
+|-----------|-------------|
+| `after_steps` | Transition after `MaxSteps` reasoning steps |
+| `on_stuck` | Transition when progress stalls |
+| `on_plan_complete` | Transition when the current plan is finished |
+| `on_error` | Transition when an error occurs |
+
+## Multi-phase example
+
+A three-phase cognitive style for a code reviewer:
+
+```go
+cognitive.Style{
+    Phases: []cognitive.Phase{
+        {
+            Strategy:   cognitive.StrategyAnalytical,
+            MaxSteps:   5,
+            Transition: cognitive.TransitionAfterSteps,
+        },
+        {
+            Strategy:   cognitive.StrategyReflective,
+            MaxSteps:   3,
+            Transition: cognitive.TransitionAfterSteps,
+        },
+        {
+            Strategy:   cognitive.StrategyMethodical,
+            MaxSteps:   10,
+            Transition: cognitive.TransitionOnPlanComplete,
+        },
+    },
+    DepthPreference:     0.8,
+    FocusPreference:     0.6,
+    ReflectionFrequency: 0.5,
+}
+```
+
+This style starts with analytical examination, reflects on initial findings, then methodically addresses each issue.
+
+## Embedding in a persona
+
+Cognitive style is a value object embedded directly in the persona:
+
+```go
+persona := &persona.Persona{
+    CognitiveStyle: cognitive.Style{
+        Phases: []cognitive.Phase{
+            {Strategy: cognitive.StrategyAnalytical},
+        },
+    },
+}
+```

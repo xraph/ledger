@@ -1,0 +1,99 @@
+---
+title: Configuration
+description: Options and defaults for the Cortex engine and Forge extension.
+---
+
+## Engine configuration
+
+`cortex.Config` holds global defaults that apply to all agents unless overridden at the agent level:
+
+```go
+type Config struct {
+    DefaultModel         string        // LLM model (default: "smart")
+    DefaultMaxSteps      int           // max reasoning steps per run (default: 25)
+    DefaultMaxTokens     int           // max output tokens per LLM call (default: 4096)
+    DefaultTemperature   float64       // LLM sampling temperature (default: 0.7)
+    DefaultReasoningLoop string        // reasoning strategy (default: "react")
+    ShutdownTimeout      time.Duration // graceful shutdown timeout (default: 30s)
+    RunConcurrency       int           // max concurrent runs (default: 4)
+}
+```
+
+### Defaults
+
+```go
+cortex.DefaultConfig() // returns:
+// Config{
+//     DefaultModel:         "smart",
+//     DefaultMaxSteps:      25,
+//     DefaultMaxTokens:     4096,
+//     DefaultTemperature:   0.7,
+//     DefaultReasoningLoop: "react",
+//     ShutdownTimeout:      30 * time.Second,
+//     RunConcurrency:       4,
+// }
+```
+
+### Overriding defaults
+
+Pass a custom config via engine options:
+
+```go
+eng, err := engine.New(
+    engine.WithConfig(cortex.Config{
+        DefaultModel:    "gpt-4o",
+        DefaultMaxSteps: 50,
+        RunConcurrency:  8,
+    }),
+    engine.WithStore(pgStore),
+)
+```
+
+## Engine options
+
+| Option | Description |
+|--------|-------------|
+| `engine.WithStore(s)` | Sets the composite store (required) |
+| `engine.WithConfig(cfg)` | Sets the engine configuration |
+| `engine.WithExtension(ext)` | Registers a plugin extension |
+| `engine.WithLogger(l)` | Sets the structured logger |
+
+## Agent-level overrides
+
+Each `agent.Config` can override engine-level defaults:
+
+```go
+agentCfg := &agent.Config{
+    Model:       "claude-3-opus",  // overrides DefaultModel
+    MaxSteps:    50,               // overrides DefaultMaxSteps
+    MaxTokens:   8192,             // overrides DefaultMaxTokens
+    Temperature: 0.3,              // overrides DefaultTemperature
+}
+```
+
+If an agent field is zero-valued, the engine default applies.
+
+## Extension configuration
+
+The Forge extension wrapper has its own `Config`:
+
+```go
+type Config struct {
+    DisableRoutes  bool   // prevents HTTP route registration
+    DisableMigrate bool   // prevents auto-migration on start
+    BasePath       string // URL prefix for all cortex routes
+}
+```
+
+### Extension options
+
+| Option | Description |
+|--------|-------------|
+| `extension.WithStore(s)` | Sets the composite store |
+| `extension.WithExtension(x)` | Registers a Cortex plugin extension |
+| `extension.WithEngineOption(opt)` | Passes an engine option directly |
+| `extension.WithConfig(cfg)` | Sets the extension configuration |
+| `extension.WithDisableRoutes()` | Disables HTTP route registration |
+| `extension.WithDisableMigrate()` | Disables auto-migration |
+| `extension.WithBasePath(path)` | Sets the URL prefix |
+| `extension.WithLogger(l)` | Sets the structured logger |

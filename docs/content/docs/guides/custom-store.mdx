@@ -1,0 +1,189 @@
+---
+title: Custom Components
+description: Implement custom Chunker, Embedder, Loader, and VectorStore to plug your own backends into Weave.
+---
+
+Every Weave component is a Go interface. This guide shows how to implement each one so you can plug in custom backends, models, or processing logic.
+
+## Custom Chunker
+
+Implement `chunker.Chunker` to split text with your own algorithm:
+
+```go
+import "github.com/xraph/weave/chunker"
+
+type SentenceChunker struct {
+    maxTokens int
+}
+
+func (c *SentenceChunker) Chunk(_ context.Context, text string, opts *chunker.Options) ([]chunker.ChunkResult, error) {
+    sentences := splitSentences(text)
+    var results []chunker.ChunkResult
+    var current strings.Builder
+    idx := 0
+
+    for _, sentence := range sentences {
+        if estimateTokens(current.String()) + estimateTokens(sentence) > opts.ChunkSize {
+            if current.Len() > 0 {
+                results = append(results, chunker.ChunkResult{
+                    Content:    current.String(),
+                    Index:      idx,
+                    TokenCount: estimateTokens(current.String()),
+                })
+                idx++
+                current.Reset()
+            }
+        }
+        current.WriteString(sentence + " ")
+    }
+    if current.Len() > 0 {
+        results = append(results, chunker.ChunkResult{
+            Content:    strings.TrimSpace(current.String()),
+            Index:      idx,
+            TokenCount: estimateTokens(current.String()),
+        })
+    }
+    return results, nil
+}
+
+// Register:
+eng, _ := engine.New(engine.WithChunker(&SentenceChunker{maxTokens: 256}))
+```
+
+## Custom Embedder
+
+Implement `embedder.Embedder` to use any embedding model:
+
+```go
+import "github.com/xraph/weave/embedder"
+
+type CohereEmbedder struct {
+    client *cohere.Client
+    dims   int
+}
+
+func (e *CohereEmbedder) Embed(ctx context.Context, texts []string) ([]embedder.EmbedResult, error) {
+    resp, err := e.client.Embed(ctx, &cohere.EmbedRequest{
+        Texts:     texts,
+        Model:     "embed-english-v3.0",
+        InputType: "search_document",
+    })
+    if err != nil {
+        return nil, err
+    }
+    results := make([]embedder.EmbedResult, len(resp.Embeddings))
+    for i, vec := range resp.Embeddings {
+        results[i] = embedder.EmbedResult{Vector: toFloat32(vec)}
+    }
+    return results, nil
+}
+
+func (e *CohereEmbedder) Dimensions() int { return e.dims }
+
+// Register:
+eng, _ := engine.New(engine.WithEmbedder(&CohereEmbedder{client: client, dims: 1024}))
+```
+
+## Custom Loader
+
+Implement `loader.Loader` to extract text from a custom format:
+
+```go
+import (
+    "io"
+    "github.com/xraph/weave/loader"
+)
+
+type DocxLoader struct{}
+
+func (l *DocxLoader) Supports(mime string) bool {
+    return mime == "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+}
+
+func (l *DocxLoader) Load(ctx context.Context, r io.Reader) (*loader.LoadResult, error) {
+    data, err := io.ReadAll(r)
+    if err != nil {
+        return nil, err
+    }
+    text, meta, err := extractDocx(data)
+    if err != nil {
+        return nil, fmt.Errorf("docx: %w", err)
+    }
+    return &loader.LoadResult{
+        Content:  text,
+        MimeType: "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+        Metadata: meta,
+    }, nil
+}
+
+// Register:
+eng, _ := engine.New(engine.WithLoader(&DocxLoader{}))
+```
+
+When ingesting a `.docx` file, set `SourceType` to trigger the loader:
+
+```go
+eng.Ingest(ctx, &engine.IngestInput{
+    CollectionID: colID,
+    Content:      string(docxBytes),
+    SourceType:   "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+})
+```
+
+## Custom VectorStore
+
+Implement `vectorstore.VectorStore` to use any vector database:
+
+```go
+import "github.com/xraph/weave/vectorstore"
+
+type WeaviateStore struct {
+    client *weaviate.Client
+}
+
+func (s *WeaviateStore) Upsert(ctx context.Context, entries []vectorstore.Entry) error {
+    objects := make([]*models.Object, len(entries))
+    for i, e := range entries {
+        objects[i] = &models.Object{
+            ID:         strfmt.UUID(e.ID),
+            Class:      "WeaveChunk",
+            Vector:     toFloat64(e.Vector),
+            Properties: e.Metadata,
+        }
+    }
+    _, err := s.client.Batch().ObjectsBatcher().WithObjects(objects...).Do(ctx)
+    return err
+}
+
+func (s *WeaviateStore) Search(ctx context.Context, vector []float32, opts *vectorstore.SearchOptions) ([]vectorstore.SearchResult, error) {
+    // ... weaviate nearVector query
+}
+
+func (s *WeaviateStore) Delete(ctx context.Context, ids []string) error { /* ... */ }
+func (s *WeaviateStore) DeleteByMetadata(ctx context.Context, filter map[string]string) error { /* ... */ }
+
+// Register:
+eng, _ := engine.New(engine.WithVectorStore(&WeaviateStore{client: weaviateClient}))
+```
+
+## Custom MetadataStore
+
+Implement `store.Store` (which embeds `collection.Store`, `document.Store`, `chunk.Store`) to use a different database:
+
+```go
+import "github.com/xraph/weave/store"
+
+// Your struct must implement all methods from:
+// - collection.Store (CreateCollection, GetCollection, ListCollections, DeleteCollection, ...)
+// - document.Store (CreateDocument, GetDocument, UpdateDocument, ListDocuments, DeleteDocument, ...)
+// - chunk.Store (CreateChunkBatch, ListChunksByDocument, DeleteChunksByDocument, ...)
+// - store.Store (Migrate, Ping, Close)
+
+type MyStore struct{ /* ... */ }
+
+var _ store.Store = (*MyStore)(nil) // compile-time check
+
+eng, _ := engine.New(engine.WithStore(&MyStore{}))
+```
+
+See [store/store.go](https://github.com/xraph/weave/blob/main/store/store.go) for the full interface definition.

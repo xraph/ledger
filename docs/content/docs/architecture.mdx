@@ -1,0 +1,137 @@
+---
+title: Architecture
+description: How Cortex's packages fit together.
+---
+
+Cortex is organized as a set of focused Go packages. The `engine` package is the central coordinator. All other packages define interfaces, entities, and subsystem logic that compose around it.
+
+## Package diagram
+
+```
+┌──────────────────────────────────────────────────────────────────┐
+│                        engine.Engine                              │
+│  CreateAgent / GetAgent / UpdateAgent / DeleteAgent / ListAgents  │
+│  CreateSkill / CreateTrait / CreateBehavior / CreatePersona       │
+│  GetRun / ListRuns / LoadConversation / ResolveCheckpoint         │
+├──────────────────────────────────────────────────────────────────┤
+│                     Agent resolution flow                         │
+│  1. Load agent config (flat or persona mode)                      │
+│  2. If persona mode: resolve persona → load skills + traits       │
+│  3. Assemble system prompt from persona identity + skill          │
+│     fragments + trait influences + behavior rules                 │
+│  4. Apply cognitive style (phase-based reasoning strategy)        │
+│  5. Execute reasoning loop (Run → Steps → ToolCalls)              │
+│  6. Record results, emit plugin hooks                             │
+├──────────────────────┬───────────────────────────────────────────┤
+│  plugin.Registry      │  api.API (Forge HTTP handlers)            │
+│  OnRunStarted         │  36 REST endpoints:                       │
+│  OnRunCompleted       │  - Agents (7 routes)                      │
+│  OnRunFailed          │  - Skills, Traits, Behaviors,             │
+│  OnToolCalled         │    Personas (5 routes each)               │
+│  OnPersonaResolved    │  - Runs (3), Checkpoints (2),             │
+│  (16 total hooks)     │    Memory (2), Tools (2)                  │
+├──────────────────────┴───────────────────────────────────────────┤
+│                        store.Store                                │
+│  (composite: agent.Store + skill.Store + trait.Store +            │
+│   behavior.Store + persona.Store + run.Store + memory.Store +     │
+│   checkpoint.Store + Migrate/Ping/Close)                          │
+├──────────────────────────────────────────────────────────────────┤
+│                      store/postgres                               │
+│  (PostgreSQL backend with bun ORM + embedded migrations)          │
+└──────────────────────────────────────────────────────────────────┘
+```
+
+## Engine construction
+
+`engine.New` accepts option functions:
+
+```go
+eng, err := engine.New(
+    engine.WithStore(pgStore),           // required: composite Store
+    engine.WithConfig(cortex.Config{     // optional: override defaults
+        DefaultModel:    "gpt-4o",
+        DefaultMaxSteps: 30,
+    }),
+    engine.WithExtension(metricsExt),    // optional: lifecycle hooks
+    engine.WithLogger(slog.Default()),   // optional: structured logger
+)
+```
+
+All components are interfaces — swap any with your own implementation.
+
+## Agent resolution flow
+
+When an agent run begins, the engine resolves the agent's full configuration:
+
+1. **Load agent config** — Read the `agent.Config` from the store. Check if it uses flat mode (inline `SystemPrompt` + `Tools`) or persona mode (`PersonaRef` or inline skill/trait/behavior names).
+
+2. **Resolve persona** — If `PersonaRef` is set, load the `persona.Persona` from the store. The persona contains `SkillAssignment`s, `TraitAssignment`s, behavior names, cognitive style, communication style, and perception.
+
+3. **Assemble system prompt** — Concatenate the persona's `Identity` field with each skill's `SystemPromptFragment`, trait influences that target `prompt_injection`, and behavior actions that inject prompts.
+
+4. **Apply runtime parameters** — Trait influences modify runtime parameters like `Temperature`, `MaxSteps`, and tool selection preferences. Cognitive style determines the reasoning loop strategy.
+
+5. **Execute reasoning loop** — The agent runs through its reasoning loop, creating `run.Step` records for each reasoning step and `run.ToolCall` records for each tool invocation.
+
+6. **Record and notify** — The `run.Run` is updated with the final state, output, token usage, and timing. Plugin hooks fire at each stage (`OnRunStarted`, `OnStepStarted`, `OnToolCalled`, etc.).
+
+## Tenant isolation
+
+`cortex.WithTenant(ctx, id)` and `cortex.WithApp(ctx, id)` inject identifiers into the context. These are extracted at every layer:
+
+- **Store** — all queries include `WHERE app_id = ?` filters
+- **Engine** — scope is applied before any store operation
+- **API** — the Forge request context provides tenant/app identifiers
+
+Cross-tenant access is structurally impossible: even if a caller passes an agent ID from another tenant, the store layer returns `ErrAgentNotFound`.
+
+## Plugin system
+
+Extensions implement the `plugin.Extension` base interface (just `Name() string`) and then opt in to specific lifecycle hooks by implementing additional interfaces:
+
+```go
+type Extension interface {
+    Name() string
+}
+
+// Opt-in hooks (implement any subset):
+type RunStarted interface {
+    OnRunStarted(ctx context.Context, agentID id.AgentID, runID id.AgentRunID, input string) error
+}
+type RunCompleted interface { /* ... */ }
+type ToolCalled interface { /* ... */ }
+type PersonaResolved interface { /* ... */ }
+// ... 16 hooks total
+```
+
+The `plugin.Registry` type-caches extensions at registration time, so emit calls iterate only over extensions that implement the relevant hook. Errors from hooks are logged but never propagated.
+
+Built-in extensions:
+- `observability.MetricsExtension` — 11 counters for all lifecycle events
+- `audithook.Extension` — bridges lifecycle events to an audit trail backend
+
+## Package index
+
+| Package | Import path | Purpose |
+|---------|-------------|---------|
+| `cortex` | `github.com/xraph/cortex` | Root package — Entity, Config, scope helpers, errors |
+| `id` | `.../id` | TypeID-based entity identifiers (12 prefixes) |
+| `engine` | `.../engine` | Central coordinator — all CRUD passthroughs |
+| `agent` | `.../agent` | Agent config entity and store interface |
+| `skill` | `.../skill` | Skill entity — capabilities and tools |
+| `trait` | `.../trait` | Trait entity — personality dimensions |
+| `behavior` | `.../behavior` | Behavior entity — trigger/action patterns |
+| `persona` | `.../persona` | Persona entity — composes all aspects |
+| `cognitive` | `.../cognitive` | CognitiveStyle value object — thinking phases |
+| `communication` | `.../communication` | CommunicationStyle value object — tone and format |
+| `perception` | `.../perception` | Perception value object — attention filters |
+| `run` | `.../run` | Run, Step, ToolCall entities and store |
+| `memory` | `.../memory` | Message entity and memory store |
+| `checkpoint` | `.../checkpoint` | Checkpoint entity for human-in-the-loop |
+| `store` | `.../store` | Composite store interface |
+| `store/postgres` | `.../store/postgres` | PostgreSQL backend (bun ORM) |
+| `plugin` | `.../plugin` | Extension interfaces and Registry |
+| `observability` | `.../observability` | Metrics extension (11 counters) |
+| `audit_hook` | `.../audit_hook` | Audit trail extension |
+| `api` | `.../api` | Forge-native HTTP handlers (36 routes) |
+| `extension` | `.../extension` | Forge framework extension adapter |

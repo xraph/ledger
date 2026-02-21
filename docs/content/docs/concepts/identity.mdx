@@ -1,0 +1,75 @@
+---
+title: Identity (TypeID)
+description: How Cortex uses type-safe, prefix-qualified identifiers for every entity.
+---
+
+Every entity in Cortex gets a type-prefixed, K-sortable, UUIDv7-based identifier using the [TypeID](https://github.com/jetify-com/typeid) specification. IDs are validated at parse time to ensure the prefix matches the expected type.
+
+## Prefix table
+
+| Type | Prefix | Go type | Example |
+|------|--------|---------|---------|
+| Agent | `agt_` | `id.AgentID` | `agt_01h2xcejqtf2nbrexx3vqjhp41` |
+| Agent Run | `arun_` | `id.AgentRunID` | `arun_01h2xcejqtf2nbrexx3vqjhp41` |
+| Tool | `tool_` | `id.ToolID` | `tool_01h2xcejqtf2nbrexx3vqjhp41` |
+| Tool Call | `tcall_` | `id.ToolCallID` | `tcall_01h2xcejqtf2nbrexx3vqjhp41` |
+| Step | `astp_` | `id.StepID` | `astp_01h2xcejqtf2nbrexx3vqjhp41` |
+| Memory | `mem_` | `id.MemoryID` | `mem_01h2xcejqtf2nbrexx3vqjhp41` |
+| Checkpoint | `acp_` | `id.CheckpointID` | `acp_01h2xcejqtf2nbrexx3vqjhp41` |
+| Orchestration | `orch_` | `id.OrchestrationID` | `orch_01h2xcejqtf2nbrexx3vqjhp41` |
+| Skill | `skl_` | `id.SkillID` | `skl_01h455vb4pex5vsknk084sn02q` |
+| Trait | `trt_` | `id.TraitID` | `trt_01h455vb4pex5vsknk084sn02q` |
+| Behavior | `bhv_` | `id.BehaviorID` | `bhv_01h455vb4pex5vsknk084sn02q` |
+| Persona | `prs_` | `id.PersonaID` | `prs_01h455vb4pex5vsknk084sn02q` |
+
+## Constructors
+
+Each type has a constructor that generates a new UUIDv7-based ID with the correct prefix:
+
+```go
+import "github.com/xraph/cortex/id"
+
+agentID  := id.NewAgentID()     // agt_01h...
+runID    := id.NewAgentRunID()  // arun_01h...
+skillID  := id.NewSkillID()    // skl_01h...
+traitID  := id.NewTraitID()    // trt_01h...
+personaID := id.NewPersonaID() // prs_01h...
+```
+
+## Parsing
+
+Parse functions validate both the format and the prefix:
+
+```go
+agentID, err := id.ParseAgentID("agt_01h2xcejqtf2nbrexx3vqjhp41")
+// err is nil — prefix matches
+
+_, err = id.ParseAgentID("skl_01h455vb4pex5vsknk084sn02q")
+// err: id: expected prefix "agt", got "skl"
+```
+
+Use `id.ParseAny` when you need to accept any valid TypeID regardless of prefix:
+
+```go
+anyID, err := id.ParseAny("skl_01h455vb4pex5vsknk084sn02q")
+// anyID.Prefix() == "skl"
+```
+
+## K-sortability
+
+TypeIDs embed UUIDv7 timestamps, making them naturally sortable by creation time. This means:
+
+- Database indexes on TypeID columns are efficient for time-range queries
+- IDs created later always sort after earlier IDs
+- No need for separate `created_at` indexes for ordering
+
+## Type safety
+
+All ID types are aliases for `typeid.TypeID`. While Go does not enforce alias-level type safety at compile time, the prefix validation at parse time catches mismatches:
+
+```go
+type AgentID = typeid.TypeID
+type SkillID = typeid.TypeID
+```
+
+Passing a skill ID where an agent ID is expected will succeed at compile time but fail at parse time if the prefix is validated.

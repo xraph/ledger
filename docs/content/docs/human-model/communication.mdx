@@ -1,0 +1,74 @@
+---
+title: Communication Style
+description: Define how an agent talks — tone, formality, and output preferences.
+---
+
+**Communication Style** defines how an agent communicates with users. It controls tone, verbosity, technical level, and output format preferences.
+
+## Structure
+
+```go
+type Style struct {
+    Tone            string  // e.g., "professional", "friendly", "casual"
+    Formality       float64 // 0.0 = casual, 1.0 = formal
+    Verbosity       float64 // 0.0 = terse, 1.0 = verbose
+    TechnicalLevel  float64 // 0.0 = layperson, 1.0 = expert
+    EmojiUsage      bool    // whether to use emojis
+    PreferredFormat string  // e.g., "markdown", "plain", "structured"
+    AdaptToUser     bool    // adjust style based on user's language
+}
+```
+
+## Fields
+
+| Field | Type | Range | Description |
+|-------|------|-------|-------------|
+| `Tone` | `string` | — | Descriptive tone label |
+| `Formality` | `float64` | 0.0–1.0 | Casual to formal spectrum |
+| `Verbosity` | `float64` | 0.0–1.0 | Terse to verbose spectrum |
+| `TechnicalLevel` | `float64` | 0.0–1.0 | Layperson to expert spectrum |
+| `EmojiUsage` | `bool` | — | Include emojis in responses |
+| `PreferredFormat` | `string` | — | Output format preference |
+| `AdaptToUser` | `bool` | — | Dynamically adjust to user's style |
+
+## Example personas
+
+### Technical lead
+
+```go
+communication.Style{
+    Tone:           "professional",
+    Formality:      0.7,
+    Verbosity:      0.4,
+    TechnicalLevel: 0.9,
+    PreferredFormat: "markdown",
+    AdaptToUser:    true,
+}
+```
+
+### Customer support
+
+```go
+communication.Style{
+    Tone:           "friendly",
+    Formality:      0.3,
+    Verbosity:      0.6,
+    TechnicalLevel: 0.2,
+    EmojiUsage:     true,
+    PreferredFormat: "plain",
+    AdaptToUser:    true,
+}
+```
+
+## Embedding in a persona
+
+Communication style is a value object embedded directly in the persona:
+
+```go
+persona := &persona.Persona{
+    CommunicationStyle: communication.Style{
+        Tone:      "professional",
+        Formality: 0.7,
+    },
+}
+```

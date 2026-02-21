@@ -1,0 +1,80 @@
+---
+title: Checkpoints
+description: Human-in-the-loop control — pause runs for approval before proceeding.
+---
+
+**Checkpoints** provide human-in-the-loop control by pausing a run at critical decision points and waiting for approval before proceeding.
+
+## Structure
+
+```go
+type Checkpoint struct {
+    cortex.Entity
+    ID        id.CheckpointID
+    RunID     id.AgentRunID
+    AgentID   id.AgentID
+    TenantID  string
+    Reason    string
+    StepIndex int
+    State     string   // "pending" or "resolved"
+    Decision  *Decision
+    Metadata  map[string]any
+}
+```
+
+## Decision
+
+When a checkpoint is resolved, it receives a Decision:
+
+```go
+type Decision struct {
+    Approved  bool      // whether to proceed
+    DecidedBy string    // who made the decision
+    Reason    string    // explanation
+    DecidedAt time.Time
+}
+```
+
+## Lifecycle
+
+1. During a run, the agent encounters a sensitive action
+2. A checkpoint is created with state `pending` and the run pauses
+3. A human reviews the checkpoint via the API
+4. The human resolves the checkpoint with a Decision (approve or reject)
+5. If approved, the run resumes; if rejected, the run is cancelled
+
+```
+Run (running) → Checkpoint created (pending) → Run (paused)
+                                               ↓
+                              Decision made → Run (running) [approved]
+                                            → Run (cancelled) [rejected]
+```
+
+## Store interface
+
+```go
+type Store interface {
+    CreateCheckpoint(ctx context.Context, cp *Checkpoint) error
+    GetCheckpoint(ctx context.Context, cpID id.CheckpointID) (*Checkpoint, error)
+    Resolve(ctx context.Context, cpID id.CheckpointID, decision Decision) error
+    ListPending(ctx context.Context, filter *ListFilter) ([]*Checkpoint, error)
+}
+```
+
+### List filter
+
+```go
+type ListFilter struct {
+    RunID    string
+    TenantID string
+    Limit    int
+    Offset   int
+}
+```
+
+## API routes
+
+| Method | Path | Description |
+|--------|------|-------------|
+| `GET` | `/cortex/checkpoints` | List pending checkpoints |
+| `POST` | `/cortex/checkpoints/{id}/resolve` | Resolve a checkpoint |

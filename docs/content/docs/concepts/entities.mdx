@@ -1,0 +1,126 @@
+---
+title: Entities
+description: The core data types in Cortex — Agents, Skills, Traits, Behaviors, Personas, Runs, and more.
+---
+
+All Cortex entities embed the `cortex.Entity` base type and carry a TypeID identifier. This page provides an overview of every entity and how they relate.
+
+## Base entity
+
+```go
+type Entity struct {
+    CreatedAt time.Time `json:"created_at"`
+    UpdatedAt time.Time `json:"updated_at"`
+}
+```
+
+Every entity struct embeds `cortex.Entity` to get automatic timestamp tracking.
+
+## Entity overview
+
+### Agent Config
+
+The top-level entity. An agent can operate in **flat mode** (system prompt + tools list) or **persona mode** (referencing a Persona for its identity).
+
+```go
+type Config struct {
+    cortex.Entity
+    ID              id.AgentID
+    Name            string
+    Description     string
+    AppID           string
+    SystemPrompt    string         // flat mode
+    Model           string
+    Tools           []string       // flat mode
+    MaxSteps        int
+    MaxTokens       int
+    Temperature     float64
+    PersonaRef      string         // persona mode
+    InlineSkills    []string       // persona mode (inline)
+    InlineTraits    []string
+    InlineBehaviors []string
+    Enabled         bool
+}
+```
+
+### Skill
+
+Defines what an agent **can do**. Bundles tools, knowledge sources, and system prompt fragments. See [Skills](/docs/human-model/skills).
+
+### Trait
+
+Defines who an agent **is**. Personality dimensions on bipolar axes that influence runtime parameters. See [Traits](/docs/human-model/traits).
+
+### Behavior
+
+Defines what an agent **does habitually**. Condition-triggered action patterns. See [Behaviors](/docs/human-model/behaviors).
+
+### Persona
+
+The composition entity that brings everything together. See [Personas](/docs/human-model/personas).
+
+### Run, Step, ToolCall
+
+Execution entities that record an agent's reasoning process:
+
+- **Run** — A single execution of an agent with 6 lifecycle states
+- **Step** — One reasoning step within a run
+- **ToolCall** — A tool invocation within a step
+
+See [Runs](/docs/execution/runs).
+
+### Message
+
+A conversation message with role, content, and timestamp. See [Memory](/docs/execution/memory).
+
+### Checkpoint
+
+A point where a run pauses for human approval. See [Checkpoints](/docs/execution/checkpoints).
+
+## Entity relationship diagram
+
+```
+Persona
+  ├── SkillAssignment[] ──→ Skill
+  │                           └── ToolBinding[]
+  │                           └── KnowledgeRef[]
+  ├── TraitAssignment[] ──→ Trait
+  │                           └── Dimension[]
+  │                           └── Influence[]
+  ├── Behavior[]         ──→ Behavior
+  │                           └── Trigger[]
+  │                           └── Action[]
+  ├── CognitiveStyle
+  ├── CommunicationStyle
+  └── Perception
+
+Agent Config
+  ├── PersonaRef ──→ Persona (persona mode)
+  ├── SystemPrompt + Tools (flat mode)
+  └── Run[]
+        ├── Step[]
+        │     └── ToolCall[]
+        ├── Checkpoint[]
+        └── Message[] (via Memory)
+```
+
+## Store interfaces
+
+Each entity type defines its own store interface. These are composed into the single `store.Store` composite:
+
+```go
+type Store interface {
+    agent.Store      // Create, Get, GetByName, Update, Delete, List
+    skill.Store      // CreateSkill, GetSkill, GetSkillByName, ...
+    trait.Store      // CreateTrait, GetTrait, GetTraitByName, ...
+    behavior.Store   // CreateBehavior, GetBehavior, ...
+    persona.Store    // CreatePersona, GetPersona, ...
+    run.Store        // CreateRun, GetRun, UpdateRun, ListRuns, ...
+    memory.Store     // SaveConversation, LoadConversation, ...
+    checkpoint.Store // CreateCheckpoint, GetCheckpoint, ...
+
+    Migrate(ctx context.Context) error
+    Ping(ctx context.Context) error
+    Close() error
+}
+```

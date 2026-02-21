@@ -1,0 +1,127 @@
+---
+title: Audit Trail
+description: Bridge lifecycle events to an audit backend for compliance and debugging.
+---
+
+The `audit_hook` package bridges Cortex lifecycle events to an audit trail backend. It records structured audit events with action, resource, category, severity, and metadata.
+
+## Setup
+
+```go
+import "github.com/xraph/cortex/audit_hook"
+
+// With a Recorder implementation
+auditExt := audithook.New(myRecorder)
+
+// Or with a simple function
+auditExt := audithook.New(audithook.RecorderFunc(func(ctx context.Context, event *audithook.AuditEvent) error {
+    log.Printf("AUDIT: %s %s %s", event.Action, event.Resource, event.ResourceID)
+    return nil
+}))
+
+// Register with engine
+eng, _ := engine.New(
+    engine.WithExtension(auditExt),
+)
+```
+
+## Recorder interface
+
+```go
+type Recorder interface {
+    Record(ctx context.Context, event *AuditEvent) error
+}
+```
+
+The `RecorderFunc` adapter lets you use a plain function:
+
+```go
+type RecorderFunc func(ctx context.Context, event *AuditEvent) error
+```
+
+## AuditEvent
+
+```go
+type AuditEvent struct {
+    Action     string
+    Resource   string
+    Category   string
+    ResourceID string
+    Metadata   map[string]any
+    Outcome    string
+    Severity   string
+    Reason     string
+}
+```
+
+## Actions
+
+18 audit actions are defined:
+
+| Action | Description |
+|--------|-------------|
+| `cortex.agent.run.started` | Agent run initiated |
+| `cortex.agent.run.completed` | Run completed successfully |
+| `cortex.agent.run.failed` | Run failed |
+| `cortex.step.started` | Reasoning step started |
+| `cortex.step.completed` | Reasoning step completed |
+| `cortex.tool.called` | Tool invocation initiated |
+| `cortex.tool.completed` | Tool call completed |
+| `cortex.tool.failed` | Tool call failed |
+| `cortex.persona.resolved` | Persona resolved for run |
+| `cortex.skill.activated` | Skill activated |
+| `cortex.behavior.triggered` | Behavior triggered |
+| `cortex.cognitive.phase_changed` | Cognitive phase changed |
+| `cortex.trait.applied` | Trait applied |
+| `cortex.checkpoint.created` | Checkpoint created |
+| `cortex.checkpoint.resolved` | Checkpoint resolved |
+| `cortex.orchestration.started` | Orchestration started |
+| `cortex.orchestration.completed` | Orchestration completed |
+| `cortex.agent.handoff` | Agent-to-agent handoff |
+
+## Resources
+
+| Resource | Description |
+|----------|-------------|
+| `agent` | Agent entity |
+| `run` | Run entity |
+| `tool` | Tool entity |
+| `persona` | Persona entity |
+| `skill` | Skill entity |
+| `behavior` | Behavior entity |
+| `checkpoint` | Checkpoint entity |
+| `orchestration` | Orchestration entity |
+
+## Categories
+
+| Category | Description |
+|----------|-------------|
+| `agent` | Agent lifecycle events |
+| `tool` | Tool invocation events |
+| `persona` | Persona and behavior events |
+| `checkpoint` | Checkpoint events |
+| `orchestration` | Multi-agent orchestration events |
+
+## Severity levels
+
+| Level | Usage |
+|-------|-------|
+| `info` | Normal operations (run started, tool called) |
+| `warning` | Unusual but non-critical events |
+| `critical` | Failures (run failed, tool failed) |
+
+## Filtering
+
+Use `WithActions` to limit which events are recorded:
+
+```go
+auditExt := audithook.New(myRecorder,
+    audithook.WithActions(
+        audithook.ActionRunStarted,
+        audithook.ActionRunFailed,
+        audithook.ActionCheckpointCreated,
+    ),
+)
+```
+
+Only the specified actions will be recorded; all others are silently dropped.

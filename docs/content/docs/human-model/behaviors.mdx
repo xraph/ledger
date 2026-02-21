@@ -1,0 +1,120 @@
+---
+title: Behaviors
+description: Define what an agent does — condition-triggered action patterns.
+---
+
+A **Behavior** is a condition-triggered action pattern — the "habits" and "reflexes" that compose skills and traits into contextual responses. When a trigger condition is met, the behavior fires its actions.
+
+## Structure
+
+```go
+type Behavior struct {
+    cortex.Entity
+    ID            id.BehaviorID
+    Name          string
+    Description   string
+    AppID         string
+    Triggers      []Trigger
+    Actions       []Action
+    Priority      int
+    RequiresSkill string
+    RequiresTrait string
+    Metadata      map[string]any
+}
+```
+
+## Triggers
+
+Triggers define when a behavior activates:
+
+```go
+type Trigger struct {
+    Type    TriggerType
+    Pattern string       // optional pattern for matching
+}
+```
+
+### Trigger types
+
+| Type | Description |
+|------|-------------|
+| `on_input` | Fires when user input matches a pattern |
+| `on_tool_result` | Fires when a tool returns a specific result |
+| `on_error` | Fires when an error occurs |
+| `on_step_count` | Fires when the step count reaches a threshold |
+| `on_context` | Fires based on conversation context |
+| `always` | Fires on every step |
+
+## Actions
+
+Actions define what happens when a behavior triggers:
+
+```go
+type Action struct {
+    Type   ActionType
+    Target string      // action-specific target
+    Value  any         // action-specific value
+}
+```
+
+### Action types
+
+| Type | Description |
+|------|-------------|
+| `inject_prompt` | Inject text into the system prompt |
+| `prefer_skill` | Increase preference for a specific skill |
+| `require_tool` | Force usage of a specific tool |
+| `modify_param` | Modify a runtime parameter |
+| `switch_cognitive` | Switch to a different cognitive phase |
+| `add_guardrail` | Add a runtime guardrail check |
+
+## Priority
+
+When multiple behaviors trigger simultaneously, they execute in priority order (lower number = higher priority):
+
+```go
+behavior := &behavior.Behavior{
+    Priority: 10, // fires before priority 20
+}
+```
+
+## Skill and trait requirements
+
+A behavior can require that a specific skill or trait is active:
+
+```go
+behavior := &behavior.Behavior{
+    Name:          "verify-before-suggest",
+    RequiresSkill: "code-review",
+    RequiresTrait: "thoroughness",
+    Triggers: []behavior.Trigger{
+        {Type: behavior.TriggerAlways},
+    },
+    Actions: []behavior.Action{
+        {Type: behavior.ActionInjectPrompt, Value: "Always verify your analysis before suggesting changes."},
+    },
+}
+```
+
+## Store interface
+
+```go
+type Store interface {
+    CreateBehavior(ctx context.Context, behavior *Behavior) error
+    GetBehavior(ctx context.Context, behaviorID id.BehaviorID) (*Behavior, error)
+    GetBehaviorByName(ctx context.Context, appID, name string) (*Behavior, error)
+    UpdateBehavior(ctx context.Context, behavior *Behavior) error
+    DeleteBehavior(ctx context.Context, behaviorID id.BehaviorID) error
+    ListBehaviors(ctx context.Context, filter *ListFilter) ([]*Behavior, error)
+}
+```
+
+## API routes
+
+| Method | Path | Description |
+|--------|------|-------------|
+| `POST` | `/cortex/behaviors` | Create a behavior |
+| `GET` | `/cortex/behaviors` | List behaviors |
+| `GET` | `/cortex/behaviors/{name}` | Get a behavior by name |
+| `PUT` | `/cortex/behaviors/{name}` | Update a behavior |
+| `DELETE` | `/cortex/behaviors/{id}` | Delete a behavior |

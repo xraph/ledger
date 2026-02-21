@@ -1,0 +1,74 @@
+---
+title: The Human Model
+description: How Cortex models AI agents as compositions of human-like traits, skills, and behaviors.
+---
+
+Cortex takes a fundamentally different approach to AI agent design. Instead of writing system prompts imperatively ("You are a helpful assistant that..."), you declare an agent's identity using the same building blocks that make humans unique.
+
+## Philosophy
+
+People are not defined by a single instruction. They are the product of:
+
+- **Skills** they have learned (what they can do)
+- **Personality traits** that shape how they work
+- **Behavioral habits** that emerge from experience
+- **Thinking patterns** that guide their reasoning
+- **Communication preferences** that define their voice
+- **Perceptual filters** that determine what they notice
+
+Cortex makes each of these a first-class, composable entity.
+
+## The seven aspects
+
+| Aspect | Package | Go type | Description |
+|--------|---------|---------|-------------|
+| [Skill](/docs/human-model/skills) | `skill` | `skill.Skill` | Capabilities, tools, and knowledge |
+| [Trait](/docs/human-model/traits) | `trait` | `trait.Trait` | Personality dimensions on bipolar axes |
+| [Behavior](/docs/human-model/behaviors) | `behavior` | `behavior.Behavior` | Condition-triggered action patterns |
+| [Cognitive Style](/docs/human-model/cognitive) | `cognitive` | `cognitive.Style` | Phase-based thinking strategies |
+| [Communication Style](/docs/human-model/communication) | `communication` | `communication.Style` | Tone, formality, verbosity |
+| [Perception](/docs/human-model/perception) | `perception` | `perception.Model` | Attention filters and focus |
+| [Persona](/docs/human-model/personas) | `persona` | `persona.Persona` | The complete identity composition |
+
+## Composition hierarchy
+
+Skills, Traits, and Behaviors are **standalone entities** stored independently with their own CRUD APIs. They are composed together through a **Persona**, which references them by name.
+
+Cognitive Style, Communication Style, and Perception are **value objects** embedded directly in the Persona struct.
+
+The **Agent Config** then references a Persona (persona mode) or defines its own system prompt and tools (flat mode).
+
+```
+Agent Config
+  └── Persona (via PersonaRef)
+        ├── Skills[]       (standalone entities, referenced by name)
+        ├── Traits[]       (standalone entities, referenced by name)
+        ├── Behaviors[]    (standalone entities, referenced by name)
+        ├── CognitiveStyle (embedded value object)
+        ├── CommunicationStyle (embedded value object)
+        └── Perception     (embedded value object)
+```
+
+## Declarative vs imperative
+
+Traditional approach (imperative):
+```
+You are a senior software engineer. Be thorough and methodical.
+Focus on security issues. Use a professional but friendly tone.
+Always check the code before suggesting changes.
+```
+
+Cortex approach (declarative):
+```go
+persona := &persona.Persona{
+    Identity: "A senior software engineer with 10+ years of experience",
+    Skills:   []persona.SkillAssignment{{SkillName: "code-review"}},
+    Traits:   []persona.TraitAssignment{{TraitName: "thoroughness"}},
+    Behaviors: []string{"verify-before-suggest"},
+    CommunicationStyle: communication.Style{
+        Tone: "professional", Formality: 0.7,
+    },
+}
+```
+
+The declarative approach is composable, reusable, and version-controlled. Change one trait and it updates every agent that uses it.

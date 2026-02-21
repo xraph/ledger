@@ -1,0 +1,69 @@
+---
+title: Multi-Tenancy
+description: How Cortex scopes agents, skills, traits, and all entities to app and tenant contexts.
+---
+
+Every Cortex entity is scoped to an **app** (logical application boundary) and optionally to a **tenant** (user/organization boundary). This scoping is enforced at the store layer — cross-tenant access is structurally impossible.
+
+## Context injection
+
+Scope identifiers are injected into the Go context using helper functions from the root `cortex` package:
+
+```go
+import "github.com/xraph/cortex"
+
+ctx = cortex.WithTenant(ctx, "org-123")
+ctx = cortex.WithApp(ctx, "myapp")
+```
+
+## Extraction
+
+Retrieve scope values from any context:
+
+```go
+tenantID := cortex.TenantFromContext(ctx) // "org-123"
+appID    := cortex.AppFromContext(ctx)    // "myapp"
+```
+
+Both functions return an empty string if no value is set.
+
+## AppID vs TenantID
+
+| Scope | Purpose | Required | Example |
+|-------|---------|----------|---------|
+| **AppID** | Logical application boundary. All domain entities (agents, skills, traits, behaviors, personas) carry an `AppID` field. | Yes | `"myapp"`, `"staging"` |
+| **TenantID** | User or organization boundary. Used for execution entities (runs, conversations, checkpoints) to isolate per-user data. | Optional | `"org-123"`, `"user-456"` |
+
+## Store enforcement
+
+The PostgreSQL store enforces app scoping on every query:
+
+- **Agent, Skill, Trait, Behavior, Persona** — all `GetByName` and `List` queries filter by `app_id`
+- **Run, Memory, Checkpoint** — queries filter by `tenant_id` when provided
+- **Cross-scope access** — returns `ErrNotFound` even if the entity exists under a different app/tenant
+
+## API integration
+
+When using the Forge extension, the API layer extracts the app ID from the request context (typically set by Forge middleware) and passes it to all engine operations. This means:
+
+- Each API request is automatically scoped to the caller's app
+- Agents in app A cannot see or modify agents in app B
+- Run history is isolated per tenant within each app
+
+## Example: multi-tenant setup
+
+```go
+// Tenant 1 creates an agent
+ctx1 := cortex.WithApp(context.Background(), "myapp")
+ctx1 = cortex.WithTenant(ctx1, "tenant-1")
+eng.CreateAgent(ctx1, agent1Config)
+
+// Tenant 2 creates a different agent
+ctx2 := cortex.WithApp(context.Background(), "myapp")
+ctx2 = cortex.WithTenant(ctx2, "tenant-2")
+eng.CreateAgent(ctx2, agent2Config)
+
+// Tenant 1 cannot see tenant 2's runs
+runs, _ := eng.ListRuns(ctx1, &run.ListFilter{TenantID: "tenant-2"})
+// runs is empty — tenant isolation enforced
+```

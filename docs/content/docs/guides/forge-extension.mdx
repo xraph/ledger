@@ -1,0 +1,118 @@
+---
+title: Forge Extension
+description: Mount Weave into a Forge application as a first-class extension with automatic route registration and migrations.
+---
+
+Weave ships a ready-made Forge extension in the `extension` package. It wires the engine, HTTP API, and lifecycle management into Forge's extension system with one call.
+
+## Installation
+
+```go
+import "github.com/xraph/weave/extension"
+```
+
+## Registering the extension
+
+```go
+package main
+
+import (
+    "github.com/xraph/forge"
+    pgstore "github.com/xraph/weave/store/postgres"
+    pgvec "github.com/xraph/weave/vectorstore/pgvector"
+    "github.com/xraph/weave/embedder"
+    "github.com/xraph/weave/extension"
+)
+
+func main() {
+    app := forge.New()
+
+    weaveExt := extension.New(
+        extension.WithStore(pgstore.New(bunDB)),
+        extension.WithVectorStore(pgvec.New(pgxPool)),
+        extension.WithEmbedder(embedder.NewOpenAI(
+            embedder.WithOpenAIKey(os.Getenv("OPENAI_API_KEY")),
+        )),
+    )
+
+    app.RegisterExtension(weaveExt)
+    app.Run()
+}
+```
+
+## What the extension does
+
+| Lifecycle event | Behaviour |
+|----------------|-----------|
+| `Register` | Creates the engine from the provided options |
+| `Start` | Runs `store.Migrate` and `vectorstore.Migrate` (unless disabled) |
+| `RegisterRoutes` | Mounts all 12 Weave HTTP endpoints under `/v1` |
+| `Stop` | Calls `engine.Stop` → emits `OnShutdown` to all extensions |
+
+## Extension options
+
+| Option | Type | Default | Description |
+|--------|------|---------|-------------|
+| `WithStore(s)` | `store.Store` | — | **Required.** MetadataStore |
+| `WithVectorStore(v)` | `vectorstore.VectorStore` | — | **Required.** VectorStore |
+| `WithEmbedder(e)` | `embedder.Embedder` | — | **Required.** Embedder |
+| `WithLogger(l)` | `*slog.Logger` | `slog.Default()` | Logger |
+| `WithDisableRoutes(b)` | `bool` | `false` | Skip HTTP route registration |
+| `WithDisableMigrate(b)` | `bool` | `false` | Skip migrations on Start |
+
+## Disabling auto-migration
+
+If you manage migrations separately (e.g. with a migration tool), disable auto-migration:
+
+```go
+weaveExt := extension.New(
+    extension.WithStore(store),
+    extension.WithVectorStore(vecStore),
+    extension.WithEmbedder(emb),
+    extension.WithDisableMigrate(true),
+)
+```
+
+## Accessing the engine from other extensions
+
+After `Register` is called by Forge, `weaveExt.Engine()` returns the fully initialised engine:
+
+```go
+eng := weaveExt.Engine()
+// use eng.Ingest, eng.Retrieve, etc. from another extension or handler
+```
+
+## Tenant middleware
+
+In a Forge app, tenant scope is typically set by middleware that reads the JWT or API key. Implement a Forge middleware that calls `weave.WithTenant` and `weave.WithApp` before passing the request to the Weave handlers:
+
+```go
+func tenantMiddleware(next http.Handler) http.Handler {
+    return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+        tenantID := r.Header.Get("X-Tenant-ID")
+        appID := r.Header.Get("X-App-ID")
+        ctx := weave.WithTenant(r.Context(), tenantID)
+        ctx = weave.WithApp(ctx, appID)
+        next.ServeHTTP(w, r.WithContext(ctx))
+    })
+}
+
+router.Use(tenantMiddleware)
+```
+
+## Adding metrics
+
+Register the observability extension alongside the Weave engine extension:
+
+```go
+import "github.com/xraph/weave/observability"
+
+metricsExt := observability.NewMetricsExtensionWithFactory(fapp.Metrics())
+
+weaveExt := extension.New(
+    extension.WithStore(store),
+    extension.WithVectorStore(vecStore),
+    extension.WithEmbedder(emb),
+    extension.WithEngineExtension(metricsExt), // passed to engine.New internally
+)
+```

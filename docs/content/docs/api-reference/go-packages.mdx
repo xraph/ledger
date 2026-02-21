@@ -1,0 +1,179 @@
+---
+title: Go Packages
+description: Quick reference for all Weave Go packages and their public APIs.
+---
+
+All Weave packages are importable from `github.com/xraph/weave`.
+
+## Core packages
+
+### `github.com/xraph/weave`
+
+Root package. Exports context helpers, error constants, and shared types.
+
+| Export | Description |
+|--------|-------------|
+| `WithTenant(ctx, id)` | Inject tenant ID into context |
+| `WithApp(ctx, id)` | Inject app ID into context |
+| `TenantFromContext(ctx)` | Read tenant ID from context |
+| `AppFromContext(ctx)` | Read app ID from context |
+| `Config` | Engine configuration struct |
+| `DefaultConfig()` | Returns default Config values |
+| `ErrNoStore`, `ErrNoEmbedder`, `ErrNoVectorStore`, `ErrNoChunker` | Missing-component errors |
+| `ErrEmptyContent`, `ErrInvalidInput` | Input validation errors |
+
+### `github.com/xraph/weave/engine`
+
+The central Engine and all ingestion/retrieval operations.
+
+| Export | Description |
+|--------|-------------|
+| `New(...Option) (*Engine, error)` | Create an engine |
+| `Engine.CreateCollection` | Create a collection |
+| `Engine.GetCollection` | Get collection by ID |
+| `Engine.GetCollectionByName` | Get collection by name |
+| `Engine.ListCollections` | List collections |
+| `Engine.DeleteCollection` | Delete collection and all contents |
+| `Engine.CollectionStats` | Aggregate stats for a collection |
+| `Engine.Ingest` | Ingest a single document |
+| `Engine.IngestBatch` | Ingest multiple documents |
+| `Engine.GetDocument` | Get document by ID |
+| `Engine.ListDocuments` | List documents |
+| `Engine.DeleteDocument` | Delete document and chunks |
+| `Engine.Retrieve` | Semantic retrieval |
+| `Engine.HybridSearch` | Cross-collection search |
+| `Engine.ReindexCollection` | Re-embed all chunks |
+| `Engine.Stop` | Graceful shutdown |
+| `IngestInput` | Input struct for Ingest |
+| `IngestResult` | Output struct from Ingest |
+| `ScoredChunk` | Retrieved chunk with score |
+| `RetrieveOption` | Functional option for Retrieve |
+| `WithCollection`, `WithTopK`, `WithMinScore`, `WithStrategy`, `WithTenantID` | Retrieve options |
+
+## Interface packages
+
+### `github.com/xraph/weave/chunker`
+
+```go
+type Chunker interface {
+    Chunk(ctx context.Context, text string, opts *Options) ([]ChunkResult, error)
+}
+```
+
+### `github.com/xraph/weave/embedder`
+
+```go
+type Embedder interface {
+    Embed(ctx context.Context, texts []string) ([]EmbedResult, error)
+    Dimensions() int
+}
+```
+
+### `github.com/xraph/weave/loader`
+
+```go
+type Loader interface {
+    Load(ctx context.Context, reader io.Reader) (*LoadResult, error)
+    Supports(mimeType string) bool
+}
+```
+
+### `github.com/xraph/weave/retriever`
+
+```go
+type Retriever interface {
+    Retrieve(ctx context.Context, query string, opts *Options) ([]Result, error)
+}
+```
+
+### `github.com/xraph/weave/store`
+
+```go
+type Store interface {
+    collection.Store
+    document.Store
+    chunk.Store
+    Migrate(ctx context.Context) error
+    Ping(ctx context.Context) error
+    Close() error
+}
+```
+
+### `github.com/xraph/weave/vectorstore`
+
+```go
+type VectorStore interface {
+    Upsert(ctx context.Context, entries []Entry) error
+    Search(ctx context.Context, vector []float32, opts *SearchOptions) ([]SearchResult, error)
+    Delete(ctx context.Context, ids []string) error
+    DeleteByMetadata(ctx context.Context, filter map[string]string) error
+}
+```
+
+## Extension packages
+
+### `github.com/xraph/weave/ext`
+
+All lifecycle hook interfaces: `CollectionCreated`, `CollectionDeleted`, `IngestStarted`, `IngestChunked`, `IngestEmbedded`, `IngestCompleted`, `IngestFailed`, `RetrievalStarted`, `RetrievalCompleted`, `RetrievalFailed`, `DocumentDeleted`, `ReindexStarted`, `ReindexCompleted`, `Shutdown`.
+
+### `github.com/xraph/weave/observability`
+
+```go
+func NewMetricsExtension() *MetricsExtension
+func NewMetricsExtensionWithFactory(factory gu.MetricFactory) *MetricsExtension
+```
+
+## Assembler
+
+### `github.com/xraph/weave/assembler`
+
+```go
+func New(...Option) *Assembler
+func (a *Assembler) Assemble(ctx, []retriever.Result) (*AssembleResult, error)
+func AssembleSimple(results []retriever.Result) string
+```
+
+## Implementations
+
+| Package | Implements | Notes |
+|---------|-----------|-------|
+| `store/memory` | `store.Store` | In-memory, for tests |
+| `store/postgres` | `store.Store` | PostgreSQL via bun |
+| `store/sqlite` | `store.Store` | SQLite via bun |
+| `vectorstore/memory` | `vectorstore.VectorStore` | Brute-force cosine similarity |
+| `vectorstore/pgvector` | `vectorstore.VectorStore` | PostgreSQL + pgvector |
+| `chunker/recursive` | `chunker.Chunker` | Default — splits on paragraph/sentence/word |
+| `chunker/fixed` | `chunker.Chunker` | Fixed token-size chunks |
+| `chunker/sliding` | `chunker.Chunker` | Sliding window |
+| `chunker/semantic` | `chunker.Chunker` | Topic-coherent groups |
+| `chunker/code` | `chunker.Chunker` | Function/class boundary splits |
+| `embedder/openai` | `embedder.Embedder` | OpenAI text-embedding-* models |
+| `embedder/local` | `embedder.Embedder` | Local model wrapper |
+| `retriever/similarity` | `retriever.Retriever` | Cosine similarity |
+| `retriever/mmr` | `retriever.Retriever` | Maximal Marginal Relevance |
+| `retriever/hybrid` | `retriever.Retriever` | Dense + keyword |
+| `retriever/reranker` | `retriever.Retriever` | Two-stage cross-encoder |
+| `loader/text` | `loader.Loader` | Plain text |
+| `loader/markdown` | `loader.Loader` | Markdown |
+| `loader/html` | `loader.Loader` | HTML |
+| `loader/csv` | `loader.Loader` | CSV |
+| `loader/json` | `loader.Loader` | JSON |
+| `loader/url` | `loader.Loader` | Fetches URL |
+| `loader/directory` | `loader.Loader` | Recursive directory |
+| `extension` | `forge.Extension` | Forge integration |
+
+## ID package
+
+### `github.com/xraph/weave/id`
+
+```go
+func NewCollectionID() CollectionID
+func NewDocumentID() DocumentID
+func NewChunkID() ChunkID
+
+func ParseCollectionID(s string) (CollectionID, error)
+func ParseDocumentID(s string) (DocumentID, error)
+func ParseChunkID(s string) (ChunkID, error)
+```
+
+All IDs implement `String() string` and are based on TypeID (UUIDv7, K-sortable).

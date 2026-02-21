@@ -1,0 +1,21 @@
+{
+  "title": "Documentation",
+  "pages": [
+    "---Introduction---",
+    "index",
+    "getting-started",
+    "architecture",
+    "---Concepts---",
+    "...concepts",
+    "---The Human Model---",
+    "...human-model",
+    "---Execution---",
+    "...execution",
+    "---Infrastructure---",
+    "...infrastructure",
+    "---Guides---",
+    "...guides",
+    "---Reference---",
+    "...api-reference"
+  ]
+}

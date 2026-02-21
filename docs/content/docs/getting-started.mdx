@@ -1,0 +1,194 @@
+---
+title: Getting Started
+description: Install Cortex and create your first agent in under five minutes.
+---
+
+## Prerequisites
+
+- Go 1.24 or later
+- A Go module (`go mod init`)
+
+## Install
+
+```bash
+go get github.com/xraph/cortex
+```
+
+## Step 1: Create the engine
+
+The Cortex engine is the central coordinator. It needs a store for persistence:
+
+```go
+package main
+
+import (
+    "context"
+    "log"
+
+    "github.com/xraph/cortex/engine"
+    "github.com/xraph/cortex/store/postgres"
+)
+
+func main() {
+    ctx := context.Background()
+
+    db := connectDB() // your *bun.DB connection
+    pgStore := postgres.New(db)
+
+    // Run migrations.
+    if err := pgStore.Migrate(ctx); err != nil {
+        log.Fatal(err)
+    }
+
+    eng, err := engine.New(
+        engine.WithStore(pgStore),
+    )
+    if err != nil {
+        log.Fatal(err)
+    }
+    if err := eng.Start(ctx); err != nil {
+        log.Fatal(err)
+    }
+    _ = eng
+}
+```
+
+## Step 2: Set up a scoped context
+
+Cortex extracts the tenant ID and app ID from the context and stamps them onto every entity:
+
+```go
+import "github.com/xraph/cortex"
+
+ctx = cortex.WithTenant(ctx, "tenant-1")
+ctx = cortex.WithApp(ctx, "myapp")
+```
+
+`WithTenant` is required for multi-tenant isolation. All operations are automatically scoped — cross-tenant access is structurally impossible.
+
+## Step 3: Create a skill
+
+A skill defines what an agent can do. It bundles tools with contextual guidance:
+
+```go
+import (
+    "github.com/xraph/cortex/id"
+    "github.com/xraph/cortex/skill"
+)
+
+codeReview := &skill.Skill{
+    ID:          id.NewSkillID(),
+    Name:        "code-review",
+    AppID:       "myapp",
+    Description: "Review pull requests for bugs, style, and security issues",
+    Tools: []skill.ToolBinding{
+        {ToolName: "read_file", Mastery: skill.ProficiencyExpert},
+        {ToolName: "search_code", Mastery: skill.ProficiencyProficient},
+    },
+    SystemPromptFragment: "You are an expert code reviewer. Focus on correctness, security, and maintainability.",
+    DefaultProficiency:   skill.ProficiencyProficient,
+}
+if err := eng.CreateSkill(ctx, codeReview); err != nil {
+    log.Fatal(err)
+}
+```
+
+## Step 4: Create a trait
+
+A trait defines who an agent is — a personality dimension with bipolar axes:
+
+```go
+import "github.com/xraph/cortex/trait"
+
+thoroughness := &trait.Trait{
+    ID:       id.NewTraitID(),
+    Name:     "thoroughness",
+    AppID:    "myapp",
+    Category: trait.CategoryWorkstyle,
+    Dimensions: []trait.Dimension{
+        {Name: "depth", LowLabel: "surface-level", HighLabel: "exhaustive", Value: 0.85},
+    },
+    Influences: []trait.Influence{
+        {Target: trait.TargetMaxSteps, Value: 30, Weight: 0.8},
+    },
+}
+if err := eng.CreateTrait(ctx, thoroughness); err != nil {
+    log.Fatal(err)
+}
+```
+
+## Step 5: Create a persona
+
+A persona composes skills, traits, behaviors, and styles into a complete identity:
+
+```go
+import (
+    "github.com/xraph/cortex/persona"
+    "github.com/xraph/cortex/communication"
+)
+
+seniorEng := &persona.Persona{
+    ID:       id.NewPersonaID(),
+    Name:     "senior-engineer",
+    AppID:    "myapp",
+    Identity: "A senior software engineer with 10+ years of experience",
+    Skills: []persona.SkillAssignment{
+        {SkillName: "code-review", Proficiency: skill.ProficiencyExpert},
+    },
+    Traits: []persona.TraitAssignment{
+        {TraitName: "thoroughness", DimensionValues: map[string]float64{"depth": 0.9}},
+    },
+    CommunicationStyle: communication.Style{
+        Tone:           "professional",
+        Formality:      0.7,
+        Verbosity:      0.5,
+        TechnicalLevel: 0.9,
+    },
+}
+if err := eng.CreatePersona(ctx, seniorEng); err != nil {
+    log.Fatal(err)
+}
+```
+
+## Step 6: Create an agent
+
+An agent references a persona (or defines skills/traits inline):
+
+```go
+import "github.com/xraph/cortex/agent"
+
+agentCfg := &agent.Config{
+    ID:         id.NewAgentID(),
+    Name:       "reviewer-bot",
+    AppID:      "myapp",
+    PersonaRef: "senior-engineer",
+    Model:      "gpt-4o",
+    MaxSteps:   25,
+    Enabled:    true,
+}
+if err := eng.CreateAgent(ctx, agentCfg); err != nil {
+    log.Fatal(err)
+}
+```
+
+## Step 7: Run the agent via API
+
+If you are using the Forge extension, you get 36 REST endpoints automatically. You can also invoke the engine directly:
+
+```go
+// List agents
+agents, _ := eng.ListAgents(ctx, &agent.ListFilter{AppID: "myapp"})
+
+// Get a specific agent
+a, _ := eng.GetAgentByName(ctx, "myapp", "reviewer-bot")
+
+// List runs for an agent
+runs, _ := eng.ListRuns(ctx, &run.ListFilter{AgentID: a.ID.String()})
+```
+
+## Next steps
+
+- [Architecture](/docs/architecture) — Understand how the packages fit together
+- [The Human Model](/docs/human-model/overview) — Deep dive into Skills, Traits, and Personas
+- [Forge Extension](/docs/guides/forge-extension) — Wire Cortex into a Forge application
+- [PostgreSQL Store](/docs/infrastructure/postgres) — Production persistence setup

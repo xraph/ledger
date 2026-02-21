@@ -1,0 +1,123 @@
+---
+title: Plugin System
+description: Lifecycle hooks for metrics, audit trails, tracing, and custom processing.
+---
+
+Cortex uses an opt-in plugin system where extensions subscribe to lifecycle events by implementing specific interfaces. The base interface requires only a `Name()` method — all hooks are optional.
+
+## Base interface
+
+```go
+type Extension interface {
+    Name() string
+}
+```
+
+## Lifecycle hooks
+
+There are 16 hook interfaces organized by category. Extensions implement only the hooks they need.
+
+### Agent lifecycle
+
+| Interface | Method | When it fires |
+|-----------|--------|---------------|
+| `RunStarted` | `OnRunStarted(ctx, agentID, runID, input)` | Agent run begins |
+| `RunCompleted` | `OnRunCompleted(ctx, agentID, runID, output, elapsed)` | Run finishes successfully |
+| `RunFailed` | `OnRunFailed(ctx, agentID, runID, err)` | Run fails with error |
+
+### Reasoning lifecycle
+
+| Interface | Method | When it fires |
+|-----------|--------|---------------|
+| `StepStarted` | `OnStepStarted(ctx, runID, stepIndex)` | Reasoning step begins |
+| `StepCompleted` | `OnStepCompleted(ctx, runID, stepIndex, elapsed)` | Reasoning step finishes |
+
+### Tool lifecycle
+
+| Interface | Method | When it fires |
+|-----------|--------|---------------|
+| `ToolCalled` | `OnToolCalled(ctx, runID, toolName, args)` | Tool invocation begins |
+| `ToolCompleted` | `OnToolCompleted(ctx, runID, toolName, result, elapsed)` | Tool succeeds |
+| `ToolFailed` | `OnToolFailed(ctx, runID, toolName, err)` | Tool fails |
+
+### Persona lifecycle
+
+| Interface | Method | When it fires |
+|-----------|--------|---------------|
+| `PersonaResolved` | `OnPersonaResolved(ctx, agentID, personaName)` | Persona loaded for run |
+| `BehaviorTriggered` | `OnBehaviorTriggered(ctx, runID, behaviorName)` | Behavior fires |
+| `CognitivePhaseChanged` | `OnCognitivePhaseChanged(ctx, runID, from, to)` | Phase transition |
+
+### Checkpoint lifecycle
+
+| Interface | Method | When it fires |
+|-----------|--------|---------------|
+| `CheckpointCreated` | `OnCheckpointCreated(ctx, cpID, runID, reason)` | Checkpoint created |
+| `CheckpointResolved` | `OnCheckpointResolved(ctx, cpID, decision)` | Checkpoint resolved |
+
+### Orchestration lifecycle
+
+| Interface | Method | When it fires |
+|-----------|--------|---------------|
+| `OrchestrationStarted` | `OnOrchestrationStarted(ctx, orchID, strategy)` | Multi-agent orchestration begins |
+| `OrchestrationCompleted` | `OnOrchestrationCompleted(ctx, orchID, elapsed)` | Orchestration finishes |
+| `AgentHandoff` | `OnAgentHandoff(ctx, orchID, from, to, payload)` | Agent-to-agent handoff |
+
+### Shutdown
+
+| Interface | Method | When it fires |
+|-----------|--------|---------------|
+| `Shutdown` | `OnShutdown(ctx)` | Graceful shutdown |
+
+## Registry
+
+The `plugin.Registry` type-caches extensions at registration time:
+
+```go
+registry := plugin.NewRegistry(logger)
+registry.Register(metricsExt)
+registry.Register(auditExt)
+```
+
+When events are emitted, only extensions implementing the relevant hook are called:
+
+```go
+registry.EmitRunStarted(ctx, agentID, runID, input)
+// Only calls extensions that implement RunStarted
+```
+
+## Error handling
+
+Hook errors are logged but **never propagated**. Hooks must not block the agent pipeline:
+
+```go
+// Inside registry.EmitRunStarted:
+if err := hook.OnRunStarted(ctx, agentID, runID, input); err != nil {
+    r.logger.Warn("extension hook error", "hook", "OnRunStarted", "error", err)
+}
+```
+
+## Built-in extensions
+
+- **`observability.MetricsExtension`** — Counters for all lifecycle events
+- **`audithook.Extension`** — Bridges events to an audit trail backend
+
+## Writing a custom extension
+
+```go
+type SlackNotifier struct {
+    webhookURL string
+}
+
+func (s *SlackNotifier) Name() string { return "slack-notifier" }
+
+func (s *SlackNotifier) OnRunFailed(ctx context.Context, agentID id.AgentID, runID id.AgentRunID, err error) error {
+    // Send Slack notification
+    return postToSlack(s.webhookURL, fmt.Sprintf("Agent %s run %s failed: %v", agentID, runID, err))
+}
+
+// Register:
+eng, _ := engine.New(
+    engine.WithExtension(&SlackNotifier{webhookURL: "https://hooks.slack.com/..."}),
+)
+```

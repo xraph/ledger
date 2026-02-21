@@ -1,0 +1,176 @@
+---
+title: Personas
+description: Compose skills, traits, behaviors, and styles into a complete agent identity.
+---
+
+A **Persona** is the composition entity that brings everything together. It defines an agent's complete identity by composing skills, traits, behaviors, cognitive style, communication style, and perception into a reusable template.
+
+## Structure
+
+```go
+type Persona struct {
+    cortex.Entity
+    ID                 id.PersonaID
+    Name               string
+    Description        string
+    AppID              string
+    Identity           string               // core identity statement
+    Skills             []SkillAssignment
+    Traits             []TraitAssignment
+    Behaviors          []string             // behavior names
+    CognitiveStyle     cognitive.Style
+    CommunicationStyle communication.Style
+    Perception         perception.Model
+    Metadata           map[string]any
+}
+```
+
+## Identity
+
+The `Identity` field is a natural language description of the persona's core identity. It forms the foundation of the assembled system prompt:
+
+```go
+persona := &persona.Persona{
+    Identity: "A senior software engineer with 10+ years of experience in distributed systems, specializing in Go and cloud-native architectures",
+}
+```
+
+## Skill assignments
+
+Skills are assigned with optional proficiency overrides:
+
+```go
+type SkillAssignment struct {
+    SkillName   string           // references a skill by name
+    Proficiency skill.Proficiency // overrides the skill's default
+}
+```
+
+```go
+persona := &persona.Persona{
+    Skills: []persona.SkillAssignment{
+        {SkillName: "code-review", Proficiency: skill.ProficiencyExpert},
+        {SkillName: "architecture", Proficiency: skill.ProficiencyProficient},
+    },
+}
+```
+
+## Trait assignments
+
+Traits are assigned with optional dimension value overrides:
+
+```go
+type TraitAssignment struct {
+    TraitName       string
+    DimensionValues map[string]float64 // overrides specific dimensions
+}
+```
+
+```go
+persona := &persona.Persona{
+    Traits: []persona.TraitAssignment{
+        {
+            TraitName: "thoroughness",
+            DimensionValues: map[string]float64{
+                "depth": 0.9, // override the trait's default value
+            },
+        },
+    },
+}
+```
+
+## Flat mode vs persona mode
+
+Agents support two configuration modes:
+
+### Flat mode
+
+The agent defines its own system prompt and tools directly:
+
+```go
+agent := &agent.Config{
+    SystemPrompt: "You are a helpful assistant.",
+    Tools:        []string{"search", "calculator"},
+}
+```
+
+### Persona mode
+
+The agent references a persona by name:
+
+```go
+agent := &agent.Config{
+    PersonaRef: "senior-engineer",
+}
+```
+
+Or uses inline assignments without creating a named persona:
+
+```go
+agent := &agent.Config{
+    InlineSkills:    []string{"code-review", "testing"},
+    InlineTraits:    []string{"thoroughness", "patience"},
+    InlineBehaviors: []string{"verify-before-suggest"},
+}
+```
+
+Use `agent.HasPersona()` to check which mode is active.
+
+## Full example: Senior Engineer persona
+
+```go
+seniorEng := &persona.Persona{
+    ID:       id.NewPersonaID(),
+    Name:     "senior-engineer",
+    AppID:    "myapp",
+    Identity: "A senior software engineer with 10+ years of experience",
+    Skills: []persona.SkillAssignment{
+        {SkillName: "code-review", Proficiency: skill.ProficiencyExpert},
+        {SkillName: "architecture", Proficiency: skill.ProficiencyProficient},
+        {SkillName: "testing", Proficiency: skill.ProficiencyCompetent},
+    },
+    Traits: []persona.TraitAssignment{
+        {TraitName: "thoroughness", DimensionValues: map[string]float64{"depth": 0.9}},
+        {TraitName: "patience"},
+    },
+    Behaviors: []string{"verify-before-suggest", "explain-reasoning"},
+    CognitiveStyle: cognitive.Style{
+        Phases: []cognitive.Phase{
+            {Strategy: cognitive.StrategyAnalytical, MaxSteps: 5, Transition: cognitive.TransitionAfterSteps},
+            {Strategy: cognitive.StrategyReflective, MaxSteps: 3, Transition: cognitive.TransitionAfterSteps},
+        },
+    },
+    CommunicationStyle: communication.Style{
+        Tone: "professional", Formality: 0.7, TechnicalLevel: 0.9,
+    },
+    Perception: perception.Model{
+        AttentionFilters: []perception.AttentionFilter{
+            {Name: "security", Keywords: []string{"auth", "injection", "XSS"}},
+        },
+        DetailOrientation: 0.85,
+    },
+}
+```
+
+## Store interface
+
+```go
+type Store interface {
+    CreatePersona(ctx context.Context, persona *Persona) error
+    GetPersona(ctx context.Context, personaID id.PersonaID) (*Persona, error)
+    GetPersonaByName(ctx context.Context, appID, name string) (*Persona, error)
+    UpdatePersona(ctx context.Context, persona *Persona) error
+    DeletePersona(ctx context.Context, personaID id.PersonaID) error
+    ListPersonas(ctx context.Context, filter *ListFilter) ([]*Persona, error)
+}
+```
+
+## API routes
+
+| Method | Path | Description |
+|--------|------|-------------|
+| `POST` | `/cortex/personas` | Create a persona |
+| `GET` | `/cortex/personas` | List personas |
+| `GET` | `/cortex/personas/{name}` | Get a persona by name |
+| `PUT` | `/cortex/personas/{name}` | Update a persona |
+| `DELETE` | `/cortex/personas/{id}` | Delete a persona |

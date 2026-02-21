@@ -1,0 +1,103 @@
+---
+title: Traits
+description: Define who an agent is — personality dimensions that influence behavior.
+---
+
+A **Trait** defines a personality dimension that influences HOW an agent works. Traits are declarative — you don't tell the agent what to do, you tell it who it is. The system assembles runtime parameters from trait declarations.
+
+## Structure
+
+```go
+type Trait struct {
+    cortex.Entity
+    ID          id.TraitID
+    Name        string
+    Description string
+    AppID       string
+    Dimensions  []Dimension
+    Influences  []Influence
+    Category    TraitCategory
+    Metadata    map[string]any
+}
+```
+
+## Dimensions
+
+Each trait has one or more bipolar dimensions — axes with labeled extremes and a value from 0.0 to 1.0:
+
+```go
+type Dimension struct {
+    Name      string  // dimension name
+    LowLabel  string  // label for 0.0 end
+    HighLabel string  // label for 1.0 end
+    Value     float64 // position on the axis (0.0–1.0)
+}
+```
+
+Example: a "thoroughness" trait with a "depth" dimension:
+
+```go
+Dimension{
+    Name:      "depth",
+    LowLabel:  "surface-level",
+    HighLabel: "exhaustive",
+    Value:     0.85, // leans heavily toward exhaustive
+}
+```
+
+## Influences
+
+Influences define how a trait modifies agent behavior at runtime:
+
+```go
+type Influence struct {
+    Target    InfluenceTarget // what to modify
+    Value     any             // the modification value
+    Condition string          // optional condition
+    Weight    float64         // influence strength (0.0–1.0)
+}
+```
+
+### Influence targets
+
+| Target | Effect |
+|--------|--------|
+| `prompt_injection` | Injects text into the system prompt |
+| `temperature` | Modifies the LLM sampling temperature |
+| `max_steps` | Adjusts the maximum reasoning steps |
+| `tool_selection` | Influences which tools are preferred |
+| `response_style` | Modifies output formatting |
+
+## Categories
+
+Traits are organized into four categories:
+
+| Category | Description |
+|----------|-------------|
+| `personality` | Core personality dimensions (e.g., openness, conscientiousness) |
+| `workstyle` | How the agent approaches tasks (e.g., thoroughness, speed) |
+| `communication` | Communication preferences (e.g., directness, empathy) |
+| `risk` | Risk tolerance and decision-making style |
+
+## Store interface
+
+```go
+type Store interface {
+    CreateTrait(ctx context.Context, trait *Trait) error
+    GetTrait(ctx context.Context, traitID id.TraitID) (*Trait, error)
+    GetTraitByName(ctx context.Context, appID, name string) (*Trait, error)
+    UpdateTrait(ctx context.Context, trait *Trait) error
+    DeleteTrait(ctx context.Context, traitID id.TraitID) error
+    ListTraits(ctx context.Context, filter *ListFilter) ([]*Trait, error)
+}
+```
+
+## API routes
+
+| Method | Path | Description |
+|--------|------|-------------|
+| `POST` | `/cortex/traits` | Create a trait |
+| `GET` | `/cortex/traits` | List traits |
+| `GET` | `/cortex/traits/{name}` | Get a trait by name |
+| `PUT` | `/cortex/traits/{name}` | Update a trait |
+| `DELETE` | `/cortex/traits/{id}` | Delete a trait |

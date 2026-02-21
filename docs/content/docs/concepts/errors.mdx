@@ -1,0 +1,73 @@
+---
+title: Error Handling
+description: Sentinel errors returned by Cortex operations.
+---
+
+Cortex defines sentinel errors in the root `cortex` package. All errors are created with `errors.New` and can be checked with `errors.Is`.
+
+## Store errors
+
+| Error | Description |
+|-------|-------------|
+| `ErrNoStore` | No store was configured on the engine |
+| `ErrStoreClosed` | The store has been closed |
+| `ErrMigrationFailed` | Database migration failed |
+
+## Not-found errors
+
+| Error | Description |
+|-------|-------------|
+| `ErrAgentNotFound` | Agent with the given ID does not exist |
+| `ErrRunNotFound` | Run with the given ID does not exist |
+| `ErrStepNotFound` | Step with the given ID does not exist |
+| `ErrToolCallNotFound` | Tool call with the given ID does not exist |
+| `ErrSkillNotFound` | Skill with the given ID does not exist |
+| `ErrTraitNotFound` | Trait with the given ID does not exist |
+| `ErrBehaviorNotFound` | Behavior with the given ID does not exist |
+| `ErrPersonaNotFound` | Persona with the given ID does not exist |
+| `ErrCheckpointNotFound` | Checkpoint with the given ID does not exist |
+
+## Conflict errors
+
+| Error | Description |
+|-------|-------------|
+| `ErrAlreadyExists` | A resource with the same name already exists in this app |
+
+## State errors
+
+| Error | Description |
+|-------|-------------|
+| `ErrInvalidState` | Invalid state transition (e.g., completing an already-failed run) |
+| `ErrRunCancelled` | The run was cancelled |
+| `ErrRunAlreadyDone` | The run has already completed |
+| `ErrBudgetExhausted` | Token or cost budget exhausted |
+| `ErrMaxStepsReached` | Maximum reasoning steps reached |
+| `ErrMaxTokensReached` | Maximum output tokens reached |
+
+## Error wrapping
+
+Store implementations wrap these sentinel errors with additional context:
+
+```go
+return fmt.Errorf("postgres: get agent %s: %w", agentID, cortex.ErrAgentNotFound)
+```
+
+Check errors using `errors.Is`:
+
+```go
+agent, err := eng.GetAgent(ctx, agentID)
+if errors.Is(err, cortex.ErrAgentNotFound) {
+    // handle not found
+}
+```
+
+## API error mapping
+
+The HTTP API maps sentinel errors to HTTP status codes:
+
+| Sentinel error | HTTP status |
+|----------------|-------------|
+| `ErrAgentNotFound`, `ErrRunNotFound`, etc. | `404 Not Found` |
+| `ErrAlreadyExists` | `409 Conflict` |
+| `ErrInvalidState`, `ErrRunCancelled`, etc. | `400 Bad Request` |
+| `ErrNoStore` | `500 Internal Server Error` |

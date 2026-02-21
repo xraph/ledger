@@ -1,0 +1,81 @@
+---
+title: PostgreSQL Store
+description: Production-ready persistence with PostgreSQL, bun ORM, and embedded migrations.
+---
+
+The `store/postgres` package provides a production-ready implementation of the composite `store.Store` interface using PostgreSQL with the [bun](https://bun.uptrace.dev/) ORM.
+
+## Setup
+
+```go
+import (
+    "github.com/uptrace/bun"
+    "github.com/xraph/cortex/store/postgres"
+)
+
+db := connectDB() // your *bun.DB connection
+pgStore := postgres.New(db)
+
+// Run migrations
+if err := pgStore.Migrate(ctx); err != nil {
+    log.Fatal(err)
+}
+```
+
+## Tables
+
+The PostgreSQL store creates the following tables:
+
+| Table | Entity | Key columns |
+|-------|--------|-------------|
+| `cortex_agents` | Agent configs | `id`, `app_id`, `name`, `system_prompt`, `persona_ref` |
+| `cortex_skills` | Skills | `id`, `app_id`, `name`, `tools` (JSONB), `knowledge` (JSONB) |
+| `cortex_traits` | Traits | `id`, `app_id`, `name`, `dimensions` (JSONB), `influences` (JSONB) |
+| `cortex_behaviors` | Behaviors | `id`, `app_id`, `name`, `triggers` (JSONB), `actions` (JSONB) |
+| `cortex_personas` | Personas | `id`, `app_id`, `name`, `identity`, embedded styles (JSONB) |
+| `cortex_runs` | Runs | `id`, `agent_id`, `tenant_id`, `state`, `input`, `output` |
+| `cortex_steps` | Steps | `id`, `run_id`, `index`, `type` |
+| `cortex_tool_calls` | Tool calls | `id`, `step_id`, `run_id`, `tool_name` |
+
+## JSONB columns
+
+Complex nested structures are stored as JSONB columns:
+
+- Skill tools and knowledge → `tools JSONB`, `knowledge JSONB`
+- Trait dimensions and influences → `dimensions JSONB`, `influences JSONB`
+- Behavior triggers and actions → `triggers JSONB`, `actions JSONB`
+- Persona styles → `cognitive_style JSONB`, `communication_style JSONB`, `perception JSONB`
+- All entities → `metadata JSONB`
+
+## Composite store interface
+
+The PostgreSQL store implements all 8 sub-interfaces:
+
+```go
+type Store interface {
+    agent.Store      // 6 methods
+    skill.Store      // 6 methods
+    trait.Store      // 6 methods
+    behavior.Store   // 6 methods
+    persona.Store    // 6 methods
+    run.Store        // 8 methods
+    memory.Store     // 8 methods
+    checkpoint.Store // 4 methods
+
+    Migrate(ctx context.Context) error
+    Ping(ctx context.Context) error
+    Close() error
+}
+```
+
+## Embedded migrations
+
+Migrations are embedded in the binary using `embed.FS` and run automatically when `Migrate()` is called. There is no need for external migration tools.
+
+## Usage with engine
+
+```go
+eng, err := engine.New(
+    engine.WithStore(pgStore),
+)
+```

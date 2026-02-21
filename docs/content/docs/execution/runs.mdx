@@ -1,0 +1,142 @@
+---
+title: Runs, Steps & Tool Calls
+description: How Cortex tracks agent execution — runs, reasoning steps, and tool invocations.
+---
+
+Every agent execution is tracked as a **Run** containing **Steps** and **ToolCalls**. This hierarchical model provides full observability into how an agent reasons through a problem.
+
+## Run
+
+A Run represents a single execution of an agent:
+
+```go
+type Run struct {
+    cortex.Entity
+    ID           id.AgentRunID
+    AgentID      id.AgentID
+    TenantID     string
+    State        RunState
+    Input        string
+    Output       string
+    Error        string
+    StepCount    int
+    TokensUsed   int
+    StartedAt    *time.Time
+    CompletedAt  *time.Time
+    PersonaRef   string
+    Metadata     map[string]any
+}
+```
+
+### Run states
+
+Runs follow a state machine with 6 states:
+
+| State | Description |
+|-------|-------------|
+| `created` | Run has been created but not started |
+| `running` | Run is actively processing |
+| `completed` | Run finished successfully |
+| `failed` | Run terminated with an error |
+| `cancelled` | Run was cancelled by a user or system |
+| `paused` | Run is paused at a checkpoint awaiting approval |
+
+### State transitions
+
+```
+created → running → completed
+                  → failed
+                  → cancelled
+                  → paused → running (after checkpoint resolution)
+```
+
+## Step
+
+A Step represents a single reasoning step within a run:
+
+```go
+type Step struct {
+    cortex.Entity
+    ID          id.StepID
+    RunID       id.AgentRunID
+    Index       int
+    Type        string
+    Input       string
+    Output      string
+    TokensUsed  int
+    StartedAt   *time.Time
+    CompletedAt *time.Time
+    Metadata    map[string]any
+}
+```
+
+Steps are numbered sequentially (Index 0, 1, 2, ...) and track token usage per step.
+
+## ToolCall
+
+A ToolCall represents a single tool invocation within a step:
+
+```go
+type ToolCall struct {
+    cortex.Entity
+    ID          id.ToolCallID
+    StepID      id.StepID
+    RunID       id.AgentRunID
+    ToolName    string
+    Arguments   string
+    Result      string
+    Error       string
+    StartedAt   *time.Time
+    CompletedAt *time.Time
+    Metadata    map[string]any
+}
+```
+
+## Hierarchical model
+
+```
+Run (arun_...)
+  ├── Step 0 (astp_...)
+  │     ├── ToolCall (tcall_...)
+  │     └── ToolCall (tcall_...)
+  ├── Step 1 (astp_...)
+  │     └── ToolCall (tcall_...)
+  └── Step 2 (astp_...)
+```
+
+## Store interface
+
+```go
+type Store interface {
+    CreateRun(ctx context.Context, run *Run) error
+    GetRun(ctx context.Context, runID id.AgentRunID) (*Run, error)
+    UpdateRun(ctx context.Context, run *Run) error
+    ListRuns(ctx context.Context, filter *ListFilter) ([]*Run, error)
+
+    CreateStep(ctx context.Context, step *Step) error
+    ListSteps(ctx context.Context, runID id.AgentRunID) ([]*Step, error)
+
+    CreateToolCall(ctx context.Context, tc *ToolCall) error
+    ListToolCalls(ctx context.Context, stepID id.StepID) ([]*ToolCall, error)
+}
+```
+
+### List filter
+
+```go
+type ListFilter struct {
+    AgentID  string
+    TenantID string
+    State    RunState
+    Limit    int
+    Offset   int
+}
+```
+
+## API routes
+
+| Method | Path | Description |
+|--------|------|-------------|
+| `GET` | `/cortex/agents/{id}/runs` | List runs for an agent |
+| `GET` | `/cortex/runs/{id}` | Get a specific run |
+| `POST` | `/cortex/runs/{id}/cancel` | Cancel a running run |
