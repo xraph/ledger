@@ -273,35 +273,71 @@ ledgerExt := NewLedgerExtension(store,
 
 The audit hook emits structured audit events for plan creation, subscription changes, invoice generation, and quota violations. The observability plugin tracks counters and histograms for all lifecycle events.
 
-## Configuration via Forge config
+## YAML configuration
 
-If your Forge app uses a configuration system, you can read Ledger options from config:
+The Ledger extension automatically loads configuration from your Forge app's YAML config files. It looks for the key `extensions.ledger` first, then falls back to `ledger`:
+
+```yaml
+# forge.yaml (or app.yaml, config.yaml, etc.)
+extensions:
+  ledger:
+    base_path: /billing
+    disable_routes: false
+    disable_migrate: false
+    meter_batch_size: 100
+    meter_flush_interval: 5s
+    entitlement_cache_ttl: 30s
+```
+
+Or at the top level:
+
+```yaml
+ledger:
+  base_path: /billing
+  meter_batch_size: 200
+  meter_flush_interval: 10s
+  entitlement_cache_ttl: 1m
+```
+
+### Configuration reference
+
+| Field | YAML key | Type | Default | Description |
+|-------|----------|------|---------|-------------|
+| `BasePath` | `base_path` | `string` | `"/ledger"` | URL prefix for all ledger HTTP routes |
+| `DisableRoutes` | `disable_routes` | `bool` | `false` | Prevents HTTP route registration (engine-only mode) |
+| `DisableMigrate` | `disable_migrate` | `bool` | `false` | Prevents auto-migration on startup |
+| `MeterBatchSize` | `meter_batch_size` | `int` | `100` | Number of usage events buffered before flushing to the store |
+| `MeterFlushInterval` | `meter_flush_interval` | `duration` | `5s` | Max time before the meter buffer is flushed |
+| `EntitlementCacheTTL` | `entitlement_cache_ttl` | `duration` | `30s` | How long entitlement check results are cached in-process |
+
+### Merge behaviour
+
+YAML config and programmatic options are merged at startup:
+
+1. If YAML config is found, it takes precedence for string and numeric fields.
+2. Programmatic `bool` flags (e.g. `WithDisableRoutes(true)`) override when `true`.
+3. Any zero-value fields after merging are filled with defaults from `DefaultConfig()`.
 
 ```go
-type BillingConfig struct {
-    MeterBatchSize      int           `yaml:"meter_batch_size" default:"100"`
-    MeterFlushInterval  time.Duration `yaml:"meter_flush_interval" default:"5s"`
-    EntitlementCacheTTL time.Duration `yaml:"entitlement_cache_ttl" default:"30s"`
-    DatabaseURL         string        `yaml:"database_url" env:"BILLING_DATABASE_URL"`
-}
-
-func (e *LedgerExtension) Register(app *forge.App) error {
-    var cfg BillingConfig
-    if err := app.Config("billing", &cfg); err != nil {
-        return fmt.Errorf("ledger config: %w", err)
-    }
-
-    // Build options from config
-    opts := []ledger.Option{
-        ledger.WithLogger(app.Logger()),
-        ledger.WithMeterConfig(cfg.MeterBatchSize, cfg.MeterFlushInterval),
-        ledger.WithEntitlementCacheTTL(cfg.EntitlementCacheTTL),
-    }
-
-    e.engine = ledger.New(e.store, opts...)
-    return nil
-}
+// Programmatic options still work alongside YAML:
+ext := extension.New(
+    extension.WithStore(store),
+    extension.WithDisableRoutes(true), // overrides YAML
+)
 ```
+
+### Requiring YAML config
+
+To make the extension fail if no config is found in YAML files:
+
+```go
+ext := extension.New(
+    extension.WithStore(store),
+    extension.WithRequireConfig(true),
+)
+```
+
+This returns an error during `Register` if neither `extensions.ledger` nor `ledger` is present in the config.
 
 ## Complete example
 
