@@ -1,272 +1,70 @@
 ---
 title: Identity (TypeID)
-description: How Ledger uses type-safe, prefix-qualified identifiers for every billing entity.
+description: How Ledger uses prefix-qualified, globally unique identifiers for every billing entity.
 ---
 
-Every entity in Ledger gets a type-prefixed, K-sortable, UUIDv7-based identifier using the [TypeID](https://github.com/jetify-com/typeid) specification. IDs are validated at parse time to ensure the prefix matches the expected type.
+Every entity in Ledger has a TypeID. TypeIDs are globally unique, sortable, URL-safe identifiers built on UUIDv7 with a human-readable prefix that tells you what kind of entity you're looking at.
 
-## Prefix table
+A TypeID looks like this:
 
-| Type | Prefix | Go type | Example |
-|------|--------|---------|---------|
-| Plan | `pln_` | `id.PlanID` | `pln_01h2xcejqtf2nbrexx3vqjhp41` |
-| Feature | `fea_` | `id.FeatureID` | `fea_01h2xcejqtf2nbrexx3vqjhp42` |
-| Pricing Tier | `tier_` | `id.TierID` | `tier_01h2xcejqtf2nbrexx3vqjhp43` |
-| Subscription | `sub_` | `id.SubscriptionID` | `sub_01h2xcejqtf2nbrexx3vqjhp44` |
-| Customer | `cus_` | `id.CustomerID` | `cus_01h2xcejqtf2nbrexx3vqjhp45` |
-| Invoice | `inv_` | `id.InvoiceID` | `inv_01h2xcejqtf2nbrexx3vqjhp46` |
-| Invoice Line | `line_` | `id.LineID` | `line_01h2xcejqtf2nbrexx3vqjhp47` |
-| Usage Event | `evt_` | `id.EventID` | `evt_01h2xcejqtf2nbrexx3vqjhp48` |
-| Payment | `pay_` | `id.PaymentID` | `pay_01h2xcejqtf2nbrexx3vqjhp49` |
-| Payment Method | `pm_` | `id.PaymentMethodID` | `pm_01h2xcejqtf2nbrexx3vqjhp4a` |
-| Credit | `crd_` | `id.CreditID` | `crd_01h2xcejqtf2nbrexx3vqjhp4b` |
-| Webhook | `whk_` | `id.WebhookID` | `whk_01h2xcejqtf2nbrexx3vqjhp4c` |
+```
+plan_01h455vb4pex5vsknk084sn02q
+```
 
-## Constructors
+The `plan` prefix identifies this as a plan. The suffix is a base32-encoded UUIDv7 that encodes creation time, so IDs sort chronologically.
 
-Each type has a constructor that generates a new UUIDv7-based ID with the correct prefix:
+## The `id` package
+
+The `id` package wraps the [TypeID Go library](https://github.com/jetify-com/typeid-go) (v2) with a single `ID` struct. All entity types share the same struct -- the prefix distinguishes them.
+
+### Creating IDs
 
 ```go
 import "github.com/xraph/ledger/id"
 
-planID     := id.NewPlanID()         // pln_01h...
-featureID  := id.NewFeatureID()      // fea_01h...
-tierID     := id.NewTierID()         // tier_01h...
-subID      := id.NewSubscriptionID() // sub_01h...
-customerID := id.NewCustomerID()     // cus_01h...
-invoiceID  := id.NewInvoiceID()      // inv_01h...
-eventID    := id.NewEventID()        // evt_01h...
-paymentID  := id.NewPaymentID()      // pay_01h...
+planID         := id.New(id.PrefixPlan)          // plan_01h455vb...
+subscriptionID := id.New(id.PrefixSubscription)  // sub_01h455vb...
+invoiceID      := id.New(id.PrefixInvoice)       // inv_01h455vb...
 ```
 
-## Parsing
+Convenience constructors: `id.NewPlanID()`, `id.NewFeatureID()`, `id.NewPriceID()`, `id.NewSubscriptionID()`, `id.NewUsageEventID()`, `id.NewEntitlementID()`, `id.NewInvoiceID()`, `id.NewLineItemID()`, `id.NewCouponID()`, `id.NewPaymentID()`.
 
-Parse functions validate both the format and the prefix:
+### Parsing IDs
 
 ```go
-planID, err := id.ParsePlanID("pln_01h2xcejqtf2nbrexx3vqjhp41")
-// err is nil — prefix matches
-
-_, err = id.ParsePlanID("sub_01h2xcejqtf2nbrexx3vqjhp44")
-// err: id: expected prefix "pln", got "sub"
+parsed, err := id.Parse("plan_01h455vb4pex5vsknk084sn02q")
+parsed, err := id.ParseWithPrefix("plan_01h455vb...", id.PrefixPlan)  // validates prefix
+parsed, err := id.ParsePlanID("plan_01h455vb...")                     // convenience
 ```
 
-Use `id.ParseAny` when you need to accept any valid TypeID regardless of prefix:
+### Nil ID
 
 ```go
-anyID, err := id.ParseAny("pln_01h2xcejqtf2nbrexx3vqjhp41")
-// anyID.Prefix() == "pln"
+var empty id.ID
+empty.IsNil()  // true
+empty.String() // ""
+id.Nil.IsNil() // true
 ```
 
-## K-sortability
+### Database storage
 
-TypeIDs embed UUIDv7 timestamps, making them naturally sortable by creation time. This means:
+`id.ID` implements `Scanner` and `driver.Valuer`. Stores as a string, returns `NULL` for nil IDs.
 
-- Database indexes on TypeID columns are efficient for time-range queries
-- IDs created later always sort after earlier IDs
-- No need for separate `created_at` indexes for ordering
-- Invoices, events, and payments can be efficiently queried by ID range
+### JSON serialization
 
-Example: Fetching recent invoices by ID range:
+`id.ID` implements `TextMarshaler` and `TextUnmarshaler`. Nil IDs serialize as empty strings.
 
-```go
-// Get invoices created in the last 24 hours
-sinceID := id.NewInvoiceIDAt(time.Now().Add(-24 * time.Hour))
+## Prefix reference
 
-invoices, err := store.ListInvoices(ctx, InvoiceFilters{
-    SinceID: sinceID,
-    Limit:   100,
-})
-```
-
-## Type safety
-
-All ID types are aliases for `typeid.TypeID`. While Go does not enforce alias-level type safety at compile time, the prefix validation at parse time catches mismatches:
-
-```go
-type PlanID = typeid.TypeID
-type SubscriptionID = typeid.TypeID
-type CustomerID = typeid.TypeID
-```
-
-Passing a plan ID where a subscription ID is expected will succeed at compile time but fail at parse/validation time if the prefix is checked.
-
-## String representation
-
-TypeIDs can be used directly as strings in JSON and database queries:
-
-```go
-type Subscription struct {
-    ID         SubscriptionID `json:"id" db:"id"`
-    CustomerID CustomerID     `json:"customer_id" db:"customer_id"`
-    PlanID     PlanID         `json:"plan_id" db:"plan_id"`
-}
-```
-
-JSON serialization:
-
-```json
-{
-  "id": "sub_01h2xcejqtf2nbrexx3vqjhp44",
-  "customer_id": "cus_01h2xcejqtf2nbrexx3vqjhp45",
-  "plan_id": "pln_01h2xcejqtf2nbrexx3vqjhp41"
-}
-```
-
-## Database storage
-
-TypeIDs are stored as `TEXT` in PostgreSQL:
-
-```sql
-CREATE TABLE subscriptions (
-    id TEXT PRIMARY KEY,
-    customer_id TEXT NOT NULL REFERENCES customers(id),
-    plan_id TEXT NOT NULL REFERENCES plans(id),
-    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
-);
-```
-
-The prefix provides human-readable context when debugging database queries:
-
-```sql
-SELECT id, customer_id, plan_id
-FROM subscriptions
-WHERE customer_id = 'cus_01h2xcejqtf2nbrexx3vqjhp45';
-```
-
-## Idempotency
-
-Usage events support idempotency keys alongside TypeIDs:
-
-```go
-type UsageEvent struct {
-    ID             EventID   `json:"id"`
-    IdempotencyKey string    `json:"idempotency_key,omitempty"`
-    CustomerID     CustomerID `json:"customer_id"`
-    EventName      string    `json:"event_name"`
-    Value          float64   `json:"value"`
-}
-```
-
-The idempotency key ensures duplicate event submission is safe:
-
-```go
-event := &UsageEvent{
-    ID:             id.NewEventID(),
-    IdempotencyKey: "api_call_xyz_20240115_120000", // External unique key
-    CustomerID:     customerID,
-    EventName:      "api_call",
-    Value:          1,
-}
-
-err := meter.RecordEvent(ctx, event)
-// Second submission with same idempotency key is ignored
-```
-
-## External ID mapping
-
-For integrations with external systems (Stripe, Paddle), entities can store both TypeIDs and provider IDs:
-
-```go
-type Customer struct {
-    ID               CustomerID `json:"id"`
-    StripeCustomerID string     `json:"stripe_customer_id,omitempty"`
-    PaddleCustomerID string     `json:"paddle_customer_id,omitempty"`
-}
-
-type Payment struct {
-    ID         PaymentID `json:"id"`
-    ProviderID string    `json:"provider_id"` // Stripe: pi_..., Paddle: ...
-    Provider   string    `json:"provider"`    // "stripe", "paddle"
-}
-```
-
-Lookups support both ID types:
-
-```go
-// By Ledger ID
-customer, err := store.GetCustomer(ctx, customerID)
-
-// By Stripe ID
-customer, err := store.GetCustomerByStripeID(ctx, "cus_stripe123")
-```
-
-## ID validation
-
-Validate TypeIDs before using them:
-
-```go
-func ValidatePlanID(s string) error {
-    _, err := id.ParsePlanID(s)
-    return err
-}
-
-func ValidateSubscriptionID(s string) error {
-    _, err := id.ParseSubscriptionID(s)
-    return err
-}
-```
-
-API handlers should validate all incoming IDs:
-
-```go
-func (h *Handler) GetSubscription(w http.ResponseWriter, r *http.Request) {
-    subIDStr := mux.Vars(r)["id"]
-
-    subID, err := id.ParseSubscriptionID(subIDStr)
-    if err != nil {
-        http.Error(w, "invalid subscription ID", http.StatusBadRequest)
-        return
-    }
-
-    sub, err := h.store.GetSubscription(r.Context(), subID)
-    // ...
-}
-```
-
-## Benefits over UUIDs
-
-TypeIDs provide several advantages over plain UUIDs:
-
-1. **Type safety** — Prefix prevents mixing entity types
-2. **Readability** — Prefix is human-readable in logs and URLs
-3. **Sortability** — Embedded timestamp enables efficient range queries
-4. **Compatibility** — Can be used as primary keys like UUIDs
-5. **Debuggability** — Prefix makes debugging easier (no guessing entity type)
-
-## Example usage
-
-```go
-// Create a new plan
-plan := &Plan{
-    ID:          id.NewPlanID(),
-    Name:        "Pro Plan",
-    BillingPeriod: "month",
-    Currency:    "USD",
-}
-
-err := store.CreatePlan(ctx, plan)
-
-// Create a subscription
-sub := &Subscription{
-    ID:         id.NewSubscriptionID(),
-    CustomerID: customerID,
-    PlanID:     plan.ID,
-    Status:     "trialing",
-    TrialEnd:   timePtr(time.Now().Add(14 * 24 * time.Hour)),
-}
-
-err = store.CreateSubscription(ctx, sub)
-
-// Record usage
-event := &UsageEvent{
-    ID:         id.NewEventID(),
-    CustomerID: customerID,
-    EventName:  "api_call",
-    EventTime:  time.Now(),
-    Value:      1,
-}
-
-err = meter.RecordEvent(ctx, event)
-```
+| Constant | Prefix | Entity |
+|----------|--------|--------|
+| `id.PrefixPlan` | `plan` | Plan |
+| `id.PrefixFeature` | `feat` | Feature |
+| `id.PrefixPrice` | `price` | Price |
+| `id.PrefixSubscription` | `sub` | Subscription |
+| `id.PrefixUsageEvent` | `uevt` | Usage event |
+| `id.PrefixEntitlement` | `ent` | Entitlement |
+| `id.PrefixInvoice` | `inv` | Invoice |
+| `id.PrefixLineItem` | `li` | Line item |
+| `id.PrefixCoupon` | `cpn` | Coupon |
+| `id.PrefixPayment` | `pay` | Payment |

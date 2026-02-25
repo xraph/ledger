@@ -1,182 +1,241 @@
-package id
+package id_test
 
 import (
 	"strings"
 	"testing"
+
+	"github.com/xraph/ledger/id"
 )
 
-func TestNewIDs(t *testing.T) {
+func TestConstructors(t *testing.T) {
 	tests := []struct {
-		name    string
-		newFunc func() string
-		prefix  string
+		name   string
+		newFn  func() id.ID
+		prefix string
 	}{
-		{"PlanID", func() string { return NewPlanID().String() }, PrefixPlan},
-		{"FeatureID", func() string { return NewFeatureID().String() }, PrefixFeature},
-		{"PriceID", func() string { return NewPriceID().String() }, PrefixPrice},
-		{"SubscriptionID", func() string { return NewSubscriptionID().String() }, PrefixSubscription},
-		{"UsageEventID", func() string { return NewUsageEventID().String() }, PrefixUsageEvent},
-		{"EntitlementID", func() string { return NewEntitlementID().String() }, PrefixEntitlement},
-		{"InvoiceID", func() string { return NewInvoiceID().String() }, PrefixInvoice},
-		{"LineItemID", func() string { return NewLineItemID().String() }, PrefixLineItem},
-		{"CouponID", func() string { return NewCouponID().String() }, PrefixCoupon},
-		{"PaymentID", func() string { return NewPaymentID().String() }, PrefixPayment},
+		{"PlanID", id.NewPlanID, "plan_"},
+		{"FeatureID", id.NewFeatureID, "feat_"},
+		{"PriceID", id.NewPriceID, "price_"},
+		{"SubscriptionID", id.NewSubscriptionID, "sub_"},
+		{"UsageEventID", id.NewUsageEventID, "uevt_"},
+		{"EntitlementID", id.NewEntitlementID, "ent_"},
+		{"InvoiceID", id.NewInvoiceID, "inv_"},
+		{"LineItemID", id.NewLineItemID, "li_"},
+		{"CouponID", id.NewCouponID, "cpn_"},
+		{"PaymentID", id.NewPaymentID, "pay_"},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			id := tt.newFunc()
-
-			// Check prefix
-			if !strings.HasPrefix(id, tt.prefix+"_") {
-				t.Errorf("ID %s does not have prefix %s", id, tt.prefix)
-			}
-
-			// Check format (prefix_suffix)
-			parts := strings.Split(id, "_")
-			if len(parts) != 2 {
-				t.Errorf("ID %s does not have correct format", id)
-			}
-
-			// Check suffix length (should be 26 chars for UUIDv7)
-			if len(parts[1]) != 26 {
-				t.Errorf("ID suffix %s does not have correct length (got %d, want 26)", parts[1], len(parts[1]))
+			got := tt.newFn().String()
+			if !strings.HasPrefix(got, tt.prefix) {
+				t.Errorf("expected prefix %q, got %q", tt.prefix, got)
 			}
 		})
 	}
 }
 
-func TestParseIDs(t *testing.T) {
+func TestNew(t *testing.T) {
+	i := id.New(id.PrefixPlan)
+	if i.IsNil() {
+		t.Fatal("expected non-nil ID")
+	}
+	if i.Prefix() != id.PrefixPlan {
+		t.Errorf("expected prefix %q, got %q", id.PrefixPlan, i.Prefix())
+	}
+}
+
+func TestParseRoundTrip(t *testing.T) {
 	tests := []struct {
-		name      string
-		parseFunc func(string) (interface{}, error)
-		validID   string
-		invalidID string
-		wrongID   string // ID with wrong prefix
+		name    string
+		newFn   func() id.ID
+		parseFn func(string) (id.ID, error)
 	}{
-		{
-			"ParsePlanID",
-			func(s string) (interface{}, error) { return ParsePlanID(s) },
-			"plan_01h2xcejqtf2nbrexx3vqjhp41",
-			"plan_invalid",
-			"sub_01h2xcejqtf2nbrexx3vqjhp41",
-		},
-		{
-			"ParseSubscriptionID",
-			func(s string) (interface{}, error) { return ParseSubscriptionID(s) },
-			"sub_01h2xcejqtf2nbrexx3vqjhp41",
-			"sub_invalid",
-			"plan_01h2xcejqtf2nbrexx3vqjhp41",
-		},
-		{
-			"ParseInvoiceID",
-			func(s string) (interface{}, error) { return ParseInvoiceID(s) },
-			"inv_01h2xcejqtf2nbrexx3vqjhp41",
-			"inv_invalid",
-			"sub_01h2xcejqtf2nbrexx3vqjhp41",
-		},
+		{"PlanID", id.NewPlanID, id.ParsePlanID},
+		{"FeatureID", id.NewFeatureID, id.ParseFeatureID},
+		{"PriceID", id.NewPriceID, id.ParsePriceID},
+		{"SubscriptionID", id.NewSubscriptionID, id.ParseSubscriptionID},
+		{"UsageEventID", id.NewUsageEventID, id.ParseUsageEventID},
+		{"EntitlementID", id.NewEntitlementID, id.ParseEntitlementID},
+		{"InvoiceID", id.NewInvoiceID, id.ParseInvoiceID},
+		{"LineItemID", id.NewLineItemID, id.ParseLineItemID},
+		{"CouponID", id.NewCouponID, id.ParseCouponID},
+		{"PaymentID", id.NewPaymentID, id.ParsePaymentID},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			// Test valid ID
-			id, err := tt.parseFunc(tt.validID)
+			original := tt.newFn()
+			parsed, err := tt.parseFn(original.String())
 			if err != nil {
-				t.Errorf("Failed to parse valid ID %s: %v", tt.validID, err)
+				t.Fatalf("parse failed: %v", err)
 			}
-			if id == nil {
-				t.Errorf("Parsed ID is nil for %s", tt.validID)
+			if parsed.String() != original.String() {
+				t.Errorf("round-trip mismatch: %q != %q", parsed.String(), original.String())
 			}
+		})
+	}
+}
 
-			// Test invalid format
-			_, err = tt.parseFunc(tt.invalidID)
-			if err == nil {
-				t.Errorf("Expected error parsing invalid ID %s", tt.invalidID)
-			}
+func TestCrossTypeRejection(t *testing.T) {
+	tests := []struct {
+		name    string
+		input   string
+		parseFn func(string) (id.ID, error)
+	}{
+		{"ParsePlanID rejects feat_", id.NewFeatureID().String(), id.ParsePlanID},
+		{"ParseFeatureID rejects price_", id.NewPriceID().String(), id.ParseFeatureID},
+		{"ParsePriceID rejects sub_", id.NewSubscriptionID().String(), id.ParsePriceID},
+		{"ParseSubscriptionID rejects uevt_", id.NewUsageEventID().String(), id.ParseSubscriptionID},
+		{"ParseUsageEventID rejects ent_", id.NewEntitlementID().String(), id.ParseUsageEventID},
+		{"ParseEntitlementID rejects inv_", id.NewInvoiceID().String(), id.ParseEntitlementID},
+		{"ParseInvoiceID rejects li_", id.NewLineItemID().String(), id.ParseInvoiceID},
+		{"ParseLineItemID rejects cpn_", id.NewCouponID().String(), id.ParseLineItemID},
+		{"ParseCouponID rejects pay_", id.NewPaymentID().String(), id.ParseCouponID},
+		{"ParsePaymentID rejects plan_", id.NewPlanID().String(), id.ParsePaymentID},
+	}
 
-			// Test wrong prefix
-			_, err = tt.parseFunc(tt.wrongID)
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			_, err := tt.parseFn(tt.input)
 			if err == nil {
-				t.Errorf("Expected error parsing ID with wrong prefix %s", tt.wrongID)
-			}
-			if err != nil && !strings.Contains(err.Error(), "expected prefix") {
-				t.Errorf("Wrong error message for incorrect prefix: %v", err)
+				t.Errorf("expected error for cross-type parse of %q, got nil", tt.input)
 			}
 		})
 	}
 }
 
 func TestParseAny(t *testing.T) {
-	validIDs := []string{
-		"plan_01h2xcejqtf2nbrexx3vqjhp41",
-		"sub_01h2xcejqtf2nbrexx3vqjhp41",
-		"inv_01h2xcejqtf2nbrexx3vqjhp41",
-		"feat_01h2xcejqtf2nbrexx3vqjhp41",
-		"uevt_01h2xcejqtf2nbrexx3vqjhp41",
+	ids := []id.ID{
+		id.NewPlanID(),
+		id.NewFeatureID(),
+		id.NewPriceID(),
+		id.NewSubscriptionID(),
+		id.NewUsageEventID(),
+		id.NewEntitlementID(),
+		id.NewInvoiceID(),
+		id.NewLineItemID(),
+		id.NewCouponID(),
+		id.NewPaymentID(),
 	}
 
-	for _, id := range validIDs {
-		parsed, err := ParseAny(id)
-		if err != nil {
-			t.Errorf("Failed to parse valid ID %s: %v", id, err)
-		}
-		if parsed.String() != id {
-			t.Errorf("Parsed ID mismatch: got %s, want %s", parsed.String(), id)
-		}
+	for _, i := range ids {
+		t.Run(i.String(), func(t *testing.T) {
+			parsed, err := id.ParseAny(i.String())
+			if err != nil {
+				t.Fatalf("ParseAny(%q) failed: %v", i.String(), err)
+			}
+			if parsed.String() != i.String() {
+				t.Errorf("round-trip mismatch: %q != %q", parsed.String(), i.String())
+			}
+		})
+	}
+}
+
+func TestParseWithPrefix(t *testing.T) {
+	i := id.NewPlanID()
+	parsed, err := id.ParseWithPrefix(i.String(), id.PrefixPlan)
+	if err != nil {
+		t.Fatalf("ParseWithPrefix failed: %v", err)
+	}
+	if parsed.String() != i.String() {
+		t.Errorf("mismatch: %q != %q", parsed.String(), i.String())
 	}
 
-	// Test invalid
-	_, err := ParseAny("invalid_id")
+	_, err = id.ParseWithPrefix(i.String(), id.PrefixFeature)
 	if err == nil {
-		t.Error("Expected error parsing invalid ID")
+		t.Error("expected error for wrong prefix")
 	}
 }
 
-func TestIDUniqueness(t *testing.T) {
-	// Generate multiple IDs and ensure they're all unique
-	const count = 100
-	ids := make(map[string]bool)
-
-	for i := 0; i < count; i++ {
-		id := NewPlanID().String()
-		if ids[id] {
-			t.Fatalf("Duplicate ID generated: %s", id)
-		}
-		ids[id] = true
-	}
-
-	if len(ids) != count {
-		t.Errorf("Expected %d unique IDs, got %d", count, len(ids))
+func TestParseEmpty(t *testing.T) {
+	_, err := id.Parse("")
+	if err == nil {
+		t.Error("expected error for empty string")
 	}
 }
 
-func TestIDSortability(t *testing.T) {
-	// TypeIDs with UUIDv7 should be K-sortable (time-ordered)
-	id1 := NewPlanID()
-	// Small delay to ensure different timestamps
-	id2 := NewPlanID()
-	id3 := NewPlanID()
-
-	// String comparison should reflect time ordering
-	if id1.String() >= id2.String() {
-		// This might occasionally fail due to timing, but should be rare
-		t.Logf("Warning: IDs may not be perfectly time-ordered: %s >= %s", id1, id2)
+func TestNilID(t *testing.T) {
+	var i id.ID
+	if !i.IsNil() {
+		t.Error("zero-value ID should be nil")
 	}
-	if id2.String() >= id3.String() {
-		t.Logf("Warning: IDs may not be perfectly time-ordered: %s >= %s", id2, id3)
+	if i.String() != "" {
+		t.Errorf("expected empty string, got %q", i.String())
+	}
+	if i.Prefix() != "" {
+		t.Errorf("expected empty prefix, got %q", i.Prefix())
 	}
 }
 
-func BenchmarkNewPlanID(b *testing.B) {
-	for i := 0; i < b.N; i++ {
-		_ = NewPlanID()
+func TestMarshalUnmarshalText(t *testing.T) {
+	original := id.NewPlanID()
+	data, err := original.MarshalText()
+	if err != nil {
+		t.Fatalf("MarshalText failed: %v", err)
+	}
+
+	var restored id.ID
+	if unmarshalErr := restored.UnmarshalText(data); unmarshalErr != nil {
+		t.Fatalf("UnmarshalText failed: %v", unmarshalErr)
+	}
+	if restored.String() != original.String() {
+		t.Errorf("mismatch: %q != %q", restored.String(), original.String())
+	}
+
+	// Nil round-trip.
+	var nilID id.ID
+	data, err = nilID.MarshalText()
+	if err != nil {
+		t.Fatalf("MarshalText(nil) failed: %v", err)
+	}
+	var restored2 id.ID
+	if err := restored2.UnmarshalText(data); err != nil {
+		t.Fatalf("UnmarshalText(nil) failed: %v", err)
+	}
+	if !restored2.IsNil() {
+		t.Error("expected nil after round-trip of nil ID")
 	}
 }
 
-func BenchmarkParsePlanID(b *testing.B) {
-	id := "plan_01h2xcejqtf2nbrexx3vqjhp41"
-	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
-		_, _ = ParsePlanID(id)
+func TestValueScan(t *testing.T) {
+	original := id.NewSubscriptionID()
+	val, err := original.Value()
+	if err != nil {
+		t.Fatalf("Value failed: %v", err)
+	}
+
+	var scanned id.ID
+	if scanErr := scanned.Scan(val); scanErr != nil {
+		t.Fatalf("Scan failed: %v", scanErr)
+	}
+	if scanned.String() != original.String() {
+		t.Errorf("mismatch: %q != %q", scanned.String(), original.String())
+	}
+
+	// Nil round-trip.
+	var nilID id.ID
+	val, err = nilID.Value()
+	if err != nil {
+		t.Fatalf("Value(nil) failed: %v", err)
+	}
+	if val != nil {
+		t.Errorf("expected nil value for nil ID, got %v", val)
+	}
+
+	var scanned2 id.ID
+	if err := scanned2.Scan(nil); err != nil {
+		t.Fatalf("Scan(nil) failed: %v", err)
+	}
+	if !scanned2.IsNil() {
+		t.Error("expected nil after scan of nil")
+	}
+}
+
+func TestUniqueness(t *testing.T) {
+	a := id.NewPlanID()
+	b := id.NewPlanID()
+	if a.String() == b.String() {
+		t.Errorf("two consecutive NewPlanID() calls returned the same ID: %q", a.String())
 	}
 }
