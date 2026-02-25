@@ -27,6 +27,12 @@ type Config struct {
 	// cached in-process before re-evaluating against the store (default: 30s).
 	EntitlementCacheTTL time.Duration `json:"entitlement_cache_ttl" mapstructure:"entitlement_cache_ttl" yaml:"entitlement_cache_ttl"`
 
+	// GroveDatabase is the name of a grove.DB registered in the DI container.
+	// When set, the extension resolves this named database and auto-constructs
+	// the appropriate store based on the driver type (pg/sqlite/mongo).
+	// When empty and WithGroveDatabase was called, the default (unnamed) DB is used.
+	GroveDatabase string `json:"grove_database" mapstructure:"grove_database" yaml:"grove_database"`
+
 	// RequireConfig requires config to be present in YAML files.
 	// If true and no config is found, Register returns an error.
 	RequireConfig bool `json:"-" yaml:"-"`

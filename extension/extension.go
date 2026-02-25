@@ -11,13 +11,18 @@ package extension
 import (
 	"context"
 	"errors"
+	"fmt"
 
 	"github.com/xraph/forge"
+	"github.com/xraph/grove"
 	"github.com/xraph/vessel"
 
 	ledger "github.com/xraph/ledger"
 	"github.com/xraph/ledger/store"
 	"github.com/xraph/ledger/store/memory"
+	mongostore "github.com/xraph/ledger/store/mongo"
+	pgstore "github.com/xraph/ledger/store/postgres"
+	sqlitestore "github.com/xraph/ledger/store/sqlite"
 )
 
 // ExtensionName is the name registered with Forge.
@@ -40,6 +45,7 @@ type Extension struct {
 	engine     *ledger.Ledger
 	store      store.Store
 	ledgerOpts []ledger.Option
+	useGrove   bool
 }
 
 // New creates a new Ledger Forge extension with the given options.
@@ -66,6 +72,19 @@ func (e *Extension) Register(fapp forge.App) error {
 
 	if err := e.loadConfiguration(); err != nil {
 		return err
+	}
+
+	// Resolve store from grove DI if configured.
+	if e.store == nil && e.useGrove {
+		groveDB, err := e.resolveGroveDB(fapp)
+		if err != nil {
+			return fmt.Errorf("ledger: %w", err)
+		}
+		s, err := e.buildStoreFromGroveDB(groveDB)
+		if err != nil {
+			return err
+		}
+		e.store = s
 	}
 
 	// Use memory store if no store was provided programmatically.
@@ -170,10 +189,16 @@ func (e *Extension) loadConfiguration() error {
 		e.config = e.mergeConfigurations(fileConfig, programmaticConfig)
 	}
 
+	// Enable grove resolution if YAML config specifies a grove database.
+	if e.config.GroveDatabase != "" {
+		e.useGrove = true
+	}
+
 	e.Logger().Debug("ledger: configuration loaded",
 		forge.F("disable_routes", e.config.DisableRoutes),
 		forge.F("disable_migrate", e.config.DisableMigrate),
 		forge.F("base_path", e.config.BasePath),
+		forge.F("grove_database", e.config.GroveDatabase),
 		forge.F("meter_batch_size", e.config.MeterBatchSize),
 		forge.F("meter_flush_interval", e.config.MeterFlushInterval),
 		forge.F("entitlement_cache_ttl", e.config.EntitlementCacheTTL),
@@ -246,6 +271,9 @@ func (e *Extension) mergeConfigurations(yamlConfig, programmaticConfig Config) C
 	if yamlConfig.BasePath == "" && programmaticConfig.BasePath != "" {
 		yamlConfig.BasePath = programmaticConfig.BasePath
 	}
+	if yamlConfig.GroveDatabase == "" && programmaticConfig.GroveDatabase != "" {
+		yamlConfig.GroveDatabase = programmaticConfig.GroveDatabase
+	}
 
 	// Duration/int fields: YAML takes precedence, programmatic fills gaps.
 	if yamlConfig.MeterBatchSize == 0 && programmaticConfig.MeterBatchSize != 0 {
@@ -260,4 +288,37 @@ func (e *Extension) mergeConfigurations(yamlConfig, programmaticConfig Config) C
 
 	// Fill remaining zeros with defaults.
 	return e.mergeWithDefaults(yamlConfig)
+}
+
+// resolveGroveDB resolves a *grove.DB from the DI container.
+// If GroveDatabase is set, it looks up the named DB; otherwise it uses the default.
+func (e *Extension) resolveGroveDB(fapp forge.App) (*grove.DB, error) {
+	if e.config.GroveDatabase != "" {
+		db, err := vessel.InjectNamed[*grove.DB](fapp.Container(), e.config.GroveDatabase)
+		if err != nil {
+			return nil, fmt.Errorf("grove database %q not found in container: %w", e.config.GroveDatabase, err)
+		}
+		return db, nil
+	}
+	db, err := vessel.Inject[*grove.DB](fapp.Container())
+	if err != nil {
+		return nil, fmt.Errorf("default grove database not found in container: %w", err)
+	}
+	return db, nil
+}
+
+// buildStoreFromGroveDB constructs the appropriate store backend
+// based on the grove driver type (pg, sqlite, mongo).
+func (e *Extension) buildStoreFromGroveDB(db *grove.DB) (store.Store, error) {
+	driverName := db.Driver().Name()
+	switch driverName {
+	case "pg":
+		return pgstore.New(db), nil
+	case "sqlite":
+		return sqlitestore.New(db), nil
+	case "mongo":
+		return mongostore.New(db), nil
+	default:
+		return nil, fmt.Errorf("ledger: unsupported grove driver %q", driverName)
+	}
 }

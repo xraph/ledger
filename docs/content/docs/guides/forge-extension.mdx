@@ -273,6 +273,40 @@ ledgerExt := NewLedgerExtension(store,
 
 The audit hook emits structured audit events for plan creation, subscription changes, invoice generation, and quota violations. The observability plugin tracks counters and histograms for all lifecycle events.
 
+## Grove database integration
+
+When your Forge app uses the [Grove extension](https://github.com/xraph/grove) to manage database connections, Ledger can automatically resolve a `grove.DB` from the DI container and construct the correct store backend (PostgreSQL, SQLite, or MongoDB) based on the driver type.
+
+### Using the default grove database
+
+If the Grove extension registers a single database (or a default in multi-DB mode), use `WithGroveDatabase` with an empty name:
+
+```go
+ext := extension.New(
+    extension.WithGroveDatabase(""),
+)
+```
+
+### Using a named grove database
+
+In multi-database setups, reference a specific database by name:
+
+```go
+ext := extension.New(
+    extension.WithGroveDatabase("billing"),
+)
+```
+
+This resolves the grove.DB named `"billing"` from the DI container and auto-constructs the matching store. The driver type is detected automatically -- you do not need to import individual store packages.
+
+### Store resolution order
+
+The extension resolves its store in this order:
+
+1. **Explicit store** -- if `WithStore(s)` was called, it is used directly and grove is ignored.
+2. **Grove database** -- if `WithGroveDatabase(name)` was called (or `grove_database` is set in YAML), the named or default `grove.DB` is resolved from DI.
+3. **In-memory fallback** -- if neither is configured, an in-memory store is used.
+
 ## YAML configuration
 
 The Ledger extension automatically loads configuration from your Forge app's YAML config files. It looks for the key `extensions.ledger` first, then falls back to `ledger`:
@@ -282,6 +316,7 @@ The Ledger extension automatically loads configuration from your Forge app's YAM
 extensions:
   ledger:
     base_path: /billing
+    grove_database: billing
     disable_routes: false
     disable_migrate: false
     meter_batch_size: 100
@@ -294,6 +329,7 @@ Or at the top level:
 ```yaml
 ledger:
   base_path: /billing
+  grove_database: ""
   meter_batch_size: 200
   meter_flush_interval: 10s
   entitlement_cache_ttl: 1m
@@ -304,6 +340,7 @@ ledger:
 | Field | YAML key | Type | Default | Description |
 |-------|----------|------|---------|-------------|
 | `BasePath` | `base_path` | `string` | `"/ledger"` | URL prefix for all ledger HTTP routes |
+| `GroveDatabase` | `grove_database` | `string` | `""` | Name of the grove.DB to resolve from DI; empty uses the default DB |
 | `DisableRoutes` | `disable_routes` | `bool` | `false` | Prevents HTTP route registration (engine-only mode) |
 | `DisableMigrate` | `disable_migrate` | `bool` | `false` | Prevents auto-migration on startup |
 | `MeterBatchSize` | `meter_batch_size` | `int` | `100` | Number of usage events buffered before flushing to the store |
