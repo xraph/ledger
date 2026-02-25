@@ -1,0 +1,75 @@
+---
+title: SQLite Store
+description: Lightweight SQLite store for development, testing, and single-node Ledger deployments.
+---
+
+The `store/sqlite` package implements Ledger's `store.Store` interface using the grove ORM with the SQLite driver. It requires no external database process, making it ideal for development, integration tests, and single-node deployments.
+
+## Setup
+
+```go
+import (
+    "github.com/xraph/grove"
+    "github.com/xraph/grove/drivers/sqlitedriver"
+    "github.com/xraph/ledger"
+    "github.com/xraph/ledger/store/sqlite"
+)
+
+db, err := grove.Open(sqlitedriver.Open("ledger.db"))
+if err != nil {
+    log.Fatal(err)
+}
+
+s := sqlite.New(db)
+
+engine := ledger.New(s,
+    ledger.WithMeterConfig(100, 5*time.Second),
+)
+
+// Start runs migrations automatically
+if err := engine.Start(ctx); err != nil {
+    log.Fatal(err)
+}
+defer engine.Stop()
+```
+
+Pass `":memory:"` for a fully in-process, zero-persistence store useful in tests:
+
+```go
+db, err := grove.Open(sqlitedriver.Open(":memory:"))
+```
+
+## Migrations
+
+Migrations run automatically when `engine.Start()` is called. For manual control:
+
+```go
+if err := s.Migrate(ctx); err != nil {
+    log.Fatal(err)
+}
+```
+
+Migrations are idempotent -- safe to run on every startup.
+
+## Implements `store.Store`
+
+```go
+// Compile-time check
+var _ store.Store = (*Store)(nil)
+```
+
+## Characteristics
+
+| Aspect | Detail |
+|--------|--------|
+| Driver | grove ORM + sqlitedriver |
+| Migrations | grove orchestrator with programmatic migrations |
+| Transactions | SQLite-level transactions |
+| Concurrency | Multiple readers, single writer (WAL mode) |
+| Persistence | File-based or in-process (`":memory:"`) |
+
+## When to use
+
+- Development and local testing without external dependencies.
+- Single-process or embedded billing deployments.
+- CI pipelines where spinning up PostgreSQL is impractical.
