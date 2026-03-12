@@ -9,6 +9,7 @@ import (
 	"github.com/xraph/ledger"
 	"github.com/xraph/ledger/coupon"
 	"github.com/xraph/ledger/entitlement"
+	"github.com/xraph/ledger/feature"
 	"github.com/xraph/ledger/id"
 	"github.com/xraph/ledger/invoice"
 	"github.com/xraph/ledger/meter"
@@ -37,6 +38,9 @@ type Store struct {
 
 	// Coupon storage
 	coupons map[string]*coupon.Coupon
+
+	// Feature catalog storage
+	features map[string]*feature.Feature
 }
 
 func New() *Store {
@@ -48,6 +52,7 @@ func New() *Store {
 		cacheExpiry:      make(map[string]time.Time),
 		invoices:         make(map[string]*invoice.Invoice),
 		coupons:          make(map[string]*coupon.Coupon),
+		features:         make(map[string]*feature.Feature),
 	}
 }
 
@@ -514,6 +519,128 @@ func (s *Store) DeleteCoupon(_ context.Context, couponID id.CouponID) error {
 
 	delete(s.coupons, couponID.String())
 	return nil
+}
+
+// Feature catalog Store implementation
+func (s *Store) CreateFeature(_ context.Context, f *feature.Feature) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	if _, exists := s.features[f.ID.String()]; exists {
+		return ledger.ErrAlreadyExists
+	}
+	// Check for duplicate key within scope
+	for _, existing := range s.features {
+		if existing.Key == f.Key && existing.AppID == f.AppID {
+			return ledger.ErrDuplicateFeature
+		}
+	}
+	s.features[f.ID.String()] = f
+	return nil
+}
+
+func (s *Store) GetFeature(_ context.Context, featureID id.FeatureID) (*feature.Feature, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	if f, ok := s.features[featureID.String()]; ok {
+		return f, nil
+	}
+	return nil, ledger.ErrFeatureNotFound
+}
+
+func (s *Store) GetFeatureByKey(_ context.Context, key string, appID string) (*feature.Feature, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	for _, f := range s.features {
+		if f.Key == key && f.AppID == appID {
+			return f, nil
+		}
+	}
+	return nil, ledger.ErrFeatureNotFound
+}
+
+func (s *Store) ListFeatures(_ context.Context, appID string, opts feature.ListOpts) ([]*feature.Feature, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	result := make([]*feature.Feature, 0)
+	for _, f := range s.features {
+		if f.AppID == appID {
+			if opts.Status == "" || f.Status == opts.Status {
+				result = append(result, f)
+			}
+		}
+	}
+
+	// Apply limit/offset
+	start := opts.Offset
+	if start > len(result) {
+		start = len(result)
+	}
+	end := start + opts.Limit
+	if opts.Limit == 0 || end > len(result) {
+		end = len(result)
+	}
+
+	return result[start:end], nil
+}
+
+func (s *Store) ListGlobalFeatures(_ context.Context, opts feature.ListOpts) ([]*feature.Feature, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	result := make([]*feature.Feature, 0)
+	for _, f := range s.features {
+		if f.AppID == "" {
+			if opts.Status == "" || f.Status == opts.Status {
+				result = append(result, f)
+			}
+		}
+	}
+
+	// Apply limit/offset
+	start := opts.Offset
+	if start > len(result) {
+		start = len(result)
+	}
+	end := start + opts.Limit
+	if opts.Limit == 0 || end > len(result) {
+		end = len(result)
+	}
+
+	return result[start:end], nil
+}
+
+func (s *Store) UpdateFeature(_ context.Context, f *feature.Feature) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	if _, exists := s.features[f.ID.String()]; !exists {
+		return ledger.ErrFeatureNotFound
+	}
+	s.features[f.ID.String()] = f
+	return nil
+}
+
+func (s *Store) DeleteFeature(_ context.Context, featureID id.FeatureID) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	delete(s.features, featureID.String())
+	return nil
+}
+
+func (s *Store) ArchiveFeature(_ context.Context, featureID id.FeatureID) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	if f, exists := s.features[featureID.String()]; exists {
+		f.Status = feature.StatusArchived
+		return nil
+	}
+	return ledger.ErrFeatureNotFound
 }
 
 // Store management

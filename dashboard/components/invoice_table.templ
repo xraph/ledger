@@ -1,0 +1,54 @@
+package components
+
+import (
+	"github.com/xraph/forgeui/components/table"
+	"github.com/xraph/ledger/invoice"
+)
+
+templ InvoiceTable(invoices []*invoice.Invoice, basePath string) {
+	@table.Table() {
+		@table.Header() {
+			@table.Row() {
+				@table.Head() { Invoice }
+				@table.Head() { Tenant }
+				@table.Head() { Status }
+				@table.Head() { Total }
+				@table.Head() { Period }
+				@table.Head() { Created }
+			}
+		}
+		@table.Body() {
+			for _, inv := range invoices {
+				{{ invID := inv.ID.String() }}
+				@table.Row(table.RowProps{
+					Class: "cursor-pointer hover:bg-muted/50",
+					Attributes: templ.Attributes{
+						"hx-get":      basePath + "/detail?id=" + invID,
+						"hx-target":   "#content",
+						"hx-push-url": "true",
+						"hx-swap":     "innerHTML",
+					},
+				}) {
+					@table.Cell() {
+						<code class="text-xs">{ truncateString(invID, 16) }</code>
+					}
+					@table.Cell() {
+						<span class="text-sm">{ truncateString(inv.TenantID, 20) }</span>
+					}
+					@table.Cell() {
+						@InvoiceStatusBadge(inv.Status)
+					}
+					@table.Cell() {
+						<span class="font-medium">{ inv.Total.String() }</span>
+					}
+					@table.Cell() {
+						{ inv.PeriodStart.Format("Jan 02") } - { inv.PeriodEnd.Format("Jan 02, 2006") }
+					}
+					@table.Cell() {
+						{ inv.CreatedAt.Format("Jan 02, 2006") }
+					}
+				}
+			}
+		}
+	}
+}

@@ -218,5 +218,61 @@ CREATE INDEX IF NOT EXISTS idx_ledger_coupons_app ON ledger_coupons (app_id);
 				return err
 			},
 		},
+		&migrate.Migration{
+			Name:    "create_ledger_features",
+			Version: "20240101000007",
+			Up: func(ctx context.Context, exec migrate.Executor) error {
+				_, err := exec.Exec(ctx, `
+CREATE TABLE IF NOT EXISTS ledger_features (
+    id            TEXT PRIMARY KEY,
+    key           TEXT NOT NULL DEFAULT '',
+    name          TEXT NOT NULL DEFAULT '',
+    description   TEXT NOT NULL DEFAULT '',
+    type          TEXT NOT NULL DEFAULT '',
+    default_limit BIGINT NOT NULL DEFAULT 0,
+    period        TEXT NOT NULL DEFAULT 'none',
+    soft_limit    BOOLEAN NOT NULL DEFAULT FALSE,
+    status        TEXT NOT NULL DEFAULT 'draft',
+    app_id        TEXT NOT NULL DEFAULT '',
+    metadata      JSONB NOT NULL DEFAULT '{}',
+    created_at    TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    updated_at    TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+CREATE UNIQUE INDEX IF NOT EXISTS idx_ledger_features_key_app ON ledger_features (key, app_id);
+CREATE INDEX IF NOT EXISTS idx_ledger_features_app ON ledger_features (app_id);
+CREATE INDEX IF NOT EXISTS idx_ledger_features_status ON ledger_features (app_id, status);
+`)
+				return err
+			},
+			Down: func(ctx context.Context, exec migrate.Executor) error {
+				_, err := exec.Exec(ctx, `DROP TABLE IF EXISTS ledger_features`)
+				return err
+			},
+		},
+		&migrate.Migration{
+			Name:    "add_provider_columns",
+			Version: "20240101000008",
+			Up: func(ctx context.Context, exec migrate.Executor) error {
+				_, err := exec.Exec(ctx, `
+ALTER TABLE ledger_plans ADD COLUMN IF NOT EXISTS provider_id TEXT NOT NULL DEFAULT '';
+ALTER TABLE ledger_plans ADD COLUMN IF NOT EXISTS provider_name TEXT NOT NULL DEFAULT '';
+ALTER TABLE ledger_features ADD COLUMN IF NOT EXISTS provider_id TEXT NOT NULL DEFAULT '';
+ALTER TABLE ledger_features ADD COLUMN IF NOT EXISTS provider_name TEXT NOT NULL DEFAULT '';
+ALTER TABLE ledger_invoices ADD COLUMN IF NOT EXISTS provider_name TEXT NOT NULL DEFAULT '';
+`)
+				return err
+			},
+			Down: func(ctx context.Context, exec migrate.Executor) error {
+				_, err := exec.Exec(ctx, `
+ALTER TABLE ledger_plans DROP COLUMN IF EXISTS provider_id;
+ALTER TABLE ledger_plans DROP COLUMN IF EXISTS provider_name;
+ALTER TABLE ledger_features DROP COLUMN IF EXISTS provider_id;
+ALTER TABLE ledger_features DROP COLUMN IF EXISTS provider_name;
+ALTER TABLE ledger_invoices DROP COLUMN IF EXISTS provider_name;
+`)
+				return err
+			},
+		},
 	)
 }

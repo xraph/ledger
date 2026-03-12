@@ -8,6 +8,7 @@ import (
 
 	"github.com/xraph/ledger/coupon"
 	"github.com/xraph/ledger/entitlement"
+	"github.com/xraph/ledger/feature"
 	"github.com/xraph/ledger/id"
 	"github.com/xraph/ledger/invoice"
 	"github.com/xraph/ledger/meter"
@@ -30,10 +31,12 @@ type planModel struct {
 	TrialDays   int       `grove:"trial_days"`
 	Features    string    `grove:"features"` // JSON text
 	Pricing     string    `grove:"pricing"`  // JSON text
-	AppID       string    `grove:"app_id"`
-	Metadata    string    `grove:"metadata"` // JSON text
-	CreatedAt   time.Time `grove:"created_at"`
-	UpdatedAt   time.Time `grove:"updated_at"`
+	AppID        string    `grove:"app_id"`
+	ProviderID   string    `grove:"provider_id"`
+	ProviderName string    `grove:"provider_name"`
+	Metadata     string    `grove:"metadata"` // JSON text
+	CreatedAt    time.Time `grove:"created_at"`
+	UpdatedAt    time.Time `grove:"updated_at"`
 }
 
 func toPlanModel(p *plan.Plan) *planModel {
@@ -51,10 +54,12 @@ func toPlanModel(p *plan.Plan) *planModel {
 		TrialDays:   p.TrialDays,
 		Features:    string(features),
 		Pricing:     string(pricing),
-		AppID:       p.AppID,
-		Metadata:    string(metadata),
-		CreatedAt:   p.CreatedAt,
-		UpdatedAt:   p.UpdatedAt,
+		AppID:        p.AppID,
+		ProviderID:   p.ProviderID,
+		ProviderName: p.ProviderName,
+		Metadata:     string(metadata),
+		CreatedAt:    p.CreatedAt,
+		UpdatedAt:    p.UpdatedAt,
 	}
 }
 
@@ -94,8 +99,10 @@ func fromPlanModel(m *planModel) (*plan.Plan, error) {
 		TrialDays:   m.TrialDays,
 		Features:    features,
 		Pricing:     pricing,
-		AppID:       m.AppID,
-		Metadata:    metadata,
+		AppID:        m.AppID,
+		ProviderID:   m.ProviderID,
+		ProviderName: m.ProviderName,
+		Metadata:     metadata,
 	}, nil
 }
 
@@ -317,6 +324,7 @@ type invoiceModel struct {
 	VoidReason          string     `grove:"void_reason"`
 	PaymentRef          string     `grove:"payment_ref"`
 	ProviderID          string     `grove:"provider_id"`
+	ProviderName        string     `grove:"provider_name"`
 	AppID               string     `grove:"app_id"`
 	Metadata            string     `grove:"metadata"` // JSON text
 	CreatedAt           time.Time  `grove:"created_at"`
@@ -350,6 +358,7 @@ func toInvoiceModel(inv *invoice.Invoice) *invoiceModel {
 		VoidReason:          inv.VoidReason,
 		PaymentRef:          inv.PaymentRef,
 		ProviderID:          inv.ProviderID,
+		ProviderName:        inv.ProviderName,
 		AppID:               inv.AppID,
 		Metadata:            string(metadata),
 		CreatedAt:           inv.CreatedAt,
@@ -400,6 +409,7 @@ func fromInvoiceModel(m *invoiceModel) (*invoice.Invoice, error) {
 		VoidReason:     m.VoidReason,
 		PaymentRef:     m.PaymentRef,
 		ProviderID:     m.ProviderID,
+		ProviderName:   m.ProviderName,
 		AppID:          m.AppID,
 		Metadata:       metadata,
 	}, nil
@@ -480,5 +490,86 @@ func fromCouponModel(m *couponModel) (*coupon.Coupon, error) {
 		ValidUntil:     m.ValidUntil,
 		AppID:          m.AppID,
 		Metadata:       metadata,
+	}, nil
+}
+
+// ==================== Feature models ====================
+
+type featureModel struct {
+	grove.BaseModel `grove:"table:ledger_features"`
+
+	ID           string    `grove:"id,pk"`
+	Key          string    `grove:"key"`
+	Name         string    `grove:"name"`
+	Description  string    `grove:"description"`
+	Type         string    `grove:"type"`
+	DefaultLimit int64     `grove:"default_limit"`
+	Period       string    `grove:"period"`
+	SoftLimit    int       `grove:"soft_limit"`
+	Status       string    `grove:"status"`
+	AppID        string    `grove:"app_id"`
+	ProviderID   string    `grove:"provider_id"`
+	ProviderName string    `grove:"provider_name"`
+	Metadata     string    `grove:"metadata"` // JSON text
+	CreatedAt    time.Time `grove:"created_at"`
+	UpdatedAt    time.Time `grove:"updated_at"`
+}
+
+func toFeatureModel(f *feature.Feature) *featureModel {
+	metadata, _ := json.Marshal(f.Metadata) //nolint:errcheck // best-effort
+
+	softLimit := 0
+	if f.SoftLimit {
+		softLimit = 1
+	}
+
+	return &featureModel{
+		ID:           f.ID.String(),
+		Key:          f.Key,
+		Name:         f.Name,
+		Description:  f.Description,
+		Type:         string(f.Type),
+		DefaultLimit: f.DefaultLimit,
+		Period:       string(f.Period),
+		SoftLimit:    softLimit,
+		Status:       string(f.Status),
+		AppID:        f.AppID,
+		ProviderID:   f.ProviderID,
+		ProviderName: f.ProviderName,
+		Metadata:     string(metadata),
+		CreatedAt:    f.CreatedAt,
+		UpdatedAt:    f.UpdatedAt,
+	}
+}
+
+func fromFeatureModel(m *featureModel) (*feature.Feature, error) {
+	featureID, err := id.ParseFeatureID(m.ID)
+	if err != nil {
+		return nil, err
+	}
+
+	var metadata map[string]string
+	if m.Metadata != "" {
+		_ = json.Unmarshal([]byte(m.Metadata), &metadata) //nolint:errcheck // best-effort
+	}
+
+	return &feature.Feature{
+		Entity: types.Entity{
+			CreatedAt: m.CreatedAt,
+			UpdatedAt: m.UpdatedAt,
+		},
+		ID:           featureID,
+		Key:          m.Key,
+		Name:         m.Name,
+		Description:  m.Description,
+		Type:         feature.FeatureType(m.Type),
+		DefaultLimit: m.DefaultLimit,
+		Period:       feature.Period(m.Period),
+		SoftLimit:    m.SoftLimit != 0,
+		Status:       feature.Status(m.Status),
+		AppID:        m.AppID,
+		ProviderID:   m.ProviderID,
+		ProviderName: m.ProviderName,
+		Metadata:     metadata,
 	}, nil
 }

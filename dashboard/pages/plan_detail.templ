@@ -1,0 +1,346 @@
+package pages
+
+import (
+	"strconv"
+
+	"github.com/xraph/forgeui/components/badge"
+	"github.com/xraph/forgeui/components/button"
+	"github.com/xraph/forgeui/components/card"
+	"github.com/xraph/forgeui/components/separator"
+	"github.com/xraph/forgeui/components/table"
+	"github.com/xraph/forgeui/icons"
+	"github.com/xraph/ledger/dashboard/components"
+	"github.com/xraph/ledger/plan"
+)
+
+templ PlanDetailPage(data PlanDetailData) {
+	<div class="space-y-6">
+		<!-- Back Button -->
+		@button.Button(button.Props{
+			Variant: button.VariantGhost,
+			Size:    button.SizeSm,
+			Attributes: templ.Attributes{
+				"hx-get":      "../plans",
+				"hx-target":   "#content",
+				"hx-swap":     "innerHTML",
+				"hx-push-url": "true",
+			},
+		}) {
+			@icons.ChevronLeft(icons.WithSize(16))
+			Back to Plans
+		}
+
+		<!-- Plan Info Card -->
+		@card.Card() {
+			@card.Header() {
+				<div class="flex items-center justify-between">
+					<div class="flex items-center gap-4">
+						<div class="flex h-12 w-12 items-center justify-center rounded-sm bg-primary/10 text-primary">
+							@icons.Layers(icons.WithSize(24))
+						</div>
+						<div>
+							@card.Title() {
+								{ data.Plan.Name }
+							}
+							@card.Description() {
+								<code class="text-xs">{ data.Plan.Slug }</code>
+							}
+						</div>
+					</div>
+					<div class="flex items-center gap-2">
+						if data.Plan.AppID != "" {
+							@badge.Badge(badge.Props{Variant: badge.VariantDefault}) {
+								{ "App: " + data.Plan.AppID }
+							}
+						} else {
+							@badge.Badge(badge.Props{Variant: badge.VariantOutline}) {
+								Global
+							}
+						}
+						@components.PlanStatusBadge(data.Plan.Status)
+						@button.Button(button.Props{
+							Variant: button.VariantOutline,
+							Size:    button.SizeSm,
+							Attributes: templ.Attributes{
+								"hx-get":      "../plans/edit?id=" + data.Plan.ID.String(),
+								"hx-target":   "#content",
+								"hx-swap":     "innerHTML",
+								"hx-push-url": "true",
+							},
+						}) {
+							@icons.Pencil(icons.WithSize(14))
+							Edit
+						}
+					</div>
+				</div>
+			}
+			@card.Content() {
+				@separator.Separator()
+				<dl class="grid grid-cols-1 sm:grid-cols-2 gap-4 mt-4">
+					@detailField("Plan ID", data.Plan.ID.String())
+					@detailField("Name", data.Plan.Name)
+					@detailField("Slug", data.Plan.Slug)
+					if data.Plan.Description != "" {
+						@detailField("Description", data.Plan.Description)
+					}
+					@detailField("Currency", data.Plan.Currency)
+					@detailField("Status", string(data.Plan.Status))
+					@detailField("Trial Days", strconv.Itoa(data.Plan.TrialDays))
+					if data.Plan.AppID != "" {
+						@detailField("App ID", data.Plan.AppID)
+					}
+					@detailField("Created", data.Plan.CreatedAt.Format("Jan 02, 2006 15:04"))
+					@detailField("Updated", data.Plan.UpdatedAt.Format("Jan 02, 2006 15:04"))
+				</dl>
+			}
+		}
+
+		<!-- Features Card -->
+		@card.Card() {
+			@card.Header() {
+				<div class="flex items-center gap-2">
+					@icons.Hash(icons.WithSize(18))
+					@card.Title() {
+						Features
+					}
+					@badge.Badge(badge.Props{Variant: badge.VariantSecondary}) {
+						{ strconv.Itoa(len(data.Plan.Features)) }
+					}
+				</div>
+				@card.Description() {
+					Feature entitlements included in this plan
+				}
+			}
+			@card.Content() {
+				if len(data.Plan.Features) == 0 {
+					<p class="text-sm text-muted-foreground py-4 text-center">No features defined.</p>
+				} else {
+					@table.Table() {
+						@table.Header() {
+							@table.Row() {
+								@table.Head() { Key }
+								@table.Head() { Name }
+								@table.Head() { Type }
+								@table.Head() { Limit }
+								@table.Head() { Period }
+								@table.Head() { Metering }
+							}
+						}
+						@table.Body() {
+							for _, f := range data.Plan.Features {
+								@table.Row() {
+									@table.Cell() {
+										<code class="text-xs">{ f.Key }</code>
+									}
+									@table.Cell() {
+										{ f.Name }
+									}
+									@table.Cell() {
+										@components.FeatureTypeBadge(f.Type)
+									}
+									@table.Cell() {
+										if f.Type == plan.FeatureBoolean {
+											<span class="text-sm text-muted-foreground">—</span>
+										} else {
+											{ formatLimit(f.Limit) }
+										}
+									}
+									@table.Cell() {
+										if f.Type == plan.FeatureBoolean {
+											<span class="text-sm text-muted-foreground">—</span>
+										} else {
+											<span class="text-sm capitalize">{ string(f.Period) }</span>
+										}
+									}
+									@table.Cell() {
+										if f.Type == plan.FeatureBoolean {
+											<span class="text-sm text-muted-foreground">—</span>
+										} else if f.SoftLimit {
+											<div class="flex items-center gap-1.5">
+												@badge.Badge(badge.Props{Variant: badge.VariantDefault, Class: "text-xs"}) {
+													Soft
+												}
+												<span class="text-xs text-muted-foreground">overage tracked</span>
+											</div>
+										} else {
+											@badge.Badge(badge.Props{Variant: badge.VariantOutline, Class: "text-xs"}) {
+												Hard
+											}
+										}
+									}
+								}
+							}
+						}
+					}
+				}
+			}
+		}
+
+		<!-- Pricing Card -->
+		if data.Plan.Pricing != nil {
+			@card.Card() {
+				@card.Header() {
+					<div class="flex items-center gap-2">
+						@icons.DollarSign(icons.WithSize(18))
+						@card.Title() {
+							Pricing
+						}
+					</div>
+				}
+				@card.Content() {
+					<dl class="grid grid-cols-1 sm:grid-cols-2 gap-4">
+						@detailField("Base Amount", data.Plan.Pricing.BaseAmount.String())
+						@detailField("Billing Period", string(data.Plan.Pricing.BillingPeriod))
+					</dl>
+					if len(data.Plan.Pricing.Tiers) > 0 {
+						@separator.Separator()
+						<h4 class="text-sm font-medium mt-4 mb-2">Pricing Tiers</h4>
+						@table.Table() {
+							@table.Header() {
+								@table.Row() {
+									@table.Head() { Feature }
+									@table.Head() { Type }
+									@table.Head() { Up To }
+									@table.Head() { Unit Amount }
+									@table.Head() { Flat Amount }
+									@table.Head() { Priority }
+								}
+							}
+							@table.Body() {
+								for _, tier := range data.Plan.Pricing.Tiers {
+									@table.Row() {
+										@table.Cell() {
+											<code class="text-xs">{ tier.FeatureKey }</code>
+										}
+										@table.Cell() {
+											@tierTypeBadge(tier.Type)
+										}
+										@table.Cell() {
+											if tier.UpTo == 0 {
+												<span class="text-sm text-muted-foreground">∞</span>
+											} else {
+												{ strconv.FormatInt(tier.UpTo, 10) }
+											}
+										}
+										@table.Cell() {
+											{ tier.UnitAmount.String() }
+										}
+										@table.Cell() {
+											{ tier.FlatAmount.String() }
+										}
+										@table.Cell() {
+											<span class="text-sm text-muted-foreground">{ strconv.Itoa(tier.Priority) }</span>
+										}
+									}
+								}
+							}
+						}
+					}
+				}
+			}
+		}
+
+		<!-- Metadata Card -->
+		if len(data.Plan.Metadata) > 0 {
+			@card.Card() {
+				@card.Header() {
+					@card.Title() {
+						Metadata
+					}
+				}
+				@card.Content() {
+					<dl class="grid grid-cols-1 sm:grid-cols-2 gap-4">
+						for key, value := range data.Plan.Metadata {
+							@detailField(key, value)
+						}
+					</dl>
+				}
+			}
+		}
+
+		<!-- Provider Sync Card -->
+		if data.HasProviders {
+			@card.Card() {
+				@card.Header() {
+					<div class="flex items-center gap-2">
+						@icons.RefreshCw(icons.WithSize(18))
+						@card.Title() {
+							Provider Sync
+						}
+					</div>
+					@card.Description() {
+						Synchronize this plan with the payment provider.
+					}
+				}
+				@card.Content() {
+					if data.SyncResult != nil && data.SyncResult.Success {
+						<div class="flex items-center gap-2 mb-4 text-sm text-green-600">
+							@icons.CheckCircle(icons.WithSize(16))
+							<span>Synced to { data.SyncResult.ProviderName } / { data.SyncResult.ProviderID }</span>
+						</div>
+					}
+					if data.SyncError != "" {
+						<div class="flex items-center gap-2 mb-4 text-sm text-destructive">
+							@icons.AlertCircle(icons.WithSize(16))
+							<span>{ data.SyncError }</span>
+						</div>
+					}
+					<div class="flex items-center gap-4">
+						if data.Plan.ProviderID != "" {
+							<div class="text-sm text-muted-foreground">
+								<span class="font-medium">Provider:</span> { data.Plan.ProviderName } / <code class="text-xs">{ data.Plan.ProviderID }</code>
+							</div>
+						} else {
+							<p class="text-sm text-muted-foreground">Not yet synced to a provider.</p>
+						}
+					</div>
+					<div class="flex gap-2 mt-4">
+						@button.Button(button.Props{
+							Variant: button.VariantOutline,
+							Size:    button.SizeSm,
+							Attributes: templ.Attributes{
+								"hx-post":   "../plans/sync?id=" + data.Plan.ID.String(),
+								"hx-target": "#content",
+								"hx-swap":   "innerHTML",
+							},
+						}) {
+							@icons.RefreshCw(icons.WithSize(14))
+							Sync to Provider
+						}
+					</div>
+				}
+			}
+		}
+
+		<!-- Plugin-contributed sections slot -->
+		{ children... }
+	</div>
+}
+
+templ detailField(label string, value string) {
+	<div>
+		<dt class="text-sm font-medium text-muted-foreground">{ label }</dt>
+		<dd class="mt-1 text-sm">{ value }</dd>
+	</div>
+}
+
+templ tierTypeBadge(t plan.TierType) {
+	switch t {
+		case plan.TierGraduated:
+			@badge.Badge(badge.Props{Variant: badge.VariantDefault, Class: "text-xs"}) {
+				Graduated
+			}
+		case plan.TierVolume:
+			@badge.Badge(badge.Props{Variant: badge.VariantSecondary, Class: "text-xs"}) {
+				Volume
+			}
+		case plan.TierFlat:
+			@badge.Badge(badge.Props{Variant: badge.VariantOutline, Class: "text-xs"}) {
+				Flat
+			}
+		default:
+			@badge.Badge(badge.Props{Variant: badge.VariantSecondary, Class: "text-xs"}) {
+				{ string(t) }
+			}
+	}
+}

@@ -6,6 +6,7 @@ import (
 
 	"github.com/xraph/ledger/coupon"
 	"github.com/xraph/ledger/entitlement"
+	"github.com/xraph/ledger/feature"
 	"github.com/xraph/ledger/id"
 	"github.com/xraph/ledger/invoice"
 	"github.com/xraph/ledger/meter"
@@ -25,6 +26,16 @@ type Store interface {
 	UpdatePlan(ctx context.Context, p *plan.Plan) error
 	DeletePlan(ctx context.Context, planID id.PlanID) error
 	ArchivePlan(ctx context.Context, planID id.PlanID) error
+
+	// Feature catalog methods
+	CreateFeature(ctx context.Context, f *feature.Feature) error
+	GetFeature(ctx context.Context, featureID id.FeatureID) (*feature.Feature, error)
+	GetFeatureByKey(ctx context.Context, key string, appID string) (*feature.Feature, error)
+	ListFeatures(ctx context.Context, appID string, opts feature.ListOpts) ([]*feature.Feature, error)
+	ListGlobalFeatures(ctx context.Context, opts feature.ListOpts) ([]*feature.Feature, error)
+	UpdateFeature(ctx context.Context, f *feature.Feature) error
+	DeleteFeature(ctx context.Context, featureID id.FeatureID) error
+	ArchiveFeature(ctx context.Context, featureID id.FeatureID) error
 
 	// Subscription methods
 	CreateSubscription(ctx context.Context, s *subscription.Subscription) error

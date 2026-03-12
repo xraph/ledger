@@ -1,0 +1,138 @@
+package pages
+
+import (
+	"strconv"
+
+	"github.com/xraph/forgeui/components/badge"
+	"github.com/xraph/forgeui/components/button"
+	"github.com/xraph/forgeui/components/card"
+	"github.com/xraph/forgeui/components/table"
+	"github.com/xraph/forgeui/icons"
+	"github.com/xraph/ledger/feature"
+)
+
+templ FeaturesPage(data FeatureListData) {
+	<div class="space-y-6">
+		<!-- Header Row -->
+		<div class="flex items-center justify-between">
+			<div class="flex items-center gap-3">
+				<h1 class="text-3xl font-bold tracking-tight">Features</h1>
+				@badge.Badge(badge.Props{Variant: badge.VariantSecondary}) {
+					{ strconv.Itoa(len(data.Features)) }
+				}
+			</div>
+			@button.Button(button.Props{
+				Variant: button.VariantDefault,
+				Size:    button.SizeSm,
+				Attributes: templ.Attributes{
+					"hx-get":      "./features/new",
+					"hx-target":   "#content",
+					"hx-push-url": "true",
+					"hx-swap":     "innerHTML",
+				},
+			}) {
+				@icons.Plus(icons.WithSize(16))
+				New Feature
+			}
+		</div>
+
+		<!-- Features Table -->
+		@card.Card() {
+			@card.Content() {
+				if len(data.Features) == 0 {
+					<div class="flex flex-col items-center justify-center py-12 text-center">
+						<div class="flex h-12 w-12 items-center justify-center rounded-full bg-muted mb-4">
+							@icons.Puzzle(icons.WithSize(24))
+						</div>
+						<h3 class="text-lg font-semibold">No features yet</h3>
+						<p class="text-sm text-muted-foreground mt-1 max-w-sm">Create your first catalog feature to share across plans.</p>
+					</div>
+				} else {
+					@table.Table() {
+						@table.Header() {
+							@table.Row() {
+								@table.Head() { Key }
+								@table.Head() { Name }
+								@table.Head() { Type }
+								@table.Head() { Default Limit }
+								@table.Head() { Status }
+								@table.Head() { Scope }
+								@table.Head() { Created }
+							}
+						}
+						@table.Body() {
+							for _, f := range data.Features {
+								@table.Row(table.RowProps{
+									Class: "cursor-pointer hover:bg-muted/50",
+									Attributes: templ.Attributes{
+										"hx-get":      "./features/detail?id=" + f.ID.String(),
+										"hx-target":   "#content",
+										"hx-swap":     "innerHTML",
+										"hx-push-url": "true",
+									},
+								}) {
+									@table.Cell() {
+										<code class="text-xs">{ f.Key }</code>
+									}
+									@table.Cell() {
+										{ f.Name }
+									}
+									@table.Cell() {
+										@featureCatalogTypeBadge(f.Type)
+									}
+									@table.Cell() {
+										if f.Type == feature.FeatureBoolean {
+											<span class="text-sm text-muted-foreground">—</span>
+										} else {
+											{ formatLimit(f.DefaultLimit) }
+										}
+									}
+									@table.Cell() {
+										@badge.Badge(badge.Props{Variant: badge.Variant(featureStatusClass(f.Status))}) {
+											<span class="capitalize">{ string(f.Status) }</span>
+										}
+									}
+									@table.Cell() {
+										if f.AppID != "" {
+											@badge.Badge(badge.Props{Variant: badge.VariantDefault, Class: "text-xs"}) {
+												{ "App: " + truncateString(f.AppID, 12) }
+											}
+										} else {
+											@badge.Badge(badge.Props{Variant: badge.VariantOutline, Class: "text-xs"}) {
+												Global
+											}
+										}
+									}
+									@table.Cell() {
+										<span class="text-sm text-muted-foreground">{ formatTimeAgo(f.CreatedAt) }</span>
+									}
+								}
+							}
+						}
+					}
+				}
+			}
+		}
+	</div>
+}
+
+templ featureCatalogTypeBadge(t feature.FeatureType) {
+	switch t {
+		case feature.FeatureMetered:
+			@badge.Badge(badge.Props{Variant: badge.VariantDefault, Class: "text-xs"}) {
+				Metered
+			}
+		case feature.FeatureBoolean:
+			@badge.Badge(badge.Props{Variant: badge.VariantSecondary, Class: "text-xs"}) {
+				Boolean
+			}
+		case feature.FeatureSeat:
+			@badge.Badge(badge.Props{Variant: badge.VariantOutline, Class: "text-xs"}) {
+				Seat
+			}
+		default:
+			@badge.Badge(badge.Props{Variant: badge.VariantSecondary, Class: "text-xs"}) {
+				{ string(t) }
+			}
+	}
+}

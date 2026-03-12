@@ -1,0 +1,72 @@
+package components
+
+import (
+	"fmt"
+	"strconv"
+
+	"github.com/xraph/forgeui/components/table"
+	"github.com/xraph/ledger/coupon"
+)
+
+templ CouponTable(coupons []*coupon.Coupon, basePath string) {
+	@table.Table() {
+		@table.Header() {
+			@table.Row() {
+				@table.Head() { Code }
+				@table.Head() { Name }
+				@table.Head() { Type }
+				@table.Head() { Value }
+				@table.Head() { Redemptions }
+				@table.Head() { Valid Until }
+				@table.Head() { Created }
+			}
+		}
+		@table.Body() {
+			for _, c := range coupons {
+				{{ cpnID := c.ID.String() }}
+				@table.Row(table.RowProps{
+					Class: "cursor-pointer hover:bg-muted/50",
+					Attributes: templ.Attributes{
+						"hx-get":      basePath + "/detail?id=" + cpnID,
+						"hx-target":   "#content",
+						"hx-push-url": "true",
+						"hx-swap":     "innerHTML",
+					},
+				}) {
+					@table.Cell() {
+						<code class="text-sm font-medium">{ c.Code }</code>
+					}
+					@table.Cell() {
+						{ c.Name }
+					}
+					@table.Cell() {
+						@CouponTypeBadge(c.Type)
+					}
+					@table.Cell() {
+						if c.Type == coupon.CouponTypePercentage {
+							{ fmt.Sprintf("%d%%", c.Percentage) }
+						} else {
+							{ c.Amount.String() }
+						}
+					}
+					@table.Cell() {
+						{ strconv.Itoa(c.TimesRedeemed) }
+						if c.MaxRedemptions > 0 {
+							<span class="text-muted-foreground"> / { strconv.Itoa(c.MaxRedemptions) }</span>
+						}
+					}
+					@table.Cell() {
+						if c.ValidUntil != nil {
+							{ c.ValidUntil.Format("Jan 02, 2006") }
+						} else {
+							<span class="text-muted-foreground">No expiry</span>
+						}
+					}
+					@table.Cell() {
+						{ c.CreatedAt.Format("Jan 02, 2006") }
+					}
+				}
+			}
+		}
+	}
+}

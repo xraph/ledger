@@ -1,0 +1,30 @@
+package pages
+
+import (
+	"github.com/xraph/forgeui/components/card"
+	"github.com/xraph/ledger/dashboard/components"
+	"github.com/xraph/ledger/meter"
+)
+
+templ UsagePage(events []*meter.UsageEvent) {
+	<div class="space-y-6">
+		<!-- Header Row -->
+		<div class="flex items-center justify-between">
+			<div>
+				<h1 class="text-3xl font-bold tracking-tight">Usage Events</h1>
+				<p class="text-muted-foreground mt-1">View metered usage events across all tenants.</p>
+			</div>
+		</div>
+
+		<!-- Usage Events Table -->
+		@card.Card() {
+			@card.Content() {
+				if len(events) == 0 {
+					@components.EmptyState("bar-chart-3", "No usage events", "Usage events will appear here as features are consumed.")
+				} else {
+					@components.UsageTable(events)
+				}
+			}
+		}
+	</div>
+}

@@ -14,10 +14,14 @@ import (
 	"fmt"
 
 	"github.com/xraph/forge"
+	dashboard "github.com/xraph/forge/extensions/dashboard"
+	"github.com/xraph/forge/extensions/dashboard/contributor"
 	"github.com/xraph/grove"
 	"github.com/xraph/vessel"
 
 	ledger "github.com/xraph/ledger"
+	ledgerdash "github.com/xraph/ledger/dashboard"
+	"github.com/xraph/ledger/plugin"
 	"github.com/xraph/ledger/store"
 	"github.com/xraph/ledger/store/memory"
 	mongostore "github.com/xraph/ledger/store/mongo"
@@ -34,8 +38,11 @@ const ExtensionDescription = "Composable usage-based billing engine"
 // ExtensionVersion is the semantic version.
 const ExtensionVersion = "0.1.0"
 
-// Ensure Extension implements forge.Extension at compile time.
-var _ forge.Extension = (*Extension)(nil)
+// Ensure Extension implements forge.Extension and dashboard.DashboardAware at compile time.
+var (
+	_ forge.Extension          = (*Extension)(nil)
+	_ dashboard.DashboardAware = (*Extension)(nil)
+)
 
 // Extension adapts Ledger as a Forge extension.
 type Extension struct {
@@ -44,6 +51,7 @@ type Extension struct {
 	config     Config
 	engine     *ledger.Ledger
 	store      store.Store
+	plugins    []plugin.Plugin
 	ledgerOpts []ledger.Option
 	useGrove   bool
 }
@@ -85,6 +93,19 @@ func (e *Extension) Register(fapp forge.App) error {
 			return err
 		}
 		e.store = s
+	}
+	if e.store == nil {
+		if db, err := vessel.Inject[*grove.DB](fapp.Container()); err == nil {
+			// Auto-discover default grove.DB from container (matches authsome/cortex pattern).
+			s, err := e.buildStoreFromGroveDB(db)
+			if err != nil {
+				return err
+			}
+			e.store = s
+			e.Logger().Info("ledger: auto-discovered grove.DB from container",
+				forge.F("driver", db.Driver().Name()),
+			)
+		}
 	}
 
 	// Use memory store if no store was provided programmatically.
@@ -274,6 +295,9 @@ func (e *Extension) mergeConfigurations(yamlConfig, programmaticConfig Config) C
 	if yamlConfig.GroveDatabase == "" && programmaticConfig.GroveDatabase != "" {
 		yamlConfig.GroveDatabase = programmaticConfig.GroveDatabase
 	}
+	if yamlConfig.AppID == "" && programmaticConfig.AppID != "" {
+		yamlConfig.AppID = programmaticConfig.AppID
+	}
 
 	// Duration/int fields: YAML takes precedence, programmatic fills gaps.
 	if yamlConfig.MeterBatchSize == 0 && programmaticConfig.MeterBatchSize != 0 {
@@ -305,6 +329,19 @@ func (e *Extension) resolveGroveDB(fapp forge.App) (*grove.DB, error) {
 		return nil, fmt.Errorf("default grove database not found in container: %w", err)
 	}
 	return db, nil
+}
+
+// DashboardContributor implements dashboard.DashboardAware. It returns a
+// LocalContributor that renders ledger pages, widgets, and settings in the
+// Forge dashboard using templ + ForgeUI.
+func (e *Extension) DashboardContributor() contributor.LocalContributor {
+	return ledgerdash.New(
+		ledgerdash.NewManifest(e.engine, e.plugins),
+		e.engine,
+		e.store,
+		e.plugins,
+		e.config.AppID,
+	)
 }
 
 // buildStoreFromGroveDB constructs the appropriate store backend

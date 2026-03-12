@@ -1,0 +1,68 @@
+package components
+
+import (
+	"github.com/xraph/forgeui/components/table"
+	"github.com/xraph/ledger/subscription"
+)
+
+templ SubscriptionTable(subs []*subscription.Subscription, basePath string) {
+	@table.Table() {
+		@table.Header() {
+			@table.Row() {
+				@table.Head() { Subscription }
+				@table.Head() { Tenant }
+				@table.Head() { Plan }
+				@table.Head() { Status }
+				@table.Head() { Period Start }
+				@table.Head() { Period End }
+				@table.Head() { Created }
+			}
+		}
+		@table.Body() {
+			for _, s := range subs {
+				{{ sid := s.ID.String() }}
+				@table.Row(table.RowProps{
+					Class: "cursor-pointer hover:bg-muted/50",
+					Attributes: templ.Attributes{
+						"hx-get":      basePath + "/detail?id=" + sid,
+						"hx-target":   "#content",
+						"hx-push-url": "true",
+						"hx-swap":     "innerHTML",
+					},
+				}) {
+					@table.Cell() {
+						<code class="text-xs">{ truncateString(sid, 16) }</code>
+					}
+					@table.Cell() {
+						<span class="text-sm">{ truncateString(s.TenantID, 20) }</span>
+					}
+					@table.Cell() {
+						<code class="text-xs">{ truncateString(s.PlanID.String(), 16) }</code>
+					}
+					@table.Cell() {
+						@SubscriptionStatusBadge(s.Status)
+					}
+					@table.Cell() {
+						{ s.CurrentPeriodStart.Format("Jan 02, 2006") }
+					}
+					@table.Cell() {
+						{ s.CurrentPeriodEnd.Format("Jan 02, 2006") }
+					}
+					@table.Cell() {
+						{ s.CreatedAt.Format("Jan 02, 2006") }
+					}
+				}
+			}
+		}
+	}
+}
+
+func truncateString(s string, max int) string {
+	if len(s) <= max {
+		return s
+	}
+	if max <= 3 {
+		return s[:max]
+	}
+	return s[:max-3] + "..."
+}

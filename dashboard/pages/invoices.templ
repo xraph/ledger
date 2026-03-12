@@ -1,0 +1,35 @@
+package pages
+
+import (
+	"strconv"
+
+	"github.com/xraph/forgeui/components/badge"
+	"github.com/xraph/forgeui/components/card"
+	"github.com/xraph/ledger/dashboard/components"
+	"github.com/xraph/ledger/invoice"
+)
+
+templ InvoicesPage(invoices []*invoice.Invoice) {
+	<div class="space-y-6">
+		<!-- Header Row -->
+		<div class="flex items-center justify-between">
+			<div class="flex items-center gap-3">
+				<h1 class="text-3xl font-bold tracking-tight">Invoices</h1>
+				@badge.Badge(badge.Props{Variant: badge.VariantSecondary}) {
+					{ strconv.Itoa(len(invoices)) }
+				}
+			</div>
+		</div>
+
+		<!-- Invoices Table -->
+		@card.Card() {
+			@card.Content() {
+				if len(invoices) == 0 {
+					@components.EmptyState("file-text", "No invoices yet", "Invoices will appear here as subscriptions are billed.")
+				} else {
+					@components.InvoiceTable(invoices, "./invoices")
+				}
+			}
+		}
+	</div>
+}

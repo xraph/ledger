@@ -1,0 +1,63 @@
+package components
+
+import (
+	"strconv"
+
+	"github.com/xraph/forgeui/components/table"
+	"github.com/xraph/ledger/plan"
+)
+
+templ PlanTable(plans []*plan.Plan, basePath string) {
+	@table.Table() {
+		@table.Header() {
+			@table.Row() {
+				@table.Head() { Name }
+				@table.Head() { Slug }
+				@table.Head() { Status }
+				@table.Head() { Currency }
+				@table.Head() { Features }
+				@table.Head() { Price }
+				@table.Head() { Created }
+			}
+		}
+		@table.Body() {
+			for _, p := range plans {
+				@table.Row(table.RowProps{
+					Class: "cursor-pointer hover:bg-muted/50",
+					Attributes: templ.Attributes{
+						"hx-get":      basePath + "/detail?id=" + p.ID.String(),
+						"hx-target":   "#content",
+						"hx-push-url": "true",
+						"hx-swap":     "innerHTML",
+					},
+				}) {
+					@table.Cell() {
+						<span class="font-medium">{ p.Name }</span>
+					}
+					@table.Cell() {
+						<code class="text-xs">{ p.Slug }</code>
+					}
+					@table.Cell() {
+						@PlanStatusBadge(p.Status)
+					}
+					@table.Cell() {
+						<span class="uppercase text-xs">{ p.Currency }</span>
+					}
+					@table.Cell() {
+						{ strconv.Itoa(len(p.Features)) }
+					}
+					@table.Cell() {
+						if p.Pricing != nil {
+							{ p.Pricing.BaseAmount.String() }
+						} else {
+							<span class="text-muted-foreground">-</span>
+						}
+					}
+					@table.Cell() {
+						{ p.CreatedAt.Format("Jan 02, 2006") }
+					}
+				}
+			}
+		}
+	}
+}

@@ -1,0 +1,278 @@
+package pages
+
+import (
+	"strconv"
+
+	"github.com/xraph/forgeui/components/button"
+	"github.com/xraph/forgeui/components/card"
+	"github.com/xraph/forgeui/components/separator"
+	"github.com/xraph/forgeui/components/table"
+	"github.com/xraph/forgeui/icons"
+	"github.com/xraph/ledger/dashboard/components"
+)
+
+templ InvoiceDetailPage(data InvoiceDetailData) {
+	<div class="space-y-6">
+		<!-- Back Button -->
+		@button.Button(button.Props{
+			Variant: button.VariantGhost,
+			Size:    button.SizeSm,
+			Attributes: templ.Attributes{
+				"hx-get":      "../invoices",
+				"hx-target":   "#content",
+				"hx-swap":     "innerHTML",
+				"hx-push-url": "true",
+			},
+		}) {
+			@icons.ChevronLeft(icons.WithSize(16))
+			Back to Invoices
+		}
+
+		<!-- Invoice Header Card -->
+		@card.Card() {
+			@card.Header() {
+				<div class="flex items-center justify-between">
+					<div class="flex items-center gap-4">
+						<div class="flex h-12 w-12 items-center justify-center rounded-sm bg-primary/10 text-primary">
+							@icons.FileText(icons.WithSize(24))
+						</div>
+						<div>
+							@card.Title() {
+								Invoice
+							}
+							@card.Description() {
+								<code class="text-xs">{ data.Invoice.ID.String() }</code>
+							}
+						</div>
+					</div>
+					<div class="flex items-center gap-3">
+						@components.InvoiceStatusBadge(data.Invoice.Status)
+						<div class="text-right">
+							<p class="text-2xl font-bold">{ data.Invoice.Total.String() }</p>
+							<p class="text-xs text-muted-foreground uppercase">{ data.Invoice.Currency }</p>
+						</div>
+					</div>
+				</div>
+			}
+			@card.Content() {
+				@separator.Separator()
+				<dl class="grid grid-cols-1 sm:grid-cols-2 gap-4 mt-4">
+					@detailField("Invoice ID", data.Invoice.ID.String())
+					@detailField("Tenant ID", data.Invoice.TenantID)
+					<div>
+						<dt class="text-sm font-medium text-muted-foreground">Subscription</dt>
+						<dd class="mt-1 text-sm">
+							if data.Subscription != nil {
+								<a
+									class="text-primary hover:underline cursor-pointer"
+									hx-get={ "../subscriptions/detail?id=" + data.Invoice.SubscriptionID.String() }
+									hx-target="#content"
+									hx-swap="innerHTML"
+									hx-push-url="true"
+								>
+									{ truncateString(data.Invoice.SubscriptionID.String(), 24) }
+								</a>
+							} else {
+								<code class="text-xs">{ data.Invoice.SubscriptionID.String() }</code>
+							}
+						</dd>
+					</div>
+					@detailField("Status", string(data.Invoice.Status))
+					@detailField("Currency", data.Invoice.Currency)
+					@detailField("Period Start", data.Invoice.PeriodStart.Format("Jan 02, 2006 15:04"))
+					@detailField("Period End", data.Invoice.PeriodEnd.Format("Jan 02, 2006 15:04"))
+					if data.Invoice.DueDate != nil {
+						@detailField("Due Date", data.Invoice.DueDate.Format("Jan 02, 2006 15:04"))
+					}
+					if data.Invoice.PaidAt != nil {
+						@detailField("Paid At", data.Invoice.PaidAt.Format("Jan 02, 2006 15:04"))
+					}
+					if data.Invoice.VoidedAt != nil {
+						@detailField("Voided At", data.Invoice.VoidedAt.Format("Jan 02, 2006 15:04"))
+					}
+					if data.Invoice.VoidReason != "" {
+						@detailField("Void Reason", data.Invoice.VoidReason)
+					}
+					if data.Invoice.PaymentRef != "" {
+						@detailField("Payment Reference", data.Invoice.PaymentRef)
+					}
+					if data.Invoice.ProviderID != "" {
+						@detailField("Provider ID", data.Invoice.ProviderID)
+					}
+					@detailField("Created", data.Invoice.CreatedAt.Format("Jan 02, 2006 15:04"))
+					@detailField("Updated", data.Invoice.UpdatedAt.Format("Jan 02, 2006 15:04"))
+				</dl>
+			}
+		}
+
+		<!-- Line Items Card -->
+		@card.Card() {
+			@card.Header() {
+				<div class="flex items-center gap-2">
+					@icons.Receipt(icons.WithSize(18))
+					@card.Title() {
+						Line Items
+					}
+				</div>
+				@card.Description() {
+					Breakdown of charges for this invoice
+				}
+			}
+			@card.Content() {
+				if len(data.Invoice.LineItems) == 0 {
+					<p class="text-sm text-muted-foreground py-4 text-center">No line items.</p>
+				} else {
+					@table.Table() {
+						@table.Header() {
+							@table.Row() {
+								@table.Head() { Description }
+								@table.Head() { Feature }
+								@table.Head() { Type }
+								@table.Head() { Quantity }
+								@table.Head() { Unit Amount }
+								@table.Head() { Amount }
+							}
+						}
+						@table.Body() {
+							for _, li := range data.Invoice.LineItems {
+								@table.Row() {
+									@table.Cell() {
+										{ li.Description }
+									}
+									@table.Cell() {
+										if li.FeatureKey != "" {
+											<code class="text-xs">{ li.FeatureKey }</code>
+										} else {
+											<span class="text-muted-foreground">-</span>
+										}
+									}
+									@table.Cell() {
+										@components.LineItemTypeBadge(li.Type)
+									}
+									@table.Cell() {
+										{ strconv.FormatInt(li.Quantity, 10) }
+									}
+									@table.Cell() {
+										{ li.UnitAmount.String() }
+									}
+									@table.Cell() {
+										<span class="font-medium">{ li.Amount.String() }</span>
+									}
+								}
+							}
+						}
+					}
+				}
+			}
+		}
+
+		<!-- Invoice Summary Card -->
+		@card.Card() {
+			@card.Header() {
+				@card.Title() {
+					Summary
+				}
+			}
+			@card.Content() {
+				<div class="space-y-3">
+					<div class="flex justify-between text-sm">
+						<span class="text-muted-foreground">Subtotal</span>
+						<span>{ data.Invoice.Subtotal.String() }</span>
+					</div>
+					if data.Invoice.DiscountAmount.Amount > 0 {
+						<div class="flex justify-between text-sm">
+							<span class="text-muted-foreground">Discount</span>
+							<span class="text-green-600">-{ data.Invoice.DiscountAmount.String() }</span>
+						</div>
+					}
+					if data.Invoice.TaxAmount.Amount > 0 {
+						<div class="flex justify-between text-sm">
+							<span class="text-muted-foreground">Tax</span>
+							<span>{ data.Invoice.TaxAmount.String() }</span>
+						</div>
+					}
+					@separator.Separator()
+					<div class="flex justify-between text-base font-semibold">
+						<span>Total</span>
+						<span>{ data.Invoice.Total.String() }</span>
+					</div>
+				</div>
+			}
+		}
+
+		<!-- Metadata Card -->
+		if len(data.Invoice.Metadata) > 0 {
+			@card.Card() {
+				@card.Header() {
+					@card.Title() {
+						Metadata
+					}
+				}
+				@card.Content() {
+					<dl class="grid grid-cols-1 sm:grid-cols-2 gap-4">
+						for key, value := range data.Invoice.Metadata {
+							@detailField(key, value)
+						}
+					</dl>
+				}
+			}
+		}
+
+		<!-- Provider Sync Card -->
+		if data.HasProviders {
+			@card.Card() {
+				@card.Header() {
+					<div class="flex items-center gap-2">
+						@icons.RefreshCw(icons.WithSize(18))
+						@card.Title() {
+							Provider Sync
+						}
+					</div>
+					@card.Description() {
+						Synchronize this invoice with the payment provider.
+					}
+				}
+				@card.Content() {
+					if data.SyncResult != nil && data.SyncResult.Success {
+						<div class="flex items-center gap-2 mb-4 text-sm text-green-600">
+							@icons.CheckCircle(icons.WithSize(16))
+							<span>Synced to { data.SyncResult.ProviderName } / { data.SyncResult.ProviderID }</span>
+						</div>
+					}
+					if data.SyncError != "" {
+						<div class="flex items-center gap-2 mb-4 text-sm text-destructive">
+							@icons.AlertCircle(icons.WithSize(16))
+							<span>{ data.SyncError }</span>
+						</div>
+					}
+					<div class="flex items-center gap-4">
+						if data.Invoice.ProviderID != "" {
+							<div class="text-sm text-muted-foreground">
+								<span class="font-medium">Provider:</span> { data.Invoice.ProviderName } / <code class="text-xs">{ data.Invoice.ProviderID }</code>
+							</div>
+						} else {
+							<p class="text-sm text-muted-foreground">Not yet synced to a provider.</p>
+						}
+					</div>
+					<div class="flex gap-2 mt-4">
+						@button.Button(button.Props{
+							Variant: button.VariantOutline,
+							Size:    button.SizeSm,
+							Attributes: templ.Attributes{
+								"hx-post":   "../invoices/sync?id=" + data.Invoice.ID.String(),
+								"hx-target": "#content",
+								"hx-swap":   "innerHTML",
+							},
+						}) {
+							@icons.RefreshCw(icons.WithSize(14))
+							Sync to Provider
+						}
+					</div>
+				}
+			}
+		}
+
+		<!-- Plugin-contributed sections slot -->
+		{ children... }
+	</div>
+}

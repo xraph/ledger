@@ -1,0 +1,177 @@
+package pages
+
+import (
+	"fmt"
+	"strconv"
+
+	"github.com/xraph/forgeui/components/button"
+	"github.com/xraph/forgeui/components/card"
+	"github.com/xraph/forgeui/components/separator"
+	"github.com/xraph/forgeui/icons"
+	"github.com/xraph/ledger/coupon"
+	"github.com/xraph/ledger/dashboard/components"
+)
+
+templ CouponDetailPage(c *coupon.Coupon) {
+	<div class="space-y-6">
+		<!-- Back Button -->
+		@button.Button(button.Props{
+			Variant: button.VariantGhost,
+			Size:    button.SizeSm,
+			Attributes: templ.Attributes{
+				"hx-get":      "../coupons",
+				"hx-target":   "#content",
+				"hx-swap":     "innerHTML",
+				"hx-push-url": "true",
+			},
+		}) {
+			@icons.ChevronLeft(icons.WithSize(16))
+			Back to Coupons
+		}
+
+		<!-- Coupon Info Card -->
+		@card.Card() {
+			@card.Header() {
+				<div class="flex items-center justify-between">
+					<div class="flex items-center gap-4">
+						<div class="flex h-12 w-12 items-center justify-center rounded-sm bg-primary/10 text-primary">
+							@icons.Ticket(icons.WithSize(24))
+						</div>
+						<div>
+							@card.Title() {
+								{ c.Name }
+							}
+							@card.Description() {
+								<code class="text-sm font-mono font-bold">{ c.Code }</code>
+							}
+						</div>
+					</div>
+					<div class="flex items-center gap-2">
+						@components.CouponTypeBadge(c.Type)
+						@button.Button(button.Props{
+							Variant: button.VariantOutline,
+							Size:    button.SizeSm,
+							Attributes: templ.Attributes{
+								"hx-get":      "../coupons/edit?id=" + c.ID.String(),
+								"hx-target":   "#content",
+								"hx-swap":     "innerHTML",
+								"hx-push-url": "true",
+							},
+						}) {
+							@icons.Pencil(icons.WithSize(14))
+							Edit
+						}
+					</div>
+				</div>
+			}
+			@card.Content() {
+				@separator.Separator()
+				<dl class="grid grid-cols-1 sm:grid-cols-2 gap-4 mt-4">
+					@detailField("Coupon ID", c.ID.String())
+					@detailField("Code", c.Code)
+					@detailField("Name", c.Name)
+					@detailField("Type", string(c.Type))
+					if c.Type == coupon.CouponTypePercentage {
+						@detailField("Percentage", fmt.Sprintf("%d%%", c.Percentage))
+					} else {
+						@detailField("Amount", c.Amount.String())
+					}
+					@detailField("Currency", c.Currency)
+				</dl>
+			}
+		}
+
+		<!-- Redemption Stats Card -->
+		@card.Card() {
+			@card.Header() {
+				<div class="flex items-center gap-2">
+					@icons.ChartBar(icons.WithSize(18))
+					@card.Title() {
+						Redemption Stats
+					}
+				</div>
+			}
+			@card.Content() {
+				<dl class="grid grid-cols-1 sm:grid-cols-3 gap-4">
+					@detailField("Times Redeemed", strconv.Itoa(c.TimesRedeemed))
+					<div>
+						<dt class="text-sm font-medium text-muted-foreground">Max Redemptions</dt>
+						<dd class="mt-1 text-sm">
+							if c.MaxRedemptions > 0 {
+								{ strconv.Itoa(c.MaxRedemptions) }
+							} else {
+								<span class="text-muted-foreground">Unlimited</span>
+							}
+						</dd>
+					</div>
+					<div>
+						<dt class="text-sm font-medium text-muted-foreground">Remaining</dt>
+						<dd class="mt-1 text-sm">
+							if c.MaxRedemptions > 0 {
+								{ strconv.Itoa(c.MaxRedemptions - c.TimesRedeemed) }
+							} else {
+								<span class="text-muted-foreground">Unlimited</span>
+							}
+						</dd>
+					</div>
+				</dl>
+			}
+		}
+
+		<!-- Validity Card -->
+		@card.Card() {
+			@card.Header() {
+				<div class="flex items-center gap-2">
+					@icons.Calendar(icons.WithSize(18))
+					@card.Title() {
+						Validity Period
+					}
+				</div>
+			}
+			@card.Content() {
+				<dl class="grid grid-cols-1 sm:grid-cols-2 gap-4">
+					<div>
+						<dt class="text-sm font-medium text-muted-foreground">Valid From</dt>
+						<dd class="mt-1 text-sm">
+							if c.ValidFrom != nil {
+								{ c.ValidFrom.Format("Jan 02, 2006 15:04") }
+							} else {
+								<span class="text-muted-foreground">No start date</span>
+							}
+						</dd>
+					</div>
+					<div>
+						<dt class="text-sm font-medium text-muted-foreground">Valid Until</dt>
+						<dd class="mt-1 text-sm">
+							if c.ValidUntil != nil {
+								{ c.ValidUntil.Format("Jan 02, 2006 15:04") }
+							} else {
+								<span class="text-muted-foreground">No expiry</span>
+							}
+						</dd>
+					</div>
+					@detailField("Created", c.CreatedAt.Format("Jan 02, 2006 15:04"))
+					@detailField("Updated", c.UpdatedAt.Format("Jan 02, 2006 15:04"))
+				</dl>
+			}
+		}
+
+		<!-- Metadata Card -->
+		if len(c.Metadata) > 0 {
+			@card.Card() {
+				@card.Header() {
+					@card.Title() {
+						Metadata
+					}
+				}
+				@card.Content() {
+					<dl class="grid grid-cols-1 sm:grid-cols-2 gap-4">
+						for key, value := range c.Metadata {
+							@detailField(key, value)
+						}
+					</dl>
+				}
+			}
+		}
+	</div>
+}

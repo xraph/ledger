@@ -37,6 +37,7 @@ type Invoice struct {
 	VoidReason     string            `json:"void_reason,omitempty"`
 	PaymentRef     string            `json:"payment_ref,omitempty"`
 	ProviderID     string            `json:"provider_id,omitempty"`
+	ProviderName   string            `json:"provider_name,omitempty"`
 	AppID          string            `json:"app_id"`
 	Metadata       map[string]string `json:"metadata,omitempty"`
 }

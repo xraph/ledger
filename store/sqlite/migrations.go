@@ -218,5 +218,56 @@ CREATE INDEX IF NOT EXISTS idx_ledger_coupons_app ON ledger_coupons (app_id);
 				return err
 			},
 		},
+		&migrate.Migration{
+			Name:    "create_ledger_features",
+			Version: "20240101000007",
+			Up: func(ctx context.Context, exec migrate.Executor) error {
+				_, err := exec.Exec(ctx, `
+CREATE TABLE IF NOT EXISTS ledger_features (
+    id            TEXT PRIMARY KEY,
+    key           TEXT NOT NULL DEFAULT '',
+    name          TEXT NOT NULL DEFAULT '',
+    description   TEXT NOT NULL DEFAULT '',
+    type          TEXT NOT NULL DEFAULT '',
+    default_limit INTEGER NOT NULL DEFAULT 0,
+    period        TEXT NOT NULL DEFAULT '',
+    soft_limit    INTEGER NOT NULL DEFAULT 0,
+    status        TEXT NOT NULL DEFAULT 'draft',
+    app_id        TEXT NOT NULL DEFAULT '',
+    metadata      TEXT NOT NULL DEFAULT '{}',
+    created_at    TEXT NOT NULL DEFAULT (datetime('now')),
+    updated_at    TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
+CREATE UNIQUE INDEX IF NOT EXISTS idx_ledger_features_key_app ON ledger_features (key, app_id);
+CREATE INDEX IF NOT EXISTS idx_ledger_features_app ON ledger_features (app_id);
+CREATE INDEX IF NOT EXISTS idx_ledger_features_status ON ledger_features (app_id, status);
+`)
+				return err
+			},
+			Down: func(ctx context.Context, exec migrate.Executor) error {
+				_, err := exec.Exec(ctx, `DROP TABLE IF EXISTS ledger_features`)
+				return err
+			},
+		},
+		&migrate.Migration{
+			Name:    "add_provider_columns",
+			Version: "20240101000008",
+			Up: func(ctx context.Context, exec migrate.Executor) error {
+				_, err := exec.Exec(ctx, `
+ALTER TABLE ledger_plans ADD COLUMN provider_id TEXT NOT NULL DEFAULT '';
+ALTER TABLE ledger_plans ADD COLUMN provider_name TEXT NOT NULL DEFAULT '';
+ALTER TABLE ledger_features ADD COLUMN provider_id TEXT NOT NULL DEFAULT '';
+ALTER TABLE ledger_features ADD COLUMN provider_name TEXT NOT NULL DEFAULT '';
+ALTER TABLE ledger_invoices ADD COLUMN provider_name TEXT NOT NULL DEFAULT '';
+`)
+				return err
+			},
+			Down: func(ctx context.Context, exec migrate.Executor) error {
+				// SQLite does not support DROP COLUMN in older versions;
+				// these columns are harmless if left in place.
+				return nil
+			},
+		},
 	)
 }

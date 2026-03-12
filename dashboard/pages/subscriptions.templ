@@ -1,0 +1,50 @@
+package pages
+
+import (
+	"strconv"
+
+	"github.com/xraph/forgeui/components/badge"
+	"github.com/xraph/forgeui/components/button"
+	"github.com/xraph/forgeui/components/card"
+	"github.com/xraph/forgeui/icons"
+	"github.com/xraph/ledger/dashboard/components"
+	"github.com/xraph/ledger/subscription"
+)
+
+templ SubscriptionsPage(subs []*subscription.Subscription) {
+	<div class="space-y-6">
+		<!-- Header Row -->
+		<div class="flex items-center justify-between">
+			<div class="flex items-center gap-3">
+				<h1 class="text-3xl font-bold tracking-tight">Subscriptions</h1>
+				@badge.Badge(badge.Props{Variant: badge.VariantSecondary}) {
+					{ strconv.Itoa(len(subs)) }
+				}
+			</div>
+			@button.Button(button.Props{
+				Variant: button.VariantDefault,
+				Size:    button.SizeSm,
+				Attributes: templ.Attributes{
+					"hx-get":      "./subscriptions/new",
+					"hx-target":   "#content",
+					"hx-push-url": "true",
+					"hx-swap":     "innerHTML",
+				},
+			}) {
+				@icons.Plus(icons.WithSize(16))
+				Create Subscription
+			}
+		</div>
+
+		<!-- Subscriptions Table -->
+		@card.Card() {
+			@card.Content() {
+				if len(subs) == 0 {
+					@components.EmptyState("credit-card", "No subscriptions yet", "Create your first subscription to start billing.")
+				} else {
+					@components.SubscriptionTable(subs, "./subscriptions")
+				}
+			}
+		}
+	</div>
+}

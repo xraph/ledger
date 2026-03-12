@@ -1,0 +1,43 @@
+package components
+
+import (
+	"strconv"
+
+	"github.com/xraph/forgeui/components/table"
+	"github.com/xraph/ledger/meter"
+)
+
+templ UsageTable(events []*meter.UsageEvent) {
+	@table.Table() {
+		@table.Header() {
+			@table.Row() {
+				@table.Head() { Event ID }
+				@table.Head() { Tenant }
+				@table.Head() { Feature Key }
+				@table.Head() { Quantity }
+				@table.Head() { Timestamp }
+			}
+		}
+		@table.Body() {
+			for _, e := range events {
+				@table.Row() {
+					@table.Cell() {
+						<code class="text-xs">{ truncateString(e.ID.String(), 16) }</code>
+					}
+					@table.Cell() {
+						<span class="text-sm">{ truncateString(e.TenantID, 20) }</span>
+					}
+					@table.Cell() {
+						<code class="text-xs">{ e.FeatureKey }</code>
+					}
+					@table.Cell() {
+						<span class="font-medium">{ strconv.FormatInt(e.Quantity, 10) }</span>
+					}
+					@table.Cell() {
+						{ e.Timestamp.Format("Jan 02, 2006 15:04") }
+					}
+				}
+			}
+		}
+	}
+}

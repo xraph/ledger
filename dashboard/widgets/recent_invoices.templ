@@ -1,0 +1,48 @@
+package widgets
+
+import (
+	"github.com/xraph/forgeui/components/table"
+	"github.com/xraph/ledger/dashboard/components"
+	"github.com/xraph/ledger/invoice"
+)
+
+templ RecentInvoicesWidget(invoices []*invoice.Invoice) {
+	if len(invoices) == 0 {
+		<p class="text-sm text-muted-foreground py-4 text-center">No invoices yet.</p>
+	} else {
+		@table.Table() {
+			@table.Header() {
+				@table.Row() {
+					@table.Head() { Tenant }
+					@table.Head() { Status }
+					@table.Head() { Total }
+				}
+			}
+			@table.Body() {
+				for _, inv := range invoices {
+					@table.Row() {
+						@table.Cell() {
+							<span class="text-sm">{ truncateStr(inv.TenantID, 16) }</span>
+						}
+						@table.Cell() {
+							@components.InvoiceStatusBadge(inv.Status)
+						}
+						@table.Cell() {
+							<span class="font-medium">{ inv.Total.String() }</span>
+						}
+					}
+				}
+			}
+		}
+	}
+}
+
+func truncateStr(s string, max int) string {
+	if len(s) <= max {
+		return s
+	}
+	if max <= 3 {
+		return s[:max]
+	}
+	return s[:max-3] + "..."
+}

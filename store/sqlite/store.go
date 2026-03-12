@@ -14,6 +14,7 @@ import (
 	ledger "github.com/xraph/ledger"
 	"github.com/xraph/ledger/coupon"
 	"github.com/xraph/ledger/entitlement"
+	"github.com/xraph/ledger/feature"
 	"github.com/xraph/ledger/id"
 	"github.com/xraph/ledger/invoice"
 	"github.com/xraph/ledger/meter"
@@ -182,6 +183,157 @@ func (s *Store) ArchivePlan(ctx context.Context, planID id.PlanID) error {
 	}
 	if rows == 0 {
 		return ledger.ErrPlanNotFound
+	}
+	return nil
+}
+
+// ==================== Feature Store ====================
+
+func (s *Store) CreateFeature(ctx context.Context, f *feature.Feature) error {
+	m := toFeatureModel(f)
+	_, err := s.sdb.NewInsert(m).Exec(ctx)
+	return err
+}
+
+func (s *Store) GetFeature(ctx context.Context, featureID id.FeatureID) (*feature.Feature, error) {
+	m := new(featureModel)
+	err := s.sdb.NewSelect(m).
+		Where("id = ?", featureID.String()).
+		Scan(ctx)
+	if err != nil {
+		if isNoRows(err) {
+			return nil, ledger.ErrFeatureNotFound
+		}
+		return nil, err
+	}
+	return fromFeatureModel(m)
+}
+
+func (s *Store) GetFeatureByKey(ctx context.Context, key, appID string) (*feature.Feature, error) {
+	m := new(featureModel)
+	err := s.sdb.NewSelect(m).
+		Where("key = ?", key).
+		Where("app_id = ?", appID).
+		Scan(ctx)
+	if err != nil {
+		if isNoRows(err) {
+			return nil, ledger.ErrFeatureNotFound
+		}
+		return nil, err
+	}
+	return fromFeatureModel(m)
+}
+
+func (s *Store) ListFeatures(ctx context.Context, appID string, opts feature.ListOpts) ([]*feature.Feature, error) {
+	var models []featureModel
+	q := s.sdb.NewSelect(&models).Where("app_id = ?", appID)
+
+	if opts.Status != "" {
+		q = q.Where("status = ?", string(opts.Status))
+	}
+	if opts.Limit > 0 {
+		q = q.Limit(opts.Limit)
+	}
+	if opts.Offset > 0 {
+		q = q.Offset(opts.Offset)
+	}
+	q = q.OrderExpr("created_at ASC")
+
+	if err := q.Scan(ctx); err != nil {
+		return nil, err
+	}
+
+	result := make([]*feature.Feature, len(models))
+	for i := range models {
+		f, err := fromFeatureModel(&models[i])
+		if err != nil {
+			return nil, err
+		}
+		result[i] = f
+	}
+	return result, nil
+}
+
+func (s *Store) ListGlobalFeatures(ctx context.Context, opts feature.ListOpts) ([]*feature.Feature, error) {
+	var models []featureModel
+	q := s.sdb.NewSelect(&models).Where("app_id = ?", "")
+
+	if opts.Status != "" {
+		q = q.Where("status = ?", string(opts.Status))
+	}
+	if opts.Limit > 0 {
+		q = q.Limit(opts.Limit)
+	}
+	if opts.Offset > 0 {
+		q = q.Offset(opts.Offset)
+	}
+	q = q.OrderExpr("created_at ASC")
+
+	if err := q.Scan(ctx); err != nil {
+		return nil, err
+	}
+
+	result := make([]*feature.Feature, len(models))
+	for i := range models {
+		f, err := fromFeatureModel(&models[i])
+		if err != nil {
+			return nil, err
+		}
+		result[i] = f
+	}
+	return result, nil
+}
+
+func (s *Store) UpdateFeature(ctx context.Context, f *feature.Feature) error {
+	m := toFeatureModel(f)
+	m.UpdatedAt = now()
+	res, err := s.sdb.NewUpdate(m).WherePK().Exec(ctx)
+	if err != nil {
+		return err
+	}
+	rows, err := res.RowsAffected()
+	if err != nil {
+		return err
+	}
+	if rows == 0 {
+		return ledger.ErrFeatureNotFound
+	}
+	return nil
+}
+
+func (s *Store) DeleteFeature(ctx context.Context, featureID id.FeatureID) error {
+	res, err := s.sdb.NewDelete((*featureModel)(nil)).
+		Where("id = ?", featureID.String()).
+		Exec(ctx)
+	if err != nil {
+		return err
+	}
+	rows, err := res.RowsAffected()
+	if err != nil {
+		return err
+	}
+	if rows == 0 {
+		return ledger.ErrFeatureNotFound
+	}
+	return nil
+}
+
+func (s *Store) ArchiveFeature(ctx context.Context, featureID id.FeatureID) error {
+	t := now()
+	res, err := s.sdb.NewUpdate((*featureModel)(nil)).
+		Set("status = ?", string(feature.StatusArchived)).
+		Set("updated_at = ?", t).
+		Where("id = ?", featureID.String()).
+		Exec(ctx)
+	if err != nil {
+		return err
+	}
+	rows, err := res.RowsAffected()
+	if err != nil {
+		return err
+	}
+	if rows == 0 {
+		return ledger.ErrFeatureNotFound
 	}
 	return nil
 }

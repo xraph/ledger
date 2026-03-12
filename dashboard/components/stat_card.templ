@@ -1,0 +1,54 @@
+package components
+
+import (
+	"github.com/xraph/forgeui/components/card"
+	"github.com/xraph/forgeui/icons"
+)
+
+// ResolveIcon returns the lucide icon component for the given icon name.
+func ResolveIcon(iconName string, opts ...icons.Option) templ.Component {
+	switch iconName {
+	case "layers":
+		return icons.Layers(opts...)
+	case "credit-card":
+		return icons.CreditCard(opts...)
+	case "file-text":
+		return icons.FileText(opts...)
+	case "ticket":
+		return icons.Ticket(opts...)
+	case "bar-chart-3":
+		return icons.ChartBar(opts...)
+	case "receipt":
+		return icons.Receipt(opts...)
+	case "dollar-sign":
+		return icons.DollarSign(opts...)
+	case "users":
+		return icons.Users(opts...)
+	case "activity":
+		return icons.Activity(opts...)
+	case "trending-up":
+		return icons.TrendingUp(opts...)
+	case "hash":
+		return icons.Hash(opts...)
+	default:
+		return icons.Info(opts...)
+	}
+}
+
+// StatCard renders a dashboard statistics card with an icon, label, value, and optional subtitle.
+templ StatCard(iconName string, label string, value string, subtitle string) {
+	@card.Card() {
+		@card.Content(card.ContentProps{Class: "flex flex-col gap-1 p-6"}) {
+			<div class="flex items-center justify-between">
+				<span class="text-sm text-muted-foreground">{ label }</span>
+				<span class="text-muted-foreground">
+					@ResolveIcon(iconName, icons.WithSize(16))
+				</span>
+			</div>
+			<div class="text-3xl font-bold">{ value }</div>
+			if subtitle != "" {
+				<span class="text-xs text-muted-foreground">{ subtitle }</span>
+			}
+		}
+	}
+}

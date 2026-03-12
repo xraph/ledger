@@ -1,0 +1,144 @@
+package pages
+
+import (
+	"strconv"
+
+	"github.com/xraph/forgeui/components/card"
+	"github.com/xraph/forgeui/components/table"
+	"github.com/xraph/forgeui/icons"
+	"github.com/xraph/ledger/dashboard/components"
+	"github.com/xraph/ledger/invoice"
+)
+
+templ OverviewPage(stats OverviewStats, recentInvoices []*invoice.Invoice) {
+	<div class="space-y-8">
+		<!-- Page Header -->
+		<div>
+			<h1 class="text-3xl font-bold tracking-tight">Billing Overview</h1>
+			<p class="text-muted-foreground mt-1">Monitor your billing system at a glance.</p>
+		</div>
+
+		<!-- Stats Grid -->
+		<div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4">
+			@components.StatCard("layers", "Total Plans", strconv.Itoa(stats.TotalPlans), "Billing plans configured")
+			@components.StatCard("credit-card", "Active Subscriptions", strconv.Itoa(stats.ActiveSubscriptions), "Currently active")
+			@components.StatCard("file-text", "Pending Invoices", strconv.Itoa(stats.PendingInvoices), "Awaiting payment")
+			@components.StatCard("ticket", "Active Coupons", strconv.Itoa(stats.ActiveCoupons), "Discount codes available")
+		</div>
+
+		<!-- Recent Invoices Section -->
+		@card.Card() {
+			@card.Header() {
+				<div class="flex items-center justify-between">
+					@card.Title() {
+						Recent Invoices
+					}
+					<a
+						class="text-sm text-primary hover:underline cursor-pointer"
+						hx-get="./invoices"
+						hx-target="#content"
+						hx-push-url="true"
+						hx-swap="innerHTML"
+					>
+						View all
+					</a>
+				</div>
+				@card.Description() {
+					The last 5 invoices generated.
+				}
+			}
+			@card.Content() {
+				if len(recentInvoices) == 0 {
+					<p class="text-sm text-muted-foreground py-4 text-center">No invoices yet.</p>
+				} else {
+					@table.Table() {
+						@table.Header() {
+							@table.Row() {
+								@table.Head() { Invoice }
+								@table.Head() { Tenant }
+								@table.Head() { Status }
+								@table.Head() { Total }
+								@table.Head() { Created }
+							}
+						}
+						@table.Body() {
+							for _, inv := range recentInvoices {
+								@table.Row(table.RowProps{
+									Class: "cursor-pointer hover:bg-muted/50",
+									Attributes: templ.Attributes{
+										"hx-get":      "./invoices/detail?id=" + inv.ID.String(),
+										"hx-target":   "#content",
+										"hx-push-url": "true",
+										"hx-swap":     "innerHTML",
+									},
+								}) {
+									@table.Cell() {
+										<code class="text-xs">{ truncateString(inv.ID.String(), 16) }</code>
+									}
+									@table.Cell() {
+										{ truncateString(inv.TenantID, 20) }
+									}
+									@table.Cell() {
+										@components.InvoiceStatusBadge(inv.Status)
+									}
+									@table.Cell() {
+										<span class="font-medium">{ inv.Total.String() }</span>
+									}
+									@table.Cell() {
+										{ inv.CreatedAt.Format("Jan 02, 2006") }
+									}
+								}
+							}
+						}
+					}
+				}
+			}
+		}
+
+		<!-- Quick Actions -->
+		@card.Card() {
+			@card.Header() {
+				@card.Title() {
+					Quick Actions
+				}
+			}
+			@card.Content() {
+				<div class="grid grid-cols-1 sm:grid-cols-3 gap-3">
+					<a
+						class="flex items-center gap-2 rounded-sm border p-3 text-sm hover:bg-muted/50 cursor-pointer"
+						hx-get="./plans/new"
+						hx-target="#content"
+						hx-push-url="true"
+						hx-swap="innerHTML"
+					>
+						@components.ResolveIcon("layers", icons.WithSize(16))
+						Create Plan
+					</a>
+					<a
+						class="flex items-center gap-2 rounded-sm border p-3 text-sm hover:bg-muted/50 cursor-pointer"
+						hx-get="./subscriptions/new"
+						hx-target="#content"
+						hx-push-url="true"
+						hx-swap="innerHTML"
+					>
+						@components.ResolveIcon("credit-card", icons.WithSize(16))
+						New Subscription
+					</a>
+					<a
+						class="flex items-center gap-2 rounded-sm border p-3 text-sm hover:bg-muted/50 cursor-pointer"
+						hx-get="./coupons/new"
+						hx-target="#content"
+						hx-push-url="true"
+						hx-swap="innerHTML"
+					>
+						@components.ResolveIcon("ticket", icons.WithSize(16))
+						Create Coupon
+					</a>
+				</div>
+			}
+		}
+
+		<!-- Plugin-contributed sections slot -->
+		{ children... }
+	</div>
+}

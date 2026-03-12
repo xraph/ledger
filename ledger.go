@@ -3,16 +3,18 @@ package ledger
 import (
 	"context"
 	"fmt"
-	"log/slog"
+	log "github.com/xraph/go-utils/log"
 	"sync"
 	"time"
 
 	"github.com/xraph/ledger/entitlement"
+	"github.com/xraph/ledger/feature"
 	"github.com/xraph/ledger/id"
 	"github.com/xraph/ledger/invoice"
 	"github.com/xraph/ledger/meter"
 	"github.com/xraph/ledger/plan"
 	"github.com/xraph/ledger/plugin"
+	"github.com/xraph/ledger/provider"
 	"github.com/xraph/ledger/store"
 	"github.com/xraph/ledger/subscription"
 	"github.com/xraph/ledger/types"
@@ -22,7 +24,7 @@ import (
 type Ledger struct {
 	store   store.Store
 	plugins *plugin.Registry
-	logger  *slog.Logger
+	logger  log.Logger
 
 	// Background workers
 	meterBuffer chan *meter.UsageEvent
@@ -40,7 +42,7 @@ func New(s store.Store, opts ...Option) *Ledger {
 	l := &Ledger{
 		store:               s,
 		plugins:             plugin.NewRegistry(),
-		logger:              slog.Default(),
+		logger:              log.NewNoopLogger(),
 		meterBuffer:         make(chan *meter.UsageEvent, 10000),
 		stopChan:            make(chan struct{}),
 		meterBatchSize:      100,
@@ -59,7 +61,7 @@ func New(s store.Store, opts ...Option) *Ledger {
 type Option func(*Ledger)
 
 // WithLogger sets the logger.
-func WithLogger(logger *slog.Logger) Option {
+func WithLogger(logger log.Logger) Option {
 	return func(l *Ledger) {
 		l.logger = logger
 		l.plugins.WithLogger(logger)
@@ -103,12 +105,17 @@ func (l *Ledger) Start(ctx context.Context) error {
 	go l.meterFlushWorker(ctx)
 
 	l.logger.Info("ledger started",
-		"batch_size", l.meterBatchSize,
-		"flush_interval", l.meterFlushInterval,
-		"cache_ttl", l.entitlementCacheTTL,
+		log.Int("batch_size", l.meterBatchSize),
+		log.Duration("flush_interval", l.meterFlushInterval),
+		log.Duration("cache_ttl", l.entitlementCacheTTL),
 	)
 
 	return nil
+}
+
+// Health checks the health of the Ledger by pinging its store.
+func (l *Ledger) Health(ctx context.Context) error {
+	return l.store.Ping(ctx)
 }
 
 // Stop shuts down the Ledger.
@@ -149,6 +156,80 @@ func (l *Ledger) GetPlan(ctx context.Context, planID id.PlanID) (*plan.Plan, err
 // GetPlanBySlug retrieves a plan by slug.
 func (l *Ledger) GetPlanBySlug(ctx context.Context, slug, appID string) (*plan.Plan, error) {
 	return l.store.GetPlanBySlug(ctx, slug, appID)
+}
+
+// ──────────────────────────────────────────────────
+// Feature Catalog Management
+// ──────────────────────────────────────────────────
+
+// CreateFeature creates a new catalog feature.
+func (l *Ledger) CreateFeature(ctx context.Context, f *feature.Feature) error {
+	if f.ID == (id.FeatureID{}) {
+		f.ID = id.NewFeatureID()
+	}
+	f.Entity = types.NewEntity()
+
+	if err := l.store.CreateFeature(ctx, f); err != nil {
+		return err
+	}
+
+	l.plugins.EmitFeatureCreated(ctx, f)
+	return nil
+}
+
+// GetFeature retrieves a catalog feature by ID.
+func (l *Ledger) GetFeature(ctx context.Context, featureID id.FeatureID) (*feature.Feature, error) {
+	return l.store.GetFeature(ctx, featureID)
+}
+
+// GetFeatureByKey retrieves a catalog feature by key and app scope.
+func (l *Ledger) GetFeatureByKey(ctx context.Context, key string, appID string) (*feature.Feature, error) {
+	return l.store.GetFeatureByKey(ctx, key, appID)
+}
+
+// ListFeatures lists catalog features for an app.
+func (l *Ledger) ListFeatures(ctx context.Context, appID string, opts feature.ListOpts) ([]*feature.Feature, error) {
+	return l.store.ListFeatures(ctx, appID, opts)
+}
+
+// ListGlobalFeatures lists catalog features with no app scope.
+func (l *Ledger) ListGlobalFeatures(ctx context.Context, opts feature.ListOpts) ([]*feature.Feature, error) {
+	return l.store.ListGlobalFeatures(ctx, opts)
+}
+
+// UpdateFeature updates a catalog feature.
+func (l *Ledger) UpdateFeature(ctx context.Context, f *feature.Feature) error {
+	old, err := l.store.GetFeature(ctx, f.ID)
+	if err != nil {
+		return err
+	}
+
+	if err := l.store.UpdateFeature(ctx, f); err != nil {
+		return err
+	}
+
+	l.plugins.EmitFeatureUpdated(ctx, old, f)
+	return nil
+}
+
+// DeleteFeature deletes a catalog feature.
+func (l *Ledger) DeleteFeature(ctx context.Context, featureID id.FeatureID) error {
+	if err := l.store.DeleteFeature(ctx, featureID); err != nil {
+		return err
+	}
+
+	l.plugins.EmitFeatureDeleted(ctx, featureID.String())
+	return nil
+}
+
+// ArchiveFeature archives a catalog feature.
+func (l *Ledger) ArchiveFeature(ctx context.Context, featureID id.FeatureID) error {
+	if err := l.store.ArchiveFeature(ctx, featureID); err != nil {
+		return err
+	}
+
+	l.plugins.EmitFeatureArchived(ctx, featureID.String())
+	return nil
 }
 
 // ──────────────────────────────────────────────────
@@ -281,8 +362,8 @@ func (l *Ledger) flushMeterBatch(ctx context.Context, batch []*meter.UsageEvent)
 
 	if err := l.store.IngestBatch(ctx, batch); err != nil {
 		l.logger.Error("failed to flush meter batch",
-			"error", err,
-			"batch_size", len(batch),
+			log.Error(err),
+			log.Int("batch_size", len(batch)),
 		)
 		return
 	}
@@ -291,8 +372,8 @@ func (l *Ledger) flushMeterBatch(ctx context.Context, batch []*meter.UsageEvent)
 	l.plugins.EmitUsageFlushed(ctx, len(batch), elapsed)
 
 	l.logger.Debug("flushed meter batch",
-		"batch_size", len(batch),
-		"elapsed_ms", elapsed.Milliseconds(),
+		log.Int("batch_size", len(batch)),
+		log.Int64("elapsed_ms", elapsed.Milliseconds()),
 	)
 }
 
@@ -511,4 +592,406 @@ func extractAppID(ctx context.Context) string {
 		}
 	}
 	return ""
+}
+
+// ──────────────────────────────────────────────────
+// Provider Sync & Payment Methods
+// ──────────────────────────────────────────────────
+
+// HasProviders returns true if any payment provider plugins are registered.
+func (l *Ledger) HasProviders() bool {
+	return l.plugins.HasPaymentProviders()
+}
+
+// getProvider resolves a payment provider by name. If name is empty, returns
+// the first registered provider. Returns ErrProviderNotConfigured when no
+// providers are registered at all.
+func (l *Ledger) getProvider(name string) (provider.Provider, error) {
+	if !l.plugins.HasPaymentProviders() {
+		return nil, ErrProviderNotConfigured
+	}
+
+	if name != "" {
+		pp := l.plugins.GetPaymentProvider(name)
+		if pp == nil {
+			return nil, fmt.Errorf("%w: %s", ErrProviderNotFound, name)
+		}
+		return pp.Provider(), nil
+	}
+
+	// Default to first registered provider
+	providers := l.plugins.GetPaymentProviders()
+	if len(providers) == 0 {
+		return nil, ErrProviderNotConfigured
+	}
+	return providers[0].Provider(), nil
+}
+
+// ListPaymentMethods lists payment methods from the provider for a tenant.
+// Payment methods are always fetched live and never stored locally.
+func (l *Ledger) ListPaymentMethods(ctx context.Context, tenantID string) ([]provider.PaymentMethod, error) {
+	prov, err := l.getProvider("")
+	if err != nil {
+		// No providers configured — return empty list (dev mode)
+		if err == ErrProviderNotConfigured {
+			return nil, nil
+		}
+		return nil, err
+	}
+
+	return prov.ListPaymentMethods(ctx, tenantID)
+}
+
+// SyncPlanToProvider pushes a local plan to the payment provider.
+func (l *Ledger) SyncPlanToProvider(ctx context.Context, planID id.PlanID) (*provider.SyncResult, error) {
+	p, err := l.store.GetPlan(ctx, planID)
+	if err != nil {
+		return nil, err
+	}
+
+	prov, err := l.getProvider(p.ProviderName)
+	if err != nil {
+		return nil, err
+	}
+
+	providerID, syncErr := prov.SyncPlan(ctx, p)
+	result := &provider.SyncResult{
+		ProviderName: prov.Name(),
+		ProviderID:   providerID,
+		EntityType:   "plan",
+		EntityID:     planID.String(),
+		Direction:    "push",
+		Success:      syncErr == nil,
+	}
+	if syncErr != nil {
+		result.Error = syncErr.Error()
+	}
+
+	// Update local entity with provider tracking
+	if syncErr == nil {
+		p.ProviderID = providerID
+		p.ProviderName = prov.Name()
+		_ = l.store.UpdatePlan(ctx, p) //nolint:errcheck // best-effort update
+	}
+
+	l.plugins.EmitProviderSync(ctx, prov.Name(), syncErr == nil, syncErr)
+	return result, syncErr
+}
+
+// SyncFeatureToProvider pushes a local feature to the payment provider.
+func (l *Ledger) SyncFeatureToProvider(ctx context.Context, featureID id.FeatureID) (*provider.SyncResult, error) {
+	f, err := l.store.GetFeature(ctx, featureID)
+	if err != nil {
+		return nil, err
+	}
+
+	prov, err := l.getProvider(f.ProviderName)
+	if err != nil {
+		return nil, err
+	}
+
+	providerID, syncErr := prov.SyncFeature(ctx, f)
+	result := &provider.SyncResult{
+		ProviderName: prov.Name(),
+		ProviderID:   providerID,
+		EntityType:   "feature",
+		EntityID:     featureID.String(),
+		Direction:    "push",
+		Success:      syncErr == nil,
+	}
+	if syncErr != nil {
+		result.Error = syncErr.Error()
+	}
+
+	if syncErr == nil {
+		f.ProviderID = providerID
+		f.ProviderName = prov.Name()
+		_ = l.store.UpdateFeature(ctx, f) //nolint:errcheck // best-effort update
+	}
+
+	l.plugins.EmitProviderSync(ctx, prov.Name(), syncErr == nil, syncErr)
+	return result, syncErr
+}
+
+// SyncSubscriptionToProvider pushes a local subscription to the payment provider.
+func (l *Ledger) SyncSubscriptionToProvider(ctx context.Context, subID id.SubscriptionID) (*provider.SyncResult, error) {
+	s, err := l.store.GetSubscription(ctx, subID)
+	if err != nil {
+		return nil, err
+	}
+
+	prov, err := l.getProvider(s.ProviderName)
+	if err != nil {
+		return nil, err
+	}
+
+	providerID, syncErr := prov.SyncSubscription(ctx, s)
+	result := &provider.SyncResult{
+		ProviderName: prov.Name(),
+		ProviderID:   providerID,
+		EntityType:   "subscription",
+		EntityID:     subID.String(),
+		Direction:    "push",
+		Success:      syncErr == nil,
+	}
+	if syncErr != nil {
+		result.Error = syncErr.Error()
+	}
+
+	if syncErr == nil {
+		s.ProviderID = providerID
+		s.ProviderName = prov.Name()
+		_ = l.store.UpdateSubscription(ctx, s) //nolint:errcheck // best-effort update
+	}
+
+	l.plugins.EmitProviderSync(ctx, prov.Name(), syncErr == nil, syncErr)
+	return result, syncErr
+}
+
+// SyncInvoiceToProvider pushes a local invoice to the payment provider.
+func (l *Ledger) SyncInvoiceToProvider(ctx context.Context, invID id.InvoiceID) (*provider.SyncResult, error) {
+	inv, err := l.store.GetInvoice(ctx, invID)
+	if err != nil {
+		return nil, err
+	}
+
+	prov, err := l.getProvider(inv.ProviderName)
+	if err != nil {
+		return nil, err
+	}
+
+	providerID, syncErr := prov.SyncInvoice(ctx, inv)
+	result := &provider.SyncResult{
+		ProviderName: prov.Name(),
+		ProviderID:   providerID,
+		EntityType:   "invoice",
+		EntityID:     invID.String(),
+		Direction:    "push",
+		Success:      syncErr == nil,
+	}
+	if syncErr != nil {
+		result.Error = syncErr.Error()
+	}
+
+	if syncErr == nil {
+		inv.ProviderID = providerID
+		inv.ProviderName = prov.Name()
+		_ = l.store.UpdateInvoice(ctx, inv) //nolint:errcheck // best-effort update
+	}
+
+	l.plugins.EmitProviderSync(ctx, prov.Name(), syncErr == nil, syncErr)
+	return result, syncErr
+}
+
+// ──────────────────────────────────────────────────
+// Provider Import (Data Recovery)
+// ──────────────────────────────────────────────────
+
+// ImportPlanFromProvider pulls a plan from the provider and creates it locally.
+func (l *Ledger) ImportPlanFromProvider(ctx context.Context, providerName, providerID string) (*plan.Plan, error) {
+	prov, err := l.getProvider(providerName)
+	if err != nil {
+		return nil, err
+	}
+
+	p, err := prov.ImportPlan(ctx, providerID)
+	if err != nil {
+		l.plugins.EmitProviderSync(ctx, prov.Name(), false, err)
+		return nil, fmt.Errorf("%w: import plan: %v", ErrProviderSync, err)
+	}
+
+	// Assign local IDs and metadata
+	p.ID = id.NewPlanID()
+	p.Entity = types.NewEntity()
+	p.ProviderID = providerID
+	p.ProviderName = prov.Name()
+
+	if err := l.store.CreatePlan(ctx, p); err != nil {
+		return nil, err
+	}
+
+	l.plugins.EmitPlanCreated(ctx, p)
+	l.plugins.EmitProviderSync(ctx, prov.Name(), true, nil)
+	return p, nil
+}
+
+// ImportFeatureFromProvider pulls a feature from the provider and creates it locally.
+func (l *Ledger) ImportFeatureFromProvider(ctx context.Context, providerName, providerID string) (*feature.Feature, error) {
+	prov, err := l.getProvider(providerName)
+	if err != nil {
+		return nil, err
+	}
+
+	f, err := prov.ImportFeature(ctx, providerID)
+	if err != nil {
+		l.plugins.EmitProviderSync(ctx, prov.Name(), false, err)
+		return nil, fmt.Errorf("%w: import feature: %v", ErrProviderSync, err)
+	}
+
+	f.ID = id.NewFeatureID()
+	f.Entity = types.NewEntity()
+	f.ProviderID = providerID
+	f.ProviderName = prov.Name()
+
+	if err := l.store.CreateFeature(ctx, f); err != nil {
+		return nil, err
+	}
+
+	l.plugins.EmitFeatureCreated(ctx, f)
+	l.plugins.EmitProviderSync(ctx, prov.Name(), true, nil)
+	return f, nil
+}
+
+// ImportSubscriptionFromProvider pulls a subscription from the provider and creates it locally.
+func (l *Ledger) ImportSubscriptionFromProvider(ctx context.Context, providerName, providerID string) (*subscription.Subscription, error) {
+	prov, err := l.getProvider(providerName)
+	if err != nil {
+		return nil, err
+	}
+
+	s, err := prov.ImportSubscription(ctx, providerID)
+	if err != nil {
+		l.plugins.EmitProviderSync(ctx, prov.Name(), false, err)
+		return nil, fmt.Errorf("%w: import subscription: %v", ErrProviderSync, err)
+	}
+
+	s.ID = id.NewSubscriptionID()
+	s.Entity = types.NewEntity()
+	s.ProviderID = providerID
+	s.ProviderName = prov.Name()
+
+	if err := l.store.CreateSubscription(ctx, s); err != nil {
+		return nil, err
+	}
+
+	l.plugins.EmitSubscriptionCreated(ctx, s)
+	l.plugins.EmitProviderSync(ctx, prov.Name(), true, nil)
+	return s, nil
+}
+
+// ImportInvoiceFromProvider pulls an invoice from the provider and creates it locally.
+func (l *Ledger) ImportInvoiceFromProvider(ctx context.Context, providerName, providerID string) (*invoice.Invoice, error) {
+	prov, err := l.getProvider(providerName)
+	if err != nil {
+		return nil, err
+	}
+
+	inv, err := prov.ImportInvoice(ctx, providerID)
+	if err != nil {
+		l.plugins.EmitProviderSync(ctx, prov.Name(), false, err)
+		return nil, fmt.Errorf("%w: import invoice: %v", ErrProviderSync, err)
+	}
+
+	inv.ID = id.NewInvoiceID()
+	inv.Entity = types.NewEntity()
+	inv.ProviderID = providerID
+	inv.ProviderName = prov.Name()
+
+	if err := l.store.CreateInvoice(ctx, inv); err != nil {
+		return nil, err
+	}
+
+	l.plugins.EmitInvoiceGenerated(ctx, inv)
+	l.plugins.EmitProviderSync(ctx, prov.Name(), true, nil)
+	return inv, nil
+}
+
+// ──────────────────────────────────────────────────
+// Webhook Reconciliation
+// ──────────────────────────────────────────────────
+
+// HandleWebhook routes an incoming webhook payload to the correct provider.
+func (l *Ledger) HandleWebhook(ctx context.Context, providerName string, payload []byte) (*provider.WebhookResult, error) {
+	prov, err := l.getProvider(providerName)
+	if err != nil {
+		return nil, err
+	}
+
+	l.plugins.EmitWebhookReceived(ctx, prov.Name(), payload)
+
+	result, err := prov.HandleWebhook(ctx, payload)
+	if err != nil {
+		return nil, fmt.Errorf("%w: %v", ErrProviderWebhook, err)
+	}
+
+	return result, nil
+}
+
+// ──────────────────────────────────────────────────
+// Invoice Lifecycle
+// ──────────────────────────────────────────────────
+
+// FinalizeInvoice transitions an invoice from draft to pending.
+func (l *Ledger) FinalizeInvoice(ctx context.Context, invID id.InvoiceID) error {
+	inv, err := l.store.GetInvoice(ctx, invID)
+	if err != nil {
+		return err
+	}
+
+	if inv.Status != invoice.StatusDraft {
+		return ErrInvoiceFinalized
+	}
+
+	inv.Status = invoice.StatusPending
+	now := time.Now()
+	dueDate := now.AddDate(0, 0, 30) // 30-day payment terms
+	inv.DueDate = &dueDate
+
+	if err := l.store.UpdateInvoice(ctx, inv); err != nil {
+		return err
+	}
+
+	l.plugins.EmitInvoiceFinalized(ctx, inv)
+	return nil
+}
+
+// MarkInvoicePaid marks an invoice as paid.
+func (l *Ledger) MarkInvoicePaid(ctx context.Context, invID id.InvoiceID, paidAt time.Time, paymentRef string) error {
+	inv, err := l.store.GetInvoice(ctx, invID)
+	if err != nil {
+		return err
+	}
+
+	if inv.Status == invoice.StatusPaid {
+		return ErrInvoicePaid
+	}
+	if inv.Status == invoice.StatusVoided {
+		return ErrInvoiceVoided
+	}
+
+	if err := l.store.MarkInvoicePaid(ctx, invID, paidAt, paymentRef); err != nil {
+		return err
+	}
+
+	inv.Status = invoice.StatusPaid
+	inv.PaidAt = &paidAt
+	inv.PaymentRef = paymentRef
+	l.plugins.EmitInvoicePaid(ctx, inv)
+	return nil
+}
+
+// MarkInvoiceVoided marks an invoice as voided with a reason.
+func (l *Ledger) MarkInvoiceVoided(ctx context.Context, invID id.InvoiceID, reason string) error {
+	inv, err := l.store.GetInvoice(ctx, invID)
+	if err != nil {
+		return err
+	}
+
+	if inv.Status == invoice.StatusPaid {
+		return ErrInvoicePaid
+	}
+	if inv.Status == invoice.StatusVoided {
+		return ErrInvoiceVoided
+	}
+
+	if err := l.store.MarkInvoiceVoided(ctx, invID, reason); err != nil {
+		return err
+	}
+
+	now := time.Now()
+	inv.Status = invoice.StatusVoided
+	inv.VoidedAt = &now
+	inv.VoidReason = reason
+	l.plugins.EmitInvoiceVoided(ctx, inv, reason)
+	return nil
 }

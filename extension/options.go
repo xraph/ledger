@@ -28,6 +28,7 @@ func WithLedgerOption(opt ledger.Option) Option {
 // WithPlugin registers a ledger plugin.
 func WithPlugin(p plugin.Plugin) Option {
 	return func(e *Extension) {
+		e.plugins = append(e.plugins, p)
 		e.ledgerOpts = append(e.ledgerOpts, ledger.WithPlugin(p))
 	}
 }
@@ -71,6 +72,11 @@ func WithMeterFlushInterval(d time.Duration) Option {
 // WithEntitlementCacheTTL sets the entitlement check cache duration.
 func WithEntitlementCacheTTL(d time.Duration) Option {
 	return func(e *Extension) { e.config.EntitlementCacheTTL = d }
+}
+
+// WithAppID scopes all operations to a specific application identifier.
+func WithAppID(id string) Option {
+	return func(e *Extension) { e.config.AppID = id }
 }
 
 // WithGroveDatabase sets the name of the grove.DB to resolve from the DI container.

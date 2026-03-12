@@ -1,0 +1,16 @@
+package widgets
+
+import (
+	"strconv"
+
+	"github.com/xraph/ledger/dashboard/components"
+)
+
+templ StatsWidget(totalPlans, activeSubs, pendingInvoices, activeCoupons int) {
+	<div class="grid grid-cols-2 gap-4">
+		@components.StatCard("layers", "Plans", strconv.Itoa(totalPlans), "Total plans")
+		@components.StatCard("credit-card", "Subscriptions", strconv.Itoa(activeSubs), "Active")
+		@components.StatCard("file-text", "Invoices", strconv.Itoa(pendingInvoices), "Pending")
+		@components.StatCard("ticket", "Coupons", strconv.Itoa(activeCoupons), "Available")
+	</div>
+}

@@ -19,6 +19,7 @@ var (
 	ErrPlanArchived     = errors.New("ledger: plan is archived")
 	ErrPlanInUse        = errors.New("ledger: plan is in use by subscriptions")
 	ErrFeatureNotFound  = errors.New("ledger: feature not found")
+	ErrFeatureArchived  = errors.New("ledger: feature is archived")
 	ErrInvalidPricing   = errors.New("ledger: invalid pricing configuration")
 	ErrDuplicateFeature = errors.New("ledger: duplicate feature key")
 

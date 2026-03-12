@@ -1,0 +1,111 @@
+package pages
+
+import (
+	"strconv"
+
+	"github.com/xraph/forgeui/components/card"
+	"github.com/xraph/forgeui/components/separator"
+	"github.com/xraph/forgeui/icons"
+)
+
+templ SettingsPage(data SettingsPageData) {
+	<div class="space-y-6">
+		<!-- Header -->
+		<div>
+			<h1 class="text-3xl font-bold tracking-tight">Settings</h1>
+			<p class="text-muted-foreground mt-1">Ledger configuration and runtime settings.</p>
+		</div>
+
+		<!-- Metering Configuration -->
+		@card.Card() {
+			@card.Header() {
+				<div class="flex items-center gap-2">
+					@icons.ChartBar(icons.WithSize(18))
+					@card.Title() {
+						Metering Configuration
+					}
+				</div>
+				@card.Description() {
+					Settings for the usage metering engine.
+				}
+			}
+			@card.Content() {
+				<dl class="grid grid-cols-1 sm:grid-cols-2 gap-4">
+					@settingsField("Batch Size", strconv.Itoa(data.MeterBatchSize), "Number of events buffered before flush.")
+					@settingsField("Flush Interval", data.MeterFlushInterval, "How often buffered events are flushed to storage.")
+				</dl>
+			}
+		}
+
+		<!-- Entitlement Cache -->
+		@card.Card() {
+			@card.Header() {
+				<div class="flex items-center gap-2">
+					@icons.Shield(icons.WithSize(18))
+					@card.Title() {
+						Entitlement Cache
+					}
+				</div>
+				@card.Description() {
+					Configuration for the entitlement check cache.
+				}
+			}
+			@card.Content() {
+				<dl class="grid grid-cols-1 sm:grid-cols-2 gap-4">
+					@settingsField("Cache TTL", data.EntitlementCacheTTL, "Time-to-live for cached entitlement results.")
+				</dl>
+			}
+		}
+
+		<!-- Provider Status -->
+		@card.Card() {
+			@card.Header() {
+				<div class="flex items-center gap-2">
+					@icons.Plug(icons.WithSize(18))
+					@card.Title() {
+						Payment Providers
+					}
+				</div>
+				@card.Description() {
+					Connected payment provider integrations.
+				}
+			}
+			@card.Content() {
+				if data.HasProviders {
+					<div class="flex flex-wrap gap-2">
+						for _, name := range data.ProviderNames {
+							<span class="inline-flex items-center gap-1.5 rounded-md bg-primary/10 px-2.5 py-1 text-sm font-medium text-primary">
+								@icons.CheckCircle(icons.WithSize(14))
+								{ name }
+							</span>
+						}
+					</div>
+					<p class="text-xs text-muted-foreground mt-3">Provider sync is available for plans, features, subscriptions, and invoices.</p>
+				} else {
+					<div class="flex items-center gap-2 text-muted-foreground">
+						@icons.Info(icons.WithSize(16))
+						<div>
+							<p class="text-sm font-medium">Dev Mode</p>
+							<p class="text-xs">No payment providers configured. Sync and payment features are disabled.</p>
+						</div>
+					</div>
+				}
+			}
+		}
+
+		@separator.Separator()
+
+		<!-- Plugin-contributed settings slot -->
+		{ children... }
+	</div>
+}
+
+templ settingsField(label string, value string, description string) {
+	<div>
+		<dt class="text-sm font-medium">{ label }</dt>
+		<dd class="mt-1">
+			<span class="text-sm font-mono bg-muted px-2 py-1 rounded-sm">{ value }</span>
+		</dd>
+		<p class="text-xs text-muted-foreground mt-1">{ description }</p>
+	</div>
+}

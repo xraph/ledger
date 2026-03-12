@@ -3,7 +3,7 @@ package ledger_test
 import (
 	"context"
 	"log"
-	"log/slog"
+	xlog "github.com/xraph/go-utils/log"
 	"testing"
 	"time"
 
@@ -23,7 +23,7 @@ func TestDocumentationExamples(t *testing.T) {
 
 		// Initialize Ledger with plugins
 		l := ledger.New(store,
-			ledger.WithLogger(slog.Default()),
+			ledger.WithLogger(xlog.NewNoopLogger()),
 			ledger.WithMeterConfig(100, 5*time.Second),
 			ledger.WithEntitlementCacheTTL(30*time.Second),
 		)

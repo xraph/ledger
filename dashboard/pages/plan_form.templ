@@ -1,0 +1,832 @@
+package pages
+
+import (
+	"encoding/json"
+	"fmt"
+	"strconv"
+
+	"github.com/xraph/forgeui/components/badge"
+	"github.com/xraph/forgeui/components/button"
+	"github.com/xraph/forgeui/components/card"
+	"github.com/xraph/forgeui/components/input"
+	"github.com/xraph/forgeui/components/label"
+	"github.com/xraph/forgeui/components/separator"
+	"github.com/xraph/forgeui/components/tabs"
+	"github.com/xraph/forgeui/components/textarea"
+	"github.com/xraph/forgeui/icons"
+	"github.com/xraph/ledger/plan"
+)
+
+templ PlanFormPage(data PlanFormData) {
+	@planFormScript()
+	<div class="space-y-6">
+		<!-- Back Button -->
+		@button.Button(button.Props{
+			Variant: button.VariantGhost,
+			Size:    button.SizeSm,
+			Attributes: templ.Attributes{
+				"hx-get":      "../plans",
+				"hx-target":   "#content",
+				"hx-swap":     "innerHTML",
+				"hx-push-url": "true",
+			},
+		}) {
+			@icons.ChevronLeft(icons.WithSize(16))
+			Back to Plans
+		}
+
+		<!-- Form Header -->
+		<div>
+			if data.IsEdit {
+				<h1 class="text-3xl font-bold tracking-tight">Edit Plan</h1>
+				<p class="text-muted-foreground mt-1">Update the plan configuration, features, and pricing.</p>
+			} else {
+				<h1 class="text-3xl font-bold tracking-tight">Create Plan</h1>
+				<p class="text-muted-foreground mt-1">Define a new billing plan with features, pricing tiers, and metadata.</p>
+			}
+		</div>
+
+		<!-- Error Display -->
+		if data.Error != "" {
+			@card.Card() {
+				@card.Content(card.ContentProps{Class: "p-4"}) {
+					<div class="flex items-center gap-3 text-destructive">
+						@icons.AlertCircle(icons.WithSize(18))
+						<span class="text-sm font-medium">{ data.Error }</span>
+					</div>
+				}
+			}
+		}
+
+		<!-- Plan Form -->
+		<form
+			id="plan-form"
+			hx-post={ planFormAction(data) }
+			hx-target="#content"
+			hx-swap="innerHTML"
+		>
+			<!-- Hidden JSON inputs for complex fields -->
+			<input type="hidden" name="features_json" id="features_json" value={ featuresJSONValue(data.Plan) }/>
+			<input type="hidden" name="tiers_json" id="tiers_json" value={ tiersJSONValue(data.Plan) }/>
+			<input type="hidden" name="metadata_json" id="metadata_json" value={ metadataJSONValue(data.Plan) }/>
+
+			@tabs.Tabs(tabs.Props{ID: "plan-form-tabs"}) {
+				@tabs.List(tabs.ListProps{Class: "mb-4"}) {
+					@tabs.Trigger(tabs.TriggerProps{Value: "details", IsActive: true}) {
+						@icons.FileText(icons.WithSize(14))
+						Details
+					}
+					@tabs.Trigger(tabs.TriggerProps{Value: "features"}) {
+						@icons.Hash(icons.WithSize(14))
+						Features
+					}
+					@tabs.Trigger(tabs.TriggerProps{Value: "pricing"}) {
+						@icons.DollarSign(icons.WithSize(14))
+						Pricing
+					}
+					@tabs.Trigger(tabs.TriggerProps{Value: "metadata"}) {
+						@icons.Settings(icons.WithSize(14))
+						Metadata
+					}
+				}
+
+				<!-- Tab 1: Plan Details -->
+				@tabs.Content(tabs.ContentProps{Value: "details", IsActive: true}) {
+					@card.Card() {
+						@card.Header() {
+							@card.Title() {
+								Plan Details
+							}
+							@card.Description() {
+								Basic plan information and configuration.
+							}
+						}
+						@card.Content() {
+							<div class="space-y-4">
+								<!-- Name & Slug -->
+								<div class="grid grid-cols-1 sm:grid-cols-2 gap-4">
+									<div class="space-y-2">
+										@label.Label() {
+											Plan Name
+											<span class="text-destructive">*</span>
+										}
+										@input.Input(input.Props{
+											Type:        input.TypeText,
+											Name:        "name",
+											Placeholder: "e.g. Pro Plan",
+											Value:       planFieldValue(data.Plan, "name"),
+											Attributes:  templ.Attributes{"required": "true"},
+										})
+									</div>
+									<div class="space-y-2">
+										@label.Label() {
+											Slug
+											<span class="text-destructive">*</span>
+										}
+										@input.Input(input.Props{
+											Type:        input.TypeText,
+											Name:        "slug",
+											Placeholder: "e.g. pro",
+											Value:       planFieldValue(data.Plan, "slug"),
+											Attributes:  templ.Attributes{"required": "true"},
+										})
+										<p class="text-xs text-muted-foreground">URL-friendly identifier. Must be unique per app.</p>
+									</div>
+								</div>
+
+								<!-- Description -->
+								<div class="space-y-2">
+									@label.Label() { Description }
+									@textarea.Textarea(textarea.Props{
+										Name:        "description",
+										Placeholder: "Describe what this plan includes...",
+										Value:       planFieldValue(data.Plan, "description"),
+									})
+								</div>
+
+								<div class="grid grid-cols-1 sm:grid-cols-3 gap-4">
+									<!-- Currency -->
+									<div class="space-y-2">
+										@label.Label() { Currency }
+										<select name="currency" class="flex h-10 w-full rounded-sm border border-input bg-background px-3 py-2 text-sm">
+											<option value="usd" selected?={ planFieldValue(data.Plan, "currency") == "usd" || planFieldValue(data.Plan, "currency") == "" }>USD</option>
+											<option value="eur" selected?={ planFieldValue(data.Plan, "currency") == "eur" }>EUR</option>
+											<option value="gbp" selected?={ planFieldValue(data.Plan, "currency") == "gbp" }>GBP</option>
+										</select>
+									</div>
+
+									<!-- Status -->
+									<div class="space-y-2">
+										@label.Label() { Status }
+										<select name="status" class="flex h-10 w-full rounded-sm border border-input bg-background px-3 py-2 text-sm">
+											<option value="draft" selected?={ planFieldValue(data.Plan, "status") == "draft" || planFieldValue(data.Plan, "status") == "" }>Draft</option>
+											<option value="active" selected?={ planFieldValue(data.Plan, "status") == "active" }>Active</option>
+											<option value="archived" selected?={ planFieldValue(data.Plan, "status") == "archived" }>Archived</option>
+										</select>
+									</div>
+
+									<!-- Trial Days -->
+									<div class="space-y-2">
+										@label.Label() { Trial Days }
+										@input.Input(input.Props{
+											Type:        input.TypeNumber,
+											Name:        "trial_days",
+											Placeholder: "0",
+											Value:       planFieldValue(data.Plan, "trial_days"),
+										})
+									</div>
+								</div>
+
+								@separator.Separator()
+
+								<!-- App Scoping -->
+								<div class="space-y-3">
+									<div class="flex items-center gap-2">
+										@label.Label() { Application Scope }
+										<span id="app-scope-indicator">
+											if planFieldValue(data.Plan, "app_id") != "" {
+												@badge.Badge(badge.Props{Variant: badge.VariantDefault}) {
+													{ "App: " + planFieldValue(data.Plan, "app_id") }
+												}
+											} else if data.AppID != "" {
+												@badge.Badge(badge.Props{Variant: badge.VariantDefault}) {
+													{ "App: " + data.AppID }
+												}
+											} else {
+												@badge.Badge(badge.Props{Variant: badge.VariantOutline}) {
+													Global
+												}
+											}
+										</span>
+									</div>
+									@input.Input(input.Props{
+										Type:        input.TypeText,
+										Name:        "app_id",
+										Placeholder: "Leave empty for global plan",
+										Value:       planAppIDValue(data),
+										Attributes:  templ.Attributes{"oninput": "updateAppScopeIndicator(this)"},
+									})
+									<p class="text-xs text-muted-foreground">
+										Leave empty for a global plan, or enter an app ID to scope this plan to a specific application.
+									</p>
+								</div>
+							</div>
+						}
+					}
+				}
+
+				<!-- Tab 2: Features -->
+				@tabs.Content(tabs.ContentProps{Value: "features"}) {
+					@card.Card() {
+						@card.Header() {
+							<div class="flex items-center justify-between">
+								<div>
+									@card.Title() {
+										Features
+									}
+									@card.Description() {
+										Define the feature entitlements included in this plan. Supports metered, boolean, and seat-based features.
+									}
+								</div>
+								if data.Plan != nil {
+									@badge.Badge(badge.Props{Variant: badge.VariantSecondary}) {
+										{ strconv.Itoa(len(data.Plan.Features)) + " features" }
+									}
+								}
+							</div>
+						}
+						@card.Content() {
+							<div id="features-container" class="space-y-3">
+								<!-- Pre-populated features for edit mode -->
+								if data.Plan != nil {
+									for i, f := range data.Plan.Features {
+										@featureCard(i, f)
+									}
+								}
+								<!-- Add Feature button -->
+								<button
+									id="add-feature-btn"
+									type="button"
+									class="flex items-center gap-2 text-sm text-primary hover:text-primary/80 font-medium pt-1"
+									onclick="addFeature()"
+								>
+									@icons.Plus(icons.WithSize(16))
+									Add Feature
+								</button>
+							</div>
+
+							<!-- Feature Types Reference -->
+							<div class="mt-6 pt-4 border-t">
+								<p class="text-xs font-medium text-muted-foreground mb-2">Feature Types</p>
+								<div class="grid grid-cols-1 sm:grid-cols-3 gap-3">
+									<div class="text-xs text-muted-foreground">
+										<span class="font-medium text-foreground">Metered</span> — Usage-tracked feature with limits, periods, and optional soft limits for overage tracking.
+									</div>
+									<div class="text-xs text-muted-foreground">
+										<span class="font-medium text-foreground">Boolean</span> — Simple on/off feature toggle. Limit is always 1 (enabled).
+									</div>
+									<div class="text-xs text-muted-foreground">
+										<span class="font-medium text-foreground">Seat</span> — Per-seat/user based feature with configurable limits and reset periods.
+									</div>
+								</div>
+							</div>
+						}
+					}
+				}
+
+				<!-- Tab 3: Pricing -->
+				@tabs.Content(tabs.ContentProps{Value: "pricing"}) {
+					@card.Card() {
+						@card.Header() {
+							@card.Title() {
+								Pricing
+							}
+							@card.Description() {
+								Set the base subscription price and optional usage-based pricing tiers.
+							}
+						}
+						@card.Content() {
+							<div class="space-y-6">
+								<!-- Base Pricing -->
+								<div class="grid grid-cols-1 sm:grid-cols-2 gap-4">
+									<div class="space-y-2">
+										@label.Label() { Base Amount (in cents) }
+										@input.Input(input.Props{
+											Type:        input.TypeNumber,
+											Name:        "base_amount",
+											Placeholder: "4900",
+											Value:       planPricingValue(data.Plan),
+										})
+										<p class="text-xs text-muted-foreground">Enter amount in smallest currency unit (e.g., 4900 = $49.00).</p>
+									</div>
+									<div class="space-y-2">
+										@label.Label() { Billing Period }
+										<select name="billing_period" class="flex h-10 w-full rounded-sm border border-input bg-background px-3 py-2 text-sm">
+											<option value="monthly" selected?={ planBillingPeriod(data.Plan) == "monthly" || planBillingPeriod(data.Plan) == "" }>Monthly</option>
+											<option value="yearly" selected?={ planBillingPeriod(data.Plan) == "yearly" }>Yearly</option>
+										</select>
+									</div>
+								</div>
+
+								@separator.Separator()
+
+								<!-- Pricing Tiers -->
+								<div>
+									<div class="flex items-center justify-between mb-3">
+										<div>
+											<h4 class="text-sm font-medium">Pricing Tiers</h4>
+											<p class="text-xs text-muted-foreground mt-0.5">Define usage-based pricing tiers linked to features.</p>
+										</div>
+									</div>
+
+									<div id="tiers-container" class="space-y-3">
+										<!-- Pre-populated tiers for edit mode -->
+										if data.Plan != nil && data.Plan.Pricing != nil {
+											for i, t := range data.Plan.Pricing.Tiers {
+												@tierCard(i, t, data.Plan.Features)
+											}
+										}
+										<!-- Add Tier button -->
+										<button
+											id="add-tier-btn"
+											type="button"
+											class="flex items-center gap-2 text-sm text-primary hover:text-primary/80 font-medium pt-1"
+											onclick="addTier()"
+										>
+											@icons.Plus(icons.WithSize(16))
+											Add Pricing Tier
+										</button>
+									</div>
+
+									<!-- Tier Types Reference -->
+									<div class="mt-4 pt-4 border-t">
+										<p class="text-xs font-medium text-muted-foreground mb-2">Tier Types</p>
+										<div class="grid grid-cols-1 sm:grid-cols-3 gap-3">
+											<div class="text-xs text-muted-foreground">
+												<span class="font-medium text-foreground">Graduated</span> — Each unit in range priced at unit amount.
+											</div>
+											<div class="text-xs text-muted-foreground">
+												<span class="font-medium text-foreground">Volume</span> — All units priced at unit amount when total is in range.
+											</div>
+											<div class="text-xs text-muted-foreground">
+												<span class="font-medium text-foreground">Flat</span> — Flat fee for this usage range.
+											</div>
+										</div>
+									</div>
+								</div>
+							</div>
+						}
+					}
+				}
+
+				<!-- Tab 4: Metadata -->
+				@tabs.Content(tabs.ContentProps{Value: "metadata"}) {
+					@card.Card() {
+						@card.Header() {
+							@card.Title() {
+								Metadata
+							}
+							@card.Description() {
+								Add custom key-value pairs for additional plan configuration.
+							}
+						}
+						@card.Content() {
+							<div id="metadata-container" class="space-y-3">
+								<!-- Pre-populated metadata for edit mode -->
+								if data.Plan != nil && len(data.Plan.Metadata) > 0 {
+									for i, entry := range metadataEntries(data.Plan.Metadata) {
+										@metadataRow(i, entry.Key, entry.Value)
+									}
+								}
+								<!-- Add Metadata button -->
+								<button
+									id="add-metadata-btn"
+									type="button"
+									class="flex items-center gap-2 text-sm text-primary hover:text-primary/80 font-medium pt-1"
+									onclick="addMetadataRow()"
+								>
+									@icons.Plus(icons.WithSize(16))
+									Add Metadata
+								</button>
+							</div>
+						}
+					}
+				}
+			}
+			@tabs.Script()
+
+			@separator.Separator()
+
+			<!-- Submit / Cancel -->
+			<div class="flex justify-end gap-3">
+				@button.Button(button.Props{
+					Variant: button.VariantOutline,
+					Attributes: templ.Attributes{
+						"hx-get":      "../plans",
+						"hx-target":   "#content",
+						"hx-swap":     "innerHTML",
+						"hx-push-url": "true",
+					},
+				}) {
+					Cancel
+				}
+				@button.Button(button.Props{
+					Type:    button.TypeSubmit,
+					Variant: button.VariantDefault,
+				}) {
+					if data.IsEdit {
+						Save Changes
+					} else {
+						Create Plan
+					}
+				}
+			</div>
+		</form>
+	</div>
+}
+
+// ─── Feature Card (pre-populated) ───────────────────────────────────────────
+
+templ featureCard(index int, f plan.Feature) {
+	<div
+		class="relative rounded-lg border bg-muted/30 p-4 space-y-3"
+		data-oa-item="features"
+		data-oa-index={ strconv.Itoa(index) }
+	>
+		<button
+			type="button"
+			class="absolute top-2 right-2 text-muted-foreground hover:text-destructive"
+			onclick="removeFeature(this)"
+			title="Remove feature"
+		>
+			@icons.Trash(icons.WithSize(14))
+		</button>
+		<div class="grid grid-cols-1 md:grid-cols-2 gap-3 pr-6">
+			<!-- Key -->
+			<div class="space-y-1">
+				<label class="text-xs font-medium text-muted-foreground">Key <span class="text-destructive">*</span></label>
+				@input.Input(input.Props{
+					Type:  input.TypeText,
+					Name:  fmt.Sprintf("features[%d].key", index),
+					Value: f.Key,
+					Placeholder: "api_calls",
+				})
+			</div>
+			<!-- Name -->
+			<div class="space-y-1">
+				<label class="text-xs font-medium text-muted-foreground">Name <span class="text-destructive">*</span></label>
+				@input.Input(input.Props{
+					Type:  input.TypeText,
+					Name:  fmt.Sprintf("features[%d].name", index),
+					Value: f.Name,
+					Placeholder: "API Calls",
+				})
+			</div>
+			<!-- Type -->
+			<div class="space-y-1">
+				<label class="text-xs font-medium text-muted-foreground">Type</label>
+				<select
+					name={ fmt.Sprintf("features[%d].type", index) }
+					class="flex h-9 w-full rounded-md border border-input bg-background px-3 py-1 text-sm ring-offset-background focus-visible:border-ring focus-visible:ring-ring/50 focus-visible:ring-[3px]"
+					onchange={ featureTypeChangeScript(index) }
+				>
+					<option value="metered" selected?={ f.Type == plan.FeatureMetered || f.Type == "" }>Metered</option>
+					<option value="boolean" selected?={ f.Type == plan.FeatureBoolean }>Boolean</option>
+					<option value="seat" selected?={ f.Type == plan.FeatureSeat }>Seat</option>
+				</select>
+				<p class="text-xs text-muted-foreground" data-feature-desc={ strconv.Itoa(index) }>
+					{ featureTypeDescription(f.Type) }
+				</p>
+			</div>
+			<!-- Limit -->
+			<div
+				class="space-y-1"
+				data-feature-limit={ strconv.Itoa(index) }
+				if f.Type == plan.FeatureBoolean {
+					style="display:none"
+				}
+			>
+				<label class="text-xs font-medium text-muted-foreground">Limit</label>
+				@input.Input(input.Props{
+					Type:        input.TypeNumber,
+					Name:        fmt.Sprintf("features[%d].limit", index),
+					Value:       formatFeatureLimit(f),
+					Placeholder: "-1 for unlimited",
+				})
+				<p class="text-xs text-muted-foreground">-1 = unlimited</p>
+			</div>
+			<!-- Period -->
+			<div
+				class="space-y-1"
+				data-feature-period={ strconv.Itoa(index) }
+				if f.Type == plan.FeatureBoolean {
+					style="display:none"
+				}
+			>
+				<label class="text-xs font-medium text-muted-foreground">Reset Period</label>
+				<select
+					name={ fmt.Sprintf("features[%d].period", index) }
+					class="flex h-9 w-full rounded-md border border-input bg-background px-3 py-1 text-sm ring-offset-background focus-visible:border-ring focus-visible:ring-ring/50 focus-visible:ring-[3px]"
+				>
+					<option value="monthly" selected?={ f.Period == plan.PeriodMonthly || f.Period == "" }>Monthly</option>
+					<option value="yearly" selected?={ f.Period == plan.PeriodYearly }>Yearly</option>
+					<option value="none" selected?={ f.Period == plan.PeriodNone }>None</option>
+				</select>
+			</div>
+			<!-- Soft Limit -->
+			<div
+				class="space-y-1"
+				data-feature-soft={ strconv.Itoa(index) }
+				if f.Type == plan.FeatureBoolean || f.Type == plan.FeatureSeat {
+					style="display:none"
+				}
+			>
+				<label class="text-xs font-medium text-muted-foreground">Soft Limit</label>
+				<div class="flex items-center gap-2">
+					<input
+						type="checkbox"
+						name={ fmt.Sprintf("features[%d].soft_limit", index) }
+						class="h-4 w-4 rounded border-input"
+						checked?={ f.SoftLimit }
+					/>
+					<span class="text-xs text-muted-foreground">Allow usage beyond limit</span>
+				</div>
+			</div>
+		</div>
+	</div>
+}
+
+// ─── Tier Card (pre-populated) ──────────────────────────────────────────────
+
+templ tierCard(index int, t plan.PriceTier, features []plan.Feature) {
+	<div
+		class="relative rounded-lg border bg-muted/30 p-4 space-y-3"
+		data-oa-item="tiers"
+		data-oa-index={ strconv.Itoa(index) }
+	>
+		<button
+			type="button"
+			class="absolute top-2 right-2 text-muted-foreground hover:text-destructive"
+			onclick="removeTier(this)"
+			title="Remove tier"
+		>
+			@icons.Trash(icons.WithSize(14))
+		</button>
+		<div class="grid grid-cols-1 md:grid-cols-3 gap-3 pr-6">
+			<!-- Feature Key -->
+			<div class="space-y-1">
+				<label class="text-xs font-medium text-muted-foreground">Feature Key <span class="text-destructive">*</span></label>
+				<select
+					name={ fmt.Sprintf("tiers[%d].feature_key", index) }
+					class="flex h-9 w-full rounded-md border border-input bg-background px-3 py-1 text-sm ring-offset-background focus-visible:border-ring focus-visible:ring-ring/50 focus-visible:ring-[3px]"
+				>
+					for _, f := range features {
+						<option value={ f.Key } selected?={ f.Key == t.FeatureKey }>{ f.Key }</option>
+					}
+					if !hasFeatureKey(features, t.FeatureKey) && t.FeatureKey != "" {
+						<option value={ t.FeatureKey } selected>{ t.FeatureKey }</option>
+					}
+				</select>
+			</div>
+			<!-- Tier Type -->
+			<div class="space-y-1">
+				<label class="text-xs font-medium text-muted-foreground">Tier Type</label>
+				<select
+					name={ fmt.Sprintf("tiers[%d].type", index) }
+					class="flex h-9 w-full rounded-md border border-input bg-background px-3 py-1 text-sm ring-offset-background focus-visible:border-ring focus-visible:ring-ring/50 focus-visible:ring-[3px]"
+				>
+					<option value="graduated" selected?={ t.Type == plan.TierGraduated || t.Type == "" }>Graduated</option>
+					<option value="volume" selected?={ t.Type == plan.TierVolume }>Volume</option>
+					<option value="flat" selected?={ t.Type == plan.TierFlat }>Flat</option>
+				</select>
+			</div>
+			<!-- Up To -->
+			<div class="space-y-1">
+				<label class="text-xs font-medium text-muted-foreground">Up To</label>
+				@input.Input(input.Props{
+					Type:        input.TypeNumber,
+					Name:        fmt.Sprintf("tiers[%d].up_to", index),
+					Value:       strconv.FormatInt(t.UpTo, 10),
+					Placeholder: "0 = unlimited",
+				})
+			</div>
+			<!-- Unit Amount -->
+			<div class="space-y-1">
+				<label class="text-xs font-medium text-muted-foreground">Unit Amount (cents)</label>
+				@input.Input(input.Props{
+					Type:        input.TypeNumber,
+					Name:        fmt.Sprintf("tiers[%d].unit_amount", index),
+					Value:       strconv.FormatInt(t.UnitAmount.Amount, 10),
+					Placeholder: "100",
+				})
+			</div>
+			<!-- Flat Amount -->
+			<div class="space-y-1">
+				<label class="text-xs font-medium text-muted-foreground">Flat Amount (cents)</label>
+				@input.Input(input.Props{
+					Type:        input.TypeNumber,
+					Name:        fmt.Sprintf("tiers[%d].flat_amount", index),
+					Value:       strconv.FormatInt(t.FlatAmount.Amount, 10),
+					Placeholder: "0",
+				})
+			</div>
+			<!-- Priority -->
+			<div class="space-y-1">
+				<label class="text-xs font-medium text-muted-foreground">Priority</label>
+				@input.Input(input.Props{
+					Type:  input.TypeNumber,
+					Name:  fmt.Sprintf("tiers[%d].priority", index),
+					Value: strconv.Itoa(t.Priority),
+				})
+			</div>
+		</div>
+	</div>
+}
+
+// ─── Metadata Row (pre-populated) ───────────────────────────────────────────
+
+templ metadataRow(index int, key string, value string) {
+	<div
+		class="relative flex items-start gap-3 p-3 rounded-lg border bg-muted/30"
+		data-oa-item="metadata"
+		data-oa-index={ strconv.Itoa(index) }
+	>
+		<div class="flex-1 space-y-1">
+			<label class="text-xs font-medium text-muted-foreground">Key</label>
+			@input.Input(input.Props{
+				Type:        input.TypeText,
+				Name:        fmt.Sprintf("metadata[%d].key", index),
+				Value:       key,
+				Placeholder: "key",
+			})
+		</div>
+		<div class="flex-1 space-y-1">
+			<label class="text-xs font-medium text-muted-foreground">Value</label>
+			@input.Input(input.Props{
+				Type:        input.TypeText,
+				Name:        fmt.Sprintf("metadata[%d].value", index),
+				Value:       value,
+				Placeholder: "value",
+			})
+		</div>
+		<button
+			type="button"
+			class="mt-5 text-muted-foreground hover:text-destructive"
+			onclick="removeMetadataRow(this)"
+			title="Remove"
+		>
+			@icons.Trash(icons.WithSize(14))
+		</button>
+	</div>
+}
+
+// ─── Helper Functions ───────────────────────────────────────────────────────
+
+script featureTypeChangeScript(index int) {
+	onFeatureTypeChange(event.target, index)
+}
+
+func planFieldValue(p *plan.Plan, field string) string {
+	if p == nil {
+		return ""
+	}
+	switch field {
+	case "name":
+		return p.Name
+	case "slug":
+		return p.Slug
+	case "description":
+		return p.Description
+	case "currency":
+		return p.Currency
+	case "status":
+		return string(p.Status)
+	case "trial_days":
+		if p.TrialDays == 0 {
+			return ""
+		}
+		return strconv.Itoa(p.TrialDays)
+	case "app_id":
+		return p.AppID
+	default:
+		return ""
+	}
+}
+
+func planAppIDValue(data PlanFormData) string {
+	if data.Plan != nil && data.Plan.AppID != "" {
+		return data.Plan.AppID
+	}
+	return data.AppID
+}
+
+func planPricingValue(p *plan.Plan) string {
+	if p == nil || p.Pricing == nil {
+		return ""
+	}
+	return strconv.FormatInt(p.Pricing.BaseAmount.Amount, 10)
+}
+
+func planBillingPeriod(p *plan.Plan) string {
+	if p == nil || p.Pricing == nil {
+		return ""
+	}
+	return string(p.Pricing.BillingPeriod)
+}
+
+func featureTypeDescription(ft plan.FeatureType) string {
+	switch ft {
+	case plan.FeatureBoolean:
+		return "On/off feature toggle"
+	case plan.FeatureSeat:
+		return "Per-seat/user based feature"
+	default:
+		return "Usage-tracked feature with metering"
+	}
+}
+
+func formatFeatureLimit(f plan.Feature) string {
+	if f.Type == plan.FeatureBoolean {
+		return ""
+	}
+	if f.Limit == 0 {
+		return ""
+	}
+	return strconv.FormatInt(f.Limit, 10)
+}
+
+func hasFeatureKey(features []plan.Feature, key string) bool {
+	for _, f := range features {
+		if f.Key == key {
+			return true
+		}
+	}
+	return false
+}
+
+// metadataEntry is a key-value pair for iteration in templates.
+type metadataEntry struct {
+	Key   string
+	Value string
+}
+
+func metadataEntries(m map[string]string) []metadataEntry {
+	entries := make([]metadataEntry, 0, len(m))
+	for k, v := range m {
+		entries = append(entries, metadataEntry{Key: k, Value: v})
+	}
+	return entries
+}
+
+// featuresJSONValue returns the JSON string of the plan's features for the hidden input.
+func featuresJSONValue(p *plan.Plan) string {
+	if p == nil || len(p.Features) == 0 {
+		return ""
+	}
+	type fj struct {
+		Key       string `json:"key"`
+		Name      string `json:"name"`
+		Type      string `json:"type"`
+		Limit     string `json:"limit"`
+		Period    string `json:"period"`
+		SoftLimit bool   `json:"soft_limit"`
+	}
+	items := make([]fj, len(p.Features))
+	for i, f := range p.Features {
+		items[i] = fj{
+			Key:       f.Key,
+			Name:      f.Name,
+			Type:      string(f.Type),
+			Limit:     strconv.FormatInt(f.Limit, 10),
+			Period:    string(f.Period),
+			SoftLimit: f.SoftLimit,
+		}
+	}
+	b, _ := json.Marshal(items)
+	return string(b)
+}
+
+// tiersJSONValue returns the JSON string of the plan's pricing tiers for the hidden input.
+func tiersJSONValue(p *plan.Plan) string {
+	if p == nil || p.Pricing == nil || len(p.Pricing.Tiers) == 0 {
+		return ""
+	}
+	type tj struct {
+		FeatureKey string `json:"feature_key"`
+		Type       string `json:"type"`
+		UpTo       string `json:"up_to"`
+		UnitAmount string `json:"unit_amount"`
+		FlatAmount string `json:"flat_amount"`
+		Priority   string `json:"priority"`
+	}
+	items := make([]tj, len(p.Pricing.Tiers))
+	for i, t := range p.Pricing.Tiers {
+		items[i] = tj{
+			FeatureKey: t.FeatureKey,
+			Type:       string(t.Type),
+			UpTo:       strconv.FormatInt(t.UpTo, 10),
+			UnitAmount: strconv.FormatInt(t.UnitAmount.Amount, 10),
+			FlatAmount: strconv.FormatInt(t.FlatAmount.Amount, 10),
+			Priority:   strconv.Itoa(t.Priority),
+		}
+	}
+	b, _ := json.Marshal(items)
+	return string(b)
+}
+
+// metadataJSONValue returns the JSON string of the plan's metadata for the hidden input.
+func metadataJSONValue(p *plan.Plan) string {
+	if p == nil || len(p.Metadata) == 0 {
+		return ""
+	}
+	type mj struct {
+		Key   string `json:"key"`
+		Value string `json:"value"`
+	}
+	items := make([]mj, 0, len(p.Metadata))
+	for k, v := range p.Metadata {
+		items = append(items, mj{Key: k, Value: v})
+	}
+	b, _ := json.Marshal(items)
+	return string(b)
+}

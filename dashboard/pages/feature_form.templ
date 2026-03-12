@@ -1,0 +1,242 @@
+package pages
+
+import (
+	"strconv"
+
+	"github.com/xraph/forgeui/components/button"
+	"github.com/xraph/forgeui/components/card"
+	"github.com/xraph/forgeui/components/input"
+	"github.com/xraph/forgeui/components/label"
+	"github.com/xraph/forgeui/components/separator"
+	"github.com/xraph/forgeui/icons"
+	"github.com/xraph/ledger/feature"
+)
+
+templ FeatureFormPage(data FeatureFormData) {
+	<div class="space-y-6">
+		<!-- Back Button -->
+		@button.Button(button.Props{
+			Variant: button.VariantGhost,
+			Size:    button.SizeSm,
+			Attributes: templ.Attributes{
+				"hx-get":      "../features",
+				"hx-target":   "#content",
+				"hx-swap":     "innerHTML",
+				"hx-push-url": "true",
+			},
+		}) {
+			@icons.ChevronLeft(icons.WithSize(16))
+			Back to Features
+		}
+
+		<!-- Form Header -->
+		<div>
+			if data.IsEdit {
+				<h1 class="text-3xl font-bold tracking-tight">Edit Feature</h1>
+				<p class="text-muted-foreground mt-1">Update the catalog feature configuration.</p>
+			} else {
+				<h1 class="text-3xl font-bold tracking-tight">Create Feature</h1>
+				<p class="text-muted-foreground mt-1">Add a new feature to the catalog. Features can be shared across plans.</p>
+			}
+		</div>
+
+		<!-- Error Display -->
+		if data.Error != "" {
+			@card.Card() {
+				@card.Content(card.ContentProps{Class: "p-4"}) {
+					<div class="flex items-center gap-3 text-destructive">
+						@icons.AlertCircle(icons.WithSize(18))
+						<span class="text-sm font-medium">{ data.Error }</span>
+					</div>
+				}
+			}
+		}
+
+		<!-- Feature Form -->
+		<form hx-post={ featureFormAction(data) } hx-target="#content" hx-swap="innerHTML">
+			@card.Card() {
+				@card.Header() {
+					@card.Title() {
+						Feature Details
+					}
+				}
+				@card.Content() {
+					<div class="space-y-4">
+						<div class="grid grid-cols-1 sm:grid-cols-2 gap-4">
+							<!-- Key -->
+							<div class="space-y-2">
+								@label.Label() {
+									Feature Key
+									<span class="text-destructive">*</span>
+								}
+								@input.Input(input.Props{
+									Type:        input.TypeText,
+									Name:        "key",
+									Placeholder: "e.g. api_calls",
+									Value:       featureFieldValue(data.Feature, "key"),
+									Attributes:  templ.Attributes{"required": "true"},
+								})
+								<p class="text-xs text-muted-foreground">Unique identifier used in code. Must be unique within scope.</p>
+							</div>
+
+							<!-- Name -->
+							<div class="space-y-2">
+								@label.Label() {
+									Name
+									<span class="text-destructive">*</span>
+								}
+								@input.Input(input.Props{
+									Type:        input.TypeText,
+									Name:        "name",
+									Placeholder: "e.g. API Calls",
+									Value:       featureFieldValue(data.Feature, "name"),
+									Attributes:  templ.Attributes{"required": "true"},
+								})
+							</div>
+						</div>
+
+						<!-- Description -->
+						<div class="space-y-2">
+							@label.Label() { Description }
+							<textarea
+								name="description"
+								placeholder="Describe what this feature provides..."
+								class="flex min-h-[80px] w-full rounded-sm border border-input bg-background px-3 py-2 text-sm placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+							>{ featureFieldValue(data.Feature, "description") }</textarea>
+						</div>
+
+						<div class="grid grid-cols-1 sm:grid-cols-2 gap-4">
+							<!-- Type -->
+							<div class="space-y-2">
+								@label.Label() { Feature Type }
+								<select name="type" class="flex h-10 w-full rounded-sm border border-input bg-background px-3 py-2 text-sm">
+									<option value="metered" selected?={ featureFieldValue(data.Feature, "type") == "metered" || featureFieldValue(data.Feature, "type") == "" }>Metered</option>
+									<option value="boolean" selected?={ featureFieldValue(data.Feature, "type") == "boolean" }>Boolean</option>
+									<option value="seat" selected?={ featureFieldValue(data.Feature, "type") == "seat" }>Seat</option>
+								</select>
+								<p class="text-xs text-muted-foreground">Metered: usage-tracked. Boolean: on/off. Seat: per-user.</p>
+							</div>
+
+							<!-- Status -->
+							<div class="space-y-2">
+								@label.Label() { Status }
+								<select name="status" class="flex h-10 w-full rounded-sm border border-input bg-background px-3 py-2 text-sm">
+									<option value="draft" selected?={ featureFieldValue(data.Feature, "status") == "draft" || featureFieldValue(data.Feature, "status") == "" }>Draft</option>
+									<option value="active" selected?={ featureFieldValue(data.Feature, "status") == "active" }>Active</option>
+									<option value="archived" selected?={ featureFieldValue(data.Feature, "status") == "archived" }>Archived</option>
+								</select>
+							</div>
+						</div>
+
+						<div class="grid grid-cols-1 sm:grid-cols-2 gap-4">
+							<!-- Default Limit -->
+							<div class="space-y-2">
+								@label.Label() { Default Limit }
+								@input.Input(input.Props{
+									Type:        input.TypeNumber,
+									Name:        "default_limit",
+									Placeholder: "e.g. 1000 (-1 for unlimited)",
+									Value:       featureFieldValue(data.Feature, "default_limit"),
+								})
+								<p class="text-xs text-muted-foreground">Suggested limit when added to a plan. Use -1 for unlimited.</p>
+							</div>
+
+							<!-- Period -->
+							<div class="space-y-2">
+								@label.Label() { Reset Period }
+								<select name="period" class="flex h-10 w-full rounded-sm border border-input bg-background px-3 py-2 text-sm">
+									<option value="monthly" selected?={ featureFieldValue(data.Feature, "period") == "monthly" || featureFieldValue(data.Feature, "period") == "" }>Monthly</option>
+									<option value="yearly" selected?={ featureFieldValue(data.Feature, "period") == "yearly" }>Yearly</option>
+									<option value="none" selected?={ featureFieldValue(data.Feature, "period") == "none" }>None</option>
+								</select>
+							</div>
+						</div>
+
+						<!-- Soft Limit -->
+						<div class="flex items-center gap-3">
+							<input
+								type="checkbox"
+								name="soft_limit"
+								id="soft_limit"
+								class="h-4 w-4 rounded border-gray-300"
+								checked?={ data.Feature != nil && data.Feature.SoftLimit }
+							/>
+							@label.Label() {
+								<span>Allow overage (soft limit)</span>
+							}
+							<p class="text-xs text-muted-foreground">When enabled, usage can exceed the limit but is tracked.</p>
+						</div>
+
+						<!-- App ID (optional) -->
+						<div class="space-y-2">
+							@label.Label() { App ID (optional) }
+							@input.Input(input.Props{
+								Type:        input.TypeText,
+								Name:        "app_id",
+								Placeholder: "Leave empty for global feature",
+								Value:       featureFieldValue(data.Feature, "app_id"),
+							})
+							<p class="text-xs text-muted-foreground">Scope feature to a specific app, or leave empty for global availability.</p>
+						</div>
+					</div>
+				}
+			}
+
+			@separator.Separator()
+
+			<!-- Submit -->
+			<div class="flex justify-end gap-3">
+				@button.Button(button.Props{
+					Variant: button.VariantOutline,
+					Attributes: templ.Attributes{
+						"hx-get":      "../features",
+						"hx-target":   "#content",
+						"hx-swap":     "innerHTML",
+						"hx-push-url": "true",
+					},
+				}) {
+					Cancel
+				}
+				@button.Button(button.Props{
+					Type:    button.TypeSubmit,
+					Variant: button.VariantDefault,
+				}) {
+					if data.IsEdit {
+						Save Changes
+					} else {
+						Create Feature
+					}
+				}
+			</div>
+		</form>
+	</div>
+}
+
+func featureFieldValue(f *feature.Feature, field string) string {
+	if f == nil {
+		return ""
+	}
+	switch field {
+	case "key":
+		return f.Key
+	case "name":
+		return f.Name
+	case "description":
+		return f.Description
+	case "type":
+		return string(f.Type)
+	case "status":
+		return string(f.Status)
+	case "period":
+		return string(f.Period)
+	case "default_limit":
+		if f.DefaultLimit != 0 {
+			return strconv.FormatInt(f.DefaultLimit, 10)
+		}
+		return ""
+	case "app_id":
+		return f.AppID
+	default:
+		return ""
+	}
+}

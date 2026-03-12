@@ -33,6 +33,10 @@ type Config struct {
 	// When empty and WithGroveDatabase was called, the default (unnamed) DB is used.
 	GroveDatabase string `json:"grove_database" mapstructure:"grove_database" yaml:"grove_database"`
 
+	// AppID scopes all operations to a specific application identifier.
+	// Used by the dashboard contributor to filter data by app.
+	AppID string `json:"app_id" mapstructure:"app_id" yaml:"app_id"`
+
 	// RequireConfig requires config to be present in YAML files.
 	// If true and no config is found, Register returns an error.
 	RequireConfig bool `json:"-" yaml:"-"`

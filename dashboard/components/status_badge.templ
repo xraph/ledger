@@ -1,0 +1,163 @@
+package components
+
+import (
+	"github.com/xraph/forgeui/components/badge"
+	"github.com/xraph/ledger/coupon"
+	"github.com/xraph/ledger/invoice"
+	"github.com/xraph/ledger/plan"
+	"github.com/xraph/ledger/subscription"
+)
+
+templ PlanStatusBadge(status plan.Status) {
+	switch status {
+		case plan.StatusActive:
+			@badge.Badge(badge.Props{Variant: badge.VariantDefault}) {
+				Active
+			}
+		case plan.StatusDraft:
+			@badge.Badge(badge.Props{Variant: badge.VariantSecondary}) {
+				Draft
+			}
+		case plan.StatusArchived:
+			@badge.Badge(badge.Props{Variant: badge.VariantOutline}) {
+				Archived
+			}
+		default:
+			@badge.Badge(badge.Props{Variant: badge.VariantSecondary}) {
+				{ string(status) }
+			}
+	}
+}
+
+templ SubscriptionStatusBadge(status subscription.Status) {
+	switch status {
+		case subscription.StatusActive:
+			@badge.Badge(badge.Props{Variant: badge.VariantDefault}) {
+				Active
+			}
+		case subscription.StatusTrialing:
+			@badge.Badge(badge.Props{Variant: badge.VariantSecondary}) {
+				Trialing
+			}
+		case subscription.StatusPastDue:
+			@badge.Badge(badge.Props{Variant: badge.VariantDestructive}) {
+				Past Due
+			}
+		case subscription.StatusCanceled:
+			@badge.Badge(badge.Props{Variant: badge.VariantOutline}) {
+				Canceled
+			}
+		case subscription.StatusExpired:
+			@badge.Badge(badge.Props{Variant: badge.VariantDestructive}) {
+				Expired
+			}
+		case subscription.StatusPaused:
+			@badge.Badge(badge.Props{Variant: badge.VariantSecondary}) {
+				Paused
+			}
+		default:
+			@badge.Badge(badge.Props{Variant: badge.VariantSecondary}) {
+				{ string(status) }
+			}
+	}
+}
+
+templ InvoiceStatusBadge(status invoice.Status) {
+	switch status {
+		case invoice.StatusPaid:
+			@badge.Badge(badge.Props{Variant: badge.VariantDefault}) {
+				Paid
+			}
+		case invoice.StatusPending:
+			@badge.Badge(badge.Props{Variant: badge.VariantOutline}) {
+				Pending
+			}
+		case invoice.StatusDraft:
+			@badge.Badge(badge.Props{Variant: badge.VariantSecondary}) {
+				Draft
+			}
+		case invoice.StatusPastDue:
+			@badge.Badge(badge.Props{Variant: badge.VariantDestructive}) {
+				Past Due
+			}
+		case invoice.StatusVoided:
+			@badge.Badge(badge.Props{Variant: badge.VariantDestructive}) {
+				Voided
+			}
+		default:
+			@badge.Badge(badge.Props{Variant: badge.VariantSecondary}) {
+				{ string(status) }
+			}
+	}
+}
+
+templ FeatureTypeBadge(ft plan.FeatureType) {
+	switch ft {
+		case plan.FeatureMetered:
+			@badge.Badge(badge.Props{Variant: badge.VariantDefault}) {
+				Metered
+			}
+		case plan.FeatureBoolean:
+			@badge.Badge(badge.Props{Variant: badge.VariantSecondary}) {
+				Boolean
+			}
+		case plan.FeatureSeat:
+			@badge.Badge(badge.Props{Variant: badge.VariantOutline}) {
+				Seat
+			}
+		default:
+			@badge.Badge(badge.Props{Variant: badge.VariantSecondary}) {
+				{ string(ft) }
+			}
+	}
+}
+
+templ CouponTypeBadge(ct coupon.CouponType) {
+	switch ct {
+		case coupon.CouponTypePercentage:
+			@badge.Badge(badge.Props{Variant: badge.VariantSecondary}) {
+				Percentage
+			}
+		case coupon.CouponTypeAmount:
+			@badge.Badge(badge.Props{Variant: badge.VariantDefault}) {
+				Fixed Amount
+			}
+		default:
+			@badge.Badge(badge.Props{Variant: badge.VariantSecondary}) {
+				{ string(ct) }
+			}
+	}
+}
+
+templ LineItemTypeBadge(lt invoice.LineItemType) {
+	switch lt {
+		case invoice.LineItemBase:
+			@badge.Badge(badge.Props{Variant: badge.VariantDefault}) {
+				Base
+			}
+		case invoice.LineItemUsage:
+			@badge.Badge(badge.Props{Variant: badge.VariantSecondary}) {
+				Usage
+			}
+		case invoice.LineItemOverage:
+			@badge.Badge(badge.Props{Variant: badge.VariantDestructive}) {
+				Overage
+			}
+		case invoice.LineItemSeat:
+			@badge.Badge(badge.Props{Variant: badge.VariantOutline}) {
+				Seat
+			}
+		case invoice.LineItemDiscount:
+			@badge.Badge(badge.Props{Variant: badge.VariantSecondary}) {
+				Discount
+			}
+		case invoice.LineItemTax:
+			@badge.Badge(badge.Props{Variant: badge.VariantOutline}) {
+				Tax
+			}
+		default:
+			@badge.Badge(badge.Props{Variant: badge.VariantSecondary}) {
+				{ string(lt) }
+			}
+	}
+}

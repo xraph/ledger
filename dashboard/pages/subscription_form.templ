@@ -1,0 +1,123 @@
+package pages
+
+import (
+	"github.com/xraph/forgeui/components/button"
+	"github.com/xraph/forgeui/components/card"
+	"github.com/xraph/forgeui/components/input"
+	"github.com/xraph/forgeui/components/label"
+	"github.com/xraph/forgeui/components/separator"
+	"github.com/xraph/forgeui/icons"
+)
+
+templ SubscriptionFormPage(data SubscriptionFormData) {
+	<div class="space-y-6">
+		<!-- Back Button -->
+		@button.Button(button.Props{
+			Variant: button.VariantGhost,
+			Size:    button.SizeSm,
+			Attributes: templ.Attributes{
+				"hx-get":      "../subscriptions",
+				"hx-target":   "#content",
+				"hx-swap":     "innerHTML",
+				"hx-push-url": "true",
+			},
+		}) {
+			@icons.ChevronLeft(icons.WithSize(16))
+			Back to Subscriptions
+		}
+
+		<!-- Form Header -->
+		<div>
+			<h1 class="text-3xl font-bold tracking-tight">Create Subscription</h1>
+			<p class="text-muted-foreground mt-1">Set up a new subscription for a tenant.</p>
+		</div>
+
+		<!-- Error Display -->
+		if data.Error != "" {
+			@card.Card() {
+				@card.Content(card.ContentProps{Class: "p-4"}) {
+					<div class="flex items-center gap-3 text-destructive">
+						@icons.AlertCircle(icons.WithSize(18))
+						<span class="text-sm font-medium">{ data.Error }</span>
+					</div>
+				}
+			}
+		}
+
+		<!-- Subscription Form -->
+		<form hx-post="../subscriptions/new" hx-target="#content" hx-swap="innerHTML">
+			@card.Card() {
+				@card.Header() {
+					@card.Title() {
+						Subscription Details
+					}
+				}
+				@card.Content() {
+					<div class="space-y-4">
+						<!-- Tenant ID -->
+						<div class="space-y-2">
+							@label.Label() {
+								Tenant ID
+								<span class="text-destructive">*</span>
+							}
+							@input.Input(input.Props{
+								Type:        input.TypeText,
+								Name:        "tenant_id",
+								Placeholder: "e.g. tenant_abc123",
+								Attributes:  templ.Attributes{"required": "true"},
+							})
+							<p class="text-xs text-muted-foreground">The unique identifier for the tenant being subscribed.</p>
+						</div>
+
+						<!-- Plan Selection -->
+						<div class="space-y-2">
+							@label.Label() {
+								Plan
+								<span class="text-destructive">*</span>
+							}
+							<select name="plan_id" class="flex h-10 w-full rounded-sm border border-input bg-background px-3 py-2 text-sm" required>
+								<option value="">Select a plan...</option>
+								for _, p := range data.Plans {
+									<option value={ p.ID.String() }>{ p.Name } ({ p.Slug })</option>
+								}
+							</select>
+							<p class="text-xs text-muted-foreground">Only active plans are shown.</p>
+						</div>
+
+						<!-- Status -->
+						<div class="space-y-2">
+							@label.Label() { Initial Status }
+							<select name="status" class="flex h-10 w-full rounded-sm border border-input bg-background px-3 py-2 text-sm">
+								<option value="active" selected>Active</option>
+								<option value="trialing">Trialing</option>
+							</select>
+						</div>
+					</div>
+				}
+			}
+
+			@separator.Separator()
+
+			<!-- Submit -->
+			<div class="flex justify-end gap-3">
+				@button.Button(button.Props{
+					Variant: button.VariantOutline,
+					Attributes: templ.Attributes{
+						"hx-get":      "../subscriptions",
+						"hx-target":   "#content",
+						"hx-swap":     "innerHTML",
+						"hx-push-url": "true",
+					},
+				}) {
+					Cancel
+				}
+				@button.Button(button.Props{
+					Type:    button.TypeSubmit,
+					Variant: button.VariantDefault,
+				}) {
+					Create Subscription
+				}
+			</div>
+		</form>
+	</div>
+}

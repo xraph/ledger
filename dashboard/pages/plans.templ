@@ -1,0 +1,50 @@
+package pages
+
+import (
+	"strconv"
+
+	"github.com/xraph/forgeui/components/badge"
+	"github.com/xraph/forgeui/components/button"
+	"github.com/xraph/forgeui/components/card"
+	"github.com/xraph/forgeui/icons"
+	"github.com/xraph/ledger/dashboard/components"
+	"github.com/xraph/ledger/plan"
+)
+
+templ PlansPage(plans []*plan.Plan) {
+	<div class="space-y-6">
+		<!-- Header Row -->
+		<div class="flex items-center justify-between">
+			<div class="flex items-center gap-3">
+				<h1 class="text-3xl font-bold tracking-tight">Plans</h1>
+				@badge.Badge(badge.Props{Variant: badge.VariantSecondary}) {
+					{ strconv.Itoa(len(plans)) }
+				}
+			</div>
+			@button.Button(button.Props{
+				Variant: button.VariantDefault,
+				Size:    button.SizeSm,
+				Attributes: templ.Attributes{
+					"hx-get":      "./plans/new",
+					"hx-target":   "#content",
+					"hx-push-url": "true",
+					"hx-swap":     "innerHTML",
+				},
+			}) {
+				@icons.Plus(icons.WithSize(16))
+				Create Plan
+			}
+		</div>
+
+		<!-- Plans Table -->
+		@card.Card() {
+			@card.Content() {
+				if len(plans) == 0 {
+					@components.EmptyState("layers", "No plans yet", "Create your first billing plan to get started.")
+				} else {
+					@components.PlanTable(plans, "./plans")
+				}
+			}
+		}
+	</div>
+}

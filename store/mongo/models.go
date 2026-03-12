@@ -8,6 +8,7 @@ import (
 
 	"github.com/xraph/ledger/coupon"
 	"github.com/xraph/ledger/entitlement"
+	"github.com/xraph/ledger/feature"
 	"github.com/xraph/ledger/id"
 	"github.com/xraph/ledger/invoice"
 	"github.com/xraph/ledger/meter"
@@ -30,10 +31,12 @@ type planModel struct {
 	TrialDays   int               `grove:"trial_days"  bson:"trial_days"`
 	Features    []featureModel    `grove:"features"    bson:"features"`
 	Pricing     *pricingModel     `grove:"pricing"     bson:"pricing,omitempty"`
-	AppID       string            `grove:"app_id"      bson:"app_id"`
-	Metadata    map[string]string `grove:"metadata"    bson:"metadata,omitempty"`
-	CreatedAt   time.Time         `grove:"created_at"  bson:"created_at"`
-	UpdatedAt   time.Time         `grove:"updated_at"  bson:"updated_at"`
+	AppID        string            `grove:"app_id"          bson:"app_id"`
+	ProviderID   string            `grove:"provider_id"     bson:"provider_id"`
+	ProviderName string            `grove:"provider_name"   bson:"provider_name"`
+	Metadata     map[string]string `grove:"metadata"        bson:"metadata,omitempty"`
+	CreatedAt    time.Time         `grove:"created_at"      bson:"created_at"`
+	UpdatedAt    time.Time         `grove:"updated_at"      bson:"updated_at"`
 }
 
 type featureModel struct {
@@ -125,10 +128,12 @@ func toPlanModel(p *plan.Plan) *planModel {
 		TrialDays:   p.TrialDays,
 		Features:    features,
 		Pricing:     pricing,
-		AppID:       p.AppID,
-		Metadata:    p.Metadata,
-		CreatedAt:   p.CreatedAt,
-		UpdatedAt:   p.UpdatedAt,
+		AppID:        p.AppID,
+		ProviderID:   p.ProviderID,
+		ProviderName: p.ProviderName,
+		Metadata:     p.Metadata,
+		CreatedAt:    p.CreatedAt,
+		UpdatedAt:    p.UpdatedAt,
 	}
 }
 
@@ -213,8 +218,10 @@ func fromPlanModel(m *planModel) (*plan.Plan, error) {
 		TrialDays:   m.TrialDays,
 		Features:    features,
 		Pricing:     pricing,
-		AppID:       m.AppID,
-		Metadata:    m.Metadata,
+		AppID:        m.AppID,
+		ProviderID:   m.ProviderID,
+		ProviderName: m.ProviderName,
+		Metadata:     m.Metadata,
 	}, nil
 }
 
@@ -422,6 +429,7 @@ type invoiceModel struct {
 	VoidReason          string            `grove:"void_reason"          bson:"void_reason"`
 	PaymentRef          string            `grove:"payment_ref"          bson:"payment_ref"`
 	ProviderID          string            `grove:"provider_id"          bson:"provider_id"`
+	ProviderName        string            `grove:"provider_name"        bson:"provider_name"`
 	AppID               string            `grove:"app_id"               bson:"app_id"`
 	Metadata            map[string]string `grove:"metadata"             bson:"metadata,omitempty"`
 	CreatedAt           time.Time         `grove:"created_at"           bson:"created_at"`
@@ -483,6 +491,7 @@ func toInvoiceModel(inv *invoice.Invoice) *invoiceModel {
 		VoidReason:          inv.VoidReason,
 		PaymentRef:          inv.PaymentRef,
 		ProviderID:          inv.ProviderID,
+		ProviderName:        inv.ProviderName,
 		AppID:               inv.AppID,
 		Metadata:            inv.Metadata,
 		CreatedAt:           inv.CreatedAt,
@@ -546,6 +555,7 @@ func fromInvoiceModel(m *invoiceModel) (*invoice.Invoice, error) {
 		VoidReason:     m.VoidReason,
 		PaymentRef:     m.PaymentRef,
 		ProviderID:     m.ProviderID,
+		ProviderName:   m.ProviderName,
 		AppID:          m.AppID,
 		Metadata:       m.Metadata,
 	}, nil
@@ -619,5 +629,74 @@ func fromCouponModel(m *couponModel) (*coupon.Coupon, error) {
 		ValidUntil:     m.ValidUntil,
 		AppID:          m.AppID,
 		Metadata:       m.Metadata,
+	}, nil
+}
+
+// ==================== Feature Catalog models ====================
+
+type featureCatalogModel struct {
+	grove.BaseModel `grove:"table:ledger_features"`
+
+	ID           string            `grove:"id,pk"         bson:"_id"`
+	Key          string            `grove:"key"           bson:"key"`
+	Name         string            `grove:"name"          bson:"name"`
+	Description  string            `grove:"description"   bson:"description"`
+	Type         string            `grove:"type"          bson:"type"`
+	DefaultLimit int64             `grove:"default_limit" bson:"default_limit"`
+	Period       string            `grove:"period"        bson:"period"`
+	SoftLimit    bool              `grove:"soft_limit"    bson:"soft_limit"`
+	Status       string            `grove:"status"        bson:"status"`
+	AppID        string            `grove:"app_id"        bson:"app_id"`
+	ProviderID   string            `grove:"provider_id"   bson:"provider_id"`
+	ProviderName string            `grove:"provider_name" bson:"provider_name"`
+	Metadata     map[string]string `grove:"metadata"      bson:"metadata,omitempty"`
+	CreatedAt    time.Time         `grove:"created_at"    bson:"created_at"`
+	UpdatedAt    time.Time         `grove:"updated_at"    bson:"updated_at"`
+}
+
+func toFeatureCatalogModel(f *feature.Feature) *featureCatalogModel {
+	return &featureCatalogModel{
+		ID:           f.ID.String(),
+		Key:          f.Key,
+		Name:         f.Name,
+		Description:  f.Description,
+		Type:         string(f.Type),
+		DefaultLimit: f.DefaultLimit,
+		Period:       string(f.Period),
+		SoftLimit:    f.SoftLimit,
+		Status:       string(f.Status),
+		AppID:        f.AppID,
+		ProviderID:   f.ProviderID,
+		ProviderName: f.ProviderName,
+		Metadata:     f.Metadata,
+		CreatedAt:    f.CreatedAt,
+		UpdatedAt:    f.UpdatedAt,
+	}
+}
+
+func fromFeatureCatalogModel(m *featureCatalogModel) (*feature.Feature, error) {
+	featID, err := id.ParseFeatureID(m.ID)
+	if err != nil {
+		return nil, fmt.Errorf("failed to parse feature catalog ID %q: %w", m.ID, err)
+	}
+
+	return &feature.Feature{
+		Entity: types.Entity{
+			CreatedAt: m.CreatedAt,
+			UpdatedAt: m.UpdatedAt,
+		},
+		ID:           featID,
+		Key:          m.Key,
+		Name:         m.Name,
+		Description:  m.Description,
+		Type:         feature.FeatureType(m.Type),
+		DefaultLimit: m.DefaultLimit,
+		Period:       feature.Period(m.Period),
+		SoftLimit:    m.SoftLimit,
+		Status:       feature.Status(m.Status),
+		AppID:        m.AppID,
+		ProviderID:   m.ProviderID,
+		ProviderName: m.ProviderName,
+		Metadata:     m.Metadata,
 	}, nil
 }

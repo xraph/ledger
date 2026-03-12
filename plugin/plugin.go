@@ -5,6 +5,8 @@ package plugin
 import (
 	"context"
 	"time"
+
+	"github.com/xraph/ledger/provider"
 )
 
 // Plugin is the base interface that all plugins must implement.
@@ -48,6 +50,34 @@ type OnPlanUpdated interface {
 type OnPlanArchived interface {
 	Plugin
 	OnPlanArchived(ctx context.Context, planID string) error
+}
+
+// ──────────────────────────────────────────────────
+// Feature catalog lifecycle hooks
+// ──────────────────────────────────────────────────
+
+// OnFeatureCreated is called when a new catalog feature is created.
+type OnFeatureCreated interface {
+	Plugin
+	OnFeatureCreated(ctx context.Context, feature interface{}) error
+}
+
+// OnFeatureUpdated is called when a catalog feature is updated.
+type OnFeatureUpdated interface {
+	Plugin
+	OnFeatureUpdated(ctx context.Context, oldFeature, newFeature interface{}) error
+}
+
+// OnFeatureDeleted is called when a catalog feature is deleted.
+type OnFeatureDeleted interface {
+	Plugin
+	OnFeatureDeleted(ctx context.Context, featureID string) error
+}
+
+// OnFeatureArchived is called when a catalog feature is archived.
+type OnFeatureArchived interface {
+	Plugin
+	OnFeatureArchived(ctx context.Context, featureID string) error
 }
 
 // ──────────────────────────────────────────────────
@@ -157,7 +187,7 @@ type OnInvoiceVoided interface {
 // PaymentProviderPlugin provides a payment provider implementation.
 type PaymentProviderPlugin interface {
 	Plugin
-	Provider() interface{} // Returns provider.Provider
+	Provider() provider.Provider
 }
 
 // OnProviderSync is called when syncing with a payment provider.

@@ -1,0 +1,219 @@
+package pages
+
+import (
+	"fmt"
+	"strconv"
+
+	"github.com/xraph/forgeui/components/button"
+	"github.com/xraph/forgeui/components/card"
+	"github.com/xraph/forgeui/components/input"
+	"github.com/xraph/forgeui/components/label"
+	"github.com/xraph/forgeui/components/separator"
+	"github.com/xraph/forgeui/icons"
+	"github.com/xraph/ledger/coupon"
+)
+
+templ CouponFormPage(data CouponFormData) {
+	<div class="space-y-6">
+		<!-- Back Button -->
+		@button.Button(button.Props{
+			Variant: button.VariantGhost,
+			Size:    button.SizeSm,
+			Attributes: templ.Attributes{
+				"hx-get":      "../coupons",
+				"hx-target":   "#content",
+				"hx-swap":     "innerHTML",
+				"hx-push-url": "true",
+			},
+		}) {
+			@icons.ChevronLeft(icons.WithSize(16))
+			Back to Coupons
+		}
+
+		<!-- Form Header -->
+		<div>
+			if data.IsEdit {
+				<h1 class="text-3xl font-bold tracking-tight">Edit Coupon</h1>
+				<p class="text-muted-foreground mt-1">Update the coupon configuration.</p>
+			} else {
+				<h1 class="text-3xl font-bold tracking-tight">Create Coupon</h1>
+				<p class="text-muted-foreground mt-1">Define a new coupon for discounts.</p>
+			}
+		</div>
+
+		<!-- Error Display -->
+		if data.Error != "" {
+			@card.Card() {
+				@card.Content(card.ContentProps{Class: "p-4"}) {
+					<div class="flex items-center gap-3 text-destructive">
+						@icons.AlertCircle(icons.WithSize(18))
+						<span class="text-sm font-medium">{ data.Error }</span>
+					</div>
+				}
+			}
+		}
+
+		<!-- Coupon Form -->
+		<form hx-post={ couponFormAction(data) } hx-target="#content" hx-swap="innerHTML">
+			@card.Card() {
+				@card.Header() {
+					@card.Title() {
+						Coupon Details
+					}
+				}
+				@card.Content() {
+					<div class="space-y-4">
+						<div class="grid grid-cols-1 sm:grid-cols-2 gap-4">
+							<!-- Code -->
+							<div class="space-y-2">
+								@label.Label() {
+									Coupon Code
+									<span class="text-destructive">*</span>
+								}
+								@input.Input(input.Props{
+									Type:        input.TypeText,
+									Name:        "code",
+									Placeholder: "e.g. SAVE20",
+									Value:       couponFieldValue(data.Coupon, "code"),
+									Attributes:  templ.Attributes{"required": "true"},
+								})
+								<p class="text-xs text-muted-foreground">Unique code customers will use to apply the coupon.</p>
+							</div>
+
+							<!-- Name -->
+							<div class="space-y-2">
+								@label.Label() {
+									Name
+									<span class="text-destructive">*</span>
+								}
+								@input.Input(input.Props{
+									Type:        input.TypeText,
+									Name:        "name",
+									Placeholder: "e.g. 20% Off Holiday Sale",
+									Value:       couponFieldValue(data.Coupon, "name"),
+									Attributes:  templ.Attributes{"required": "true"},
+								})
+							</div>
+						</div>
+
+						<div class="grid grid-cols-1 sm:grid-cols-2 gap-4">
+							<!-- Type -->
+							<div class="space-y-2">
+								@label.Label() { Discount Type }
+								<select name="type" class="flex h-10 w-full rounded-sm border border-input bg-background px-3 py-2 text-sm">
+									<option value="percentage" selected?={ couponFieldValue(data.Coupon, "type") == "percentage" || couponFieldValue(data.Coupon, "type") == "" }>Percentage</option>
+									<option value="amount" selected?={ couponFieldValue(data.Coupon, "type") == "amount" }>Fixed Amount</option>
+								</select>
+							</div>
+
+							<!-- Currency -->
+							<div class="space-y-2">
+								@label.Label() { Currency }
+								<select name="currency" class="flex h-10 w-full rounded-sm border border-input bg-background px-3 py-2 text-sm">
+									<option value="usd" selected?={ couponFieldValue(data.Coupon, "currency") == "usd" || couponFieldValue(data.Coupon, "currency") == "" }>USD</option>
+									<option value="eur" selected?={ couponFieldValue(data.Coupon, "currency") == "eur" }>EUR</option>
+									<option value="gbp" selected?={ couponFieldValue(data.Coupon, "currency") == "gbp" }>GBP</option>
+								</select>
+							</div>
+						</div>
+
+						<div class="grid grid-cols-1 sm:grid-cols-2 gap-4">
+							<!-- Percentage -->
+							<div class="space-y-2">
+								@label.Label() { Percentage (%) }
+								@input.Input(input.Props{
+									Type:        input.TypeNumber,
+									Name:        "percentage",
+									Placeholder: "e.g. 20",
+									Value:       couponFieldValue(data.Coupon, "percentage"),
+								})
+								<p class="text-xs text-muted-foreground">Only used when type is "Percentage".</p>
+							</div>
+
+							<!-- Amount -->
+							<div class="space-y-2">
+								@label.Label() { Amount (in cents) }
+								@input.Input(input.Props{
+									Type:        input.TypeNumber,
+									Name:        "amount",
+									Placeholder: "e.g. 1000",
+									Value:       couponFieldValue(data.Coupon, "amount"),
+								})
+								<p class="text-xs text-muted-foreground">Only used when type is "Fixed Amount". Enter in smallest currency unit.</p>
+							</div>
+						</div>
+
+						<!-- Max Redemptions -->
+						<div class="space-y-2">
+							@label.Label() { Max Redemptions }
+							@input.Input(input.Props{
+								Type:        input.TypeNumber,
+								Name:        "max_redemptions",
+								Placeholder: "0 for unlimited",
+								Value:       couponFieldValue(data.Coupon, "max_redemptions"),
+							})
+							<p class="text-xs text-muted-foreground">Set to 0 for unlimited redemptions.</p>
+						</div>
+					</div>
+				}
+			}
+
+			@separator.Separator()
+
+			<!-- Submit -->
+			<div class="flex justify-end gap-3">
+				@button.Button(button.Props{
+					Variant: button.VariantOutline,
+					Attributes: templ.Attributes{
+						"hx-get":      "../coupons",
+						"hx-target":   "#content",
+						"hx-swap":     "innerHTML",
+						"hx-push-url": "true",
+					},
+				}) {
+					Cancel
+				}
+				@button.Button(button.Props{
+					Type:    button.TypeSubmit,
+					Variant: button.VariantDefault,
+				}) {
+					if data.IsEdit {
+						Save Changes
+					} else {
+						Create Coupon
+					}
+				}
+			</div>
+		</form>
+	</div>
+}
+
+func couponFieldValue(c *coupon.Coupon, field string) string {
+	if c == nil {
+		return ""
+	}
+	switch field {
+	case "code":
+		return c.Code
+	case "name":
+		return c.Name
+	case "type":
+		return string(c.Type)
+	case "currency":
+		return c.Currency
+	case "percentage":
+		if c.Percentage > 0 {
+			return fmt.Sprintf("%d", c.Percentage)
+		}
+		return ""
+	case "amount":
+		if c.Amount.Amount > 0 {
+			return strconv.FormatInt(c.Amount.Amount, 10)
+		}
+		return ""
+	case "max_redemptions":
+		return strconv.Itoa(c.MaxRedemptions)
+	default:
+		return ""
+	}
+}

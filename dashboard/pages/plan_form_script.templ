@@ -1,0 +1,406 @@
+package pages
+
+// planFormScript renders inline JavaScript for the plan form's dynamic features,
+// tiers, and metadata management. It follows the same object-array pattern used
+// in the authsome settings editor.
+templ planFormScript() {
+	<script>
+	(function() {
+		// ─── CSS class constants ────────────────────────────────────────────
+		var INPUT_CLASS = 'flex h-9 w-full rounded-md border border-input bg-transparent px-3 py-1 text-sm ring-offset-background placeholder:text-muted-foreground focus-visible:border-ring focus-visible:ring-ring/50 focus-visible:ring-[3px] disabled:cursor-not-allowed disabled:opacity-50';
+		var SELECT_CLASS = 'flex h-9 w-full rounded-md border border-input bg-background px-3 py-1 text-sm ring-offset-background focus-visible:border-ring focus-visible:ring-ring/50 focus-visible:ring-[3px]';
+		var TRASH_SVG = '<svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 6h18"/><path d="M19 6v14c0 1-1 2-2 2H7c-1 0-2-1-2-2V6"/><path d="M8 6V4c0-1 1-2 2-2h4c1 0 2 1 2 2v2"/></svg>';
+
+		function escapeHtml(str) {
+			if (!str) return '';
+			return str.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+		}
+
+		// ─── Feature Management ─────────────────────────────────────────────
+
+		window.addFeature = function() {
+			var container = document.getElementById('features-container');
+			if (!container) return;
+			var items = container.querySelectorAll('[data-oa-item="features"]');
+			var idx = items.length;
+
+			var html = '<div class="relative rounded-lg border bg-muted/30 p-4 space-y-3" data-oa-item="features" data-oa-index="' + idx + '">';
+			html += '<button type="button" class="absolute top-2 right-2 text-muted-foreground hover:text-destructive" onclick="removeFeature(this)" title="Remove feature">' + TRASH_SVG + '</button>';
+			html += '<div class="grid grid-cols-1 md:grid-cols-2 gap-3 pr-6">';
+
+			// Key
+			html += '<div class="space-y-1">';
+			html += '<label class="text-xs font-medium text-muted-foreground">Key <span class="text-destructive">*</span></label>';
+			html += '<input type="text" name="features[' + idx + '].key" class="' + INPUT_CLASS + '" placeholder="api_calls" />';
+			html += '</div>';
+
+			// Name
+			html += '<div class="space-y-1">';
+			html += '<label class="text-xs font-medium text-muted-foreground">Name <span class="text-destructive">*</span></label>';
+			html += '<input type="text" name="features[' + idx + '].name" class="' + INPUT_CLASS + '" placeholder="API Calls" />';
+			html += '</div>';
+
+			// Type
+			html += '<div class="space-y-1">';
+			html += '<label class="text-xs font-medium text-muted-foreground">Type</label>';
+			html += '<select name="features[' + idx + '].type" class="' + SELECT_CLASS + '" onchange="onFeatureTypeChange(this,' + idx + ')">';
+			html += '<option value="metered">Metered</option>';
+			html += '<option value="boolean">Boolean</option>';
+			html += '<option value="seat">Seat</option>';
+			html += '</select>';
+			html += '<p class="text-xs text-muted-foreground" data-feature-desc="' + idx + '">Usage-tracked feature with metering</p>';
+			html += '</div>';
+
+			// Limit
+			html += '<div class="space-y-1" data-feature-limit="' + idx + '">';
+			html += '<label class="text-xs font-medium text-muted-foreground">Limit</label>';
+			html += '<input type="number" name="features[' + idx + '].limit" class="' + INPUT_CLASS + '" placeholder="-1 for unlimited" />';
+			html += '<p class="text-xs text-muted-foreground">-1 = unlimited</p>';
+			html += '</div>';
+
+			// Period
+			html += '<div class="space-y-1" data-feature-period="' + idx + '">';
+			html += '<label class="text-xs font-medium text-muted-foreground">Reset Period</label>';
+			html += '<select name="features[' + idx + '].period" class="' + SELECT_CLASS + '">';
+			html += '<option value="monthly">Monthly</option>';
+			html += '<option value="yearly">Yearly</option>';
+			html += '<option value="none">None</option>';
+			html += '</select>';
+			html += '</div>';
+
+			// Soft Limit
+			html += '<div class="space-y-1" data-feature-soft="' + idx + '">';
+			html += '<label class="text-xs font-medium text-muted-foreground">Soft Limit</label>';
+			html += '<div class="flex items-center gap-2">';
+			html += '<input type="checkbox" name="features[' + idx + '].soft_limit" class="h-4 w-4 rounded border-input" />';
+			html += '<span class="text-xs text-muted-foreground">Allow usage beyond limit</span>';
+			html += '</div>';
+			html += '</div>';
+
+			html += '</div></div>';
+
+			var addBtn = document.getElementById('add-feature-btn');
+			if (addBtn) {
+				addBtn.insertAdjacentHTML('beforebegin', html);
+			} else {
+				container.insertAdjacentHTML('beforeend', html);
+			}
+		};
+
+		window.removeFeature = function(btnEl) {
+			var itemEl = btnEl.closest('[data-oa-item="features"]');
+			if (itemEl) {
+				itemEl.remove();
+				reindexItems('features', 'features-container');
+			}
+		};
+
+		window.onFeatureTypeChange = function(selectEl, idx) {
+			var val = selectEl.value;
+			var limitDiv = document.querySelector('[data-feature-limit="' + idx + '"]');
+			var periodDiv = document.querySelector('[data-feature-period="' + idx + '"]');
+			var softDiv = document.querySelector('[data-feature-soft="' + idx + '"]');
+			var descEl = document.querySelector('[data-feature-desc="' + idx + '"]');
+
+			if (val === 'boolean') {
+				if (limitDiv) limitDiv.style.display = 'none';
+				if (periodDiv) periodDiv.style.display = 'none';
+				if (softDiv) softDiv.style.display = 'none';
+				if (descEl) descEl.textContent = 'On/off feature toggle';
+			} else if (val === 'seat') {
+				if (limitDiv) limitDiv.style.display = '';
+				if (periodDiv) periodDiv.style.display = '';
+				if (softDiv) softDiv.style.display = 'none';
+				if (descEl) descEl.textContent = 'Per-seat/user based feature';
+			} else {
+				// metered
+				if (limitDiv) limitDiv.style.display = '';
+				if (periodDiv) periodDiv.style.display = '';
+				if (softDiv) softDiv.style.display = '';
+				if (descEl) descEl.textContent = 'Usage-tracked feature with metering';
+			}
+		};
+
+		// ─── Tier Management ────────────────────────────────────────────────
+
+		window.addTier = function() {
+			var container = document.getElementById('tiers-container');
+			if (!container) return;
+			var items = container.querySelectorAll('[data-oa-item="tiers"]');
+			var idx = items.length;
+
+			// Build feature key options from current features
+			var featureOpts = getFeatureKeyOptions();
+
+			var html = '<div class="relative rounded-lg border bg-muted/30 p-4 space-y-3" data-oa-item="tiers" data-oa-index="' + idx + '">';
+			html += '<button type="button" class="absolute top-2 right-2 text-muted-foreground hover:text-destructive" onclick="removeTier(this)" title="Remove tier">' + TRASH_SVG + '</button>';
+			html += '<div class="grid grid-cols-1 md:grid-cols-3 gap-3 pr-6">';
+
+			// Feature Key
+			html += '<div class="space-y-1">';
+			html += '<label class="text-xs font-medium text-muted-foreground">Feature Key <span class="text-destructive">*</span></label>';
+			html += '<select name="tiers[' + idx + '].feature_key" class="' + SELECT_CLASS + '">';
+			html += featureOpts;
+			html += '</select>';
+			html += '</div>';
+
+			// Tier Type
+			html += '<div class="space-y-1">';
+			html += '<label class="text-xs font-medium text-muted-foreground">Tier Type</label>';
+			html += '<select name="tiers[' + idx + '].type" class="' + SELECT_CLASS + '">';
+			html += '<option value="graduated">Graduated</option>';
+			html += '<option value="volume">Volume</option>';
+			html += '<option value="flat">Flat</option>';
+			html += '</select>';
+			html += '</div>';
+
+			// Up To
+			html += '<div class="space-y-1">';
+			html += '<label class="text-xs font-medium text-muted-foreground">Up To</label>';
+			html += '<input type="number" name="tiers[' + idx + '].up_to" class="' + INPUT_CLASS + '" placeholder="0 = unlimited" />';
+			html += '</div>';
+
+			// Unit Amount
+			html += '<div class="space-y-1">';
+			html += '<label class="text-xs font-medium text-muted-foreground">Unit Amount (cents)</label>';
+			html += '<input type="number" name="tiers[' + idx + '].unit_amount" class="' + INPUT_CLASS + '" placeholder="100" />';
+			html += '</div>';
+
+			// Flat Amount
+			html += '<div class="space-y-1">';
+			html += '<label class="text-xs font-medium text-muted-foreground">Flat Amount (cents)</label>';
+			html += '<input type="number" name="tiers[' + idx + '].flat_amount" class="' + INPUT_CLASS + '" placeholder="0" />';
+			html += '</div>';
+
+			// Priority
+			html += '<div class="space-y-1">';
+			html += '<label class="text-xs font-medium text-muted-foreground">Priority</label>';
+			html += '<input type="number" name="tiers[' + idx + '].priority" class="' + INPUT_CLASS + '" value="' + idx + '" />';
+			html += '</div>';
+
+			html += '</div></div>';
+
+			var addBtn = document.getElementById('add-tier-btn');
+			if (addBtn) {
+				addBtn.insertAdjacentHTML('beforebegin', html);
+			} else {
+				container.insertAdjacentHTML('beforeend', html);
+			}
+		};
+
+		window.removeTier = function(btnEl) {
+			var itemEl = btnEl.closest('[data-oa-item="tiers"]');
+			if (itemEl) {
+				itemEl.remove();
+				reindexItems('tiers', 'tiers-container');
+			}
+		};
+
+		// ─── Metadata Management ────────────────────────────────────────────
+
+		window.addMetadataRow = function() {
+			var container = document.getElementById('metadata-container');
+			if (!container) return;
+			var items = container.querySelectorAll('[data-oa-item="metadata"]');
+			var idx = items.length;
+
+			var html = '<div class="relative flex items-start gap-3 p-3 rounded-lg border bg-muted/30" data-oa-item="metadata" data-oa-index="' + idx + '">';
+
+			html += '<div class="flex-1 space-y-1">';
+			html += '<label class="text-xs font-medium text-muted-foreground">Key</label>';
+			html += '<input type="text" name="metadata[' + idx + '].key" class="' + INPUT_CLASS + '" placeholder="key" />';
+			html += '</div>';
+
+			html += '<div class="flex-1 space-y-1">';
+			html += '<label class="text-xs font-medium text-muted-foreground">Value</label>';
+			html += '<input type="text" name="metadata[' + idx + '].value" class="' + INPUT_CLASS + '" placeholder="value" />';
+			html += '</div>';
+
+			html += '<button type="button" class="mt-5 text-muted-foreground hover:text-destructive" onclick="removeMetadataRow(this)" title="Remove">' + TRASH_SVG + '</button>';
+
+			html += '</div>';
+
+			var addBtn = document.getElementById('add-metadata-btn');
+			if (addBtn) {
+				addBtn.insertAdjacentHTML('beforebegin', html);
+			} else {
+				container.insertAdjacentHTML('beforeend', html);
+			}
+		};
+
+		window.removeMetadataRow = function(btnEl) {
+			var itemEl = btnEl.closest('[data-oa-item="metadata"]');
+			if (itemEl) {
+				itemEl.remove();
+				reindexItems('metadata', 'metadata-container');
+			}
+		};
+
+		// ─── Re-indexing ────────────────────────────────────────────────────
+
+		function reindexItems(key, containerId) {
+			var container = document.getElementById(containerId);
+			if (!container) return;
+			var items = container.querySelectorAll('[data-oa-item="' + key + '"]');
+			for (var i = 0; i < items.length; i++) {
+				var oldIndex = items[i].getAttribute('data-oa-index');
+				items[i].setAttribute('data-oa-index', String(i));
+
+				// Re-index input/select names
+				var inputs = items[i].querySelectorAll('input, select, textarea');
+				for (var j = 0; j < inputs.length; j++) {
+					var name = inputs[j].getAttribute('name');
+					if (name) {
+						inputs[j].setAttribute('name', name.replace(key + '[' + oldIndex + ']', key + '[' + i + ']'));
+					}
+				}
+
+				// Re-index data attributes for feature type toggle
+				if (key === 'features') {
+					var limitDiv = items[i].querySelector('[data-feature-limit]');
+					if (limitDiv) limitDiv.setAttribute('data-feature-limit', String(i));
+					var periodDiv = items[i].querySelector('[data-feature-period]');
+					if (periodDiv) periodDiv.setAttribute('data-feature-period', String(i));
+					var softDiv = items[i].querySelector('[data-feature-soft]');
+					if (softDiv) softDiv.setAttribute('data-feature-soft', String(i));
+					var descEl = items[i].querySelector('[data-feature-desc]');
+					if (descEl) descEl.setAttribute('data-feature-desc', String(i));
+
+					// Update onchange handler index
+					var typeSelect = items[i].querySelector('select[name*=".type"]');
+					if (typeSelect) {
+						typeSelect.setAttribute('onchange', 'onFeatureTypeChange(this,' + i + ')');
+					}
+				}
+			}
+		}
+
+		// ─── Feature key helpers ────────────────────────────────────────────
+
+		function getFeatureKeyOptions() {
+			var container = document.getElementById('features-container');
+			if (!container) return '<option value="">No features defined</option>';
+			var items = container.querySelectorAll('[data-oa-item="features"]');
+			if (items.length === 0) return '<option value="">No features defined</option>';
+
+			var html = '';
+			for (var i = 0; i < items.length; i++) {
+				var keyInput = items[i].querySelector('input[name*=".key"]');
+				if (keyInput && keyInput.value) {
+					html += '<option value="' + escapeHtml(keyInput.value) + '">' + escapeHtml(keyInput.value) + '</option>';
+				}
+			}
+			return html || '<option value="">No features defined</option>';
+		}
+
+		// ─── App ID scope indicator ─────────────────────────────────────────
+
+		window.updateAppScopeIndicator = function(inputEl) {
+			var indicator = document.getElementById('app-scope-indicator');
+			if (!indicator) return;
+			if (inputEl.value && inputEl.value.trim() !== '') {
+				indicator.innerHTML = '<span class="inline-flex items-center rounded-sm border px-2.5 py-0.5 text-xs font-semibold bg-primary text-primary-foreground">App: ' + escapeHtml(inputEl.value.trim()) + '</span>';
+			} else {
+				indicator.innerHTML = '<span class="inline-flex items-center rounded-sm border px-2.5 py-0.5 text-xs font-semibold">Global</span>';
+			}
+		};
+
+		// ─── Sync form data to hidden JSON inputs ───────────────────────────
+
+		window.syncPlanFormData = function() {
+			syncFeatures();
+			syncTiers();
+			syncMetadata();
+		};
+
+		function syncFeatures() {
+			var container = document.getElementById('features-container');
+			var hidden = document.getElementById('features_json');
+			if (!container || !hidden) return;
+
+			var items = container.querySelectorAll('[data-oa-item="features"]');
+			var result = [];
+			for (var i = 0; i < items.length; i++) {
+				var obj = {};
+				var keyEl = items[i].querySelector('input[name*=".key"]');
+				var nameEl = items[i].querySelector('input[name*=".name"]');
+				var typeEl = items[i].querySelector('select[name*=".type"]');
+				var limitEl = items[i].querySelector('input[name*=".limit"]');
+				var periodEl = items[i].querySelector('select[name*=".period"]');
+				var softEl = items[i].querySelector('input[name*=".soft_limit"]');
+
+				obj.key = keyEl ? keyEl.value : '';
+				obj.name = nameEl ? nameEl.value : '';
+				obj.type = typeEl ? typeEl.value : 'metered';
+				obj.limit = limitEl ? limitEl.value : '';
+				obj.period = periodEl ? periodEl.value : 'monthly';
+				obj.soft_limit = softEl ? softEl.checked : false;
+
+				if (obj.key) result.push(obj);
+			}
+			hidden.value = JSON.stringify(result);
+		}
+
+		function syncTiers() {
+			var container = document.getElementById('tiers-container');
+			var hidden = document.getElementById('tiers_json');
+			if (!container || !hidden) return;
+
+			var items = container.querySelectorAll('[data-oa-item="tiers"]');
+			var result = [];
+			for (var i = 0; i < items.length; i++) {
+				var obj = {};
+				var fkEl = items[i].querySelector('select[name*=".feature_key"], input[name*=".feature_key"]');
+				var typeEl = items[i].querySelector('select[name*=".type"]');
+				var upToEl = items[i].querySelector('input[name*=".up_to"]');
+				var unitEl = items[i].querySelector('input[name*=".unit_amount"]');
+				var flatEl = items[i].querySelector('input[name*=".flat_amount"]');
+				var prioEl = items[i].querySelector('input[name*=".priority"]');
+
+				obj.feature_key = fkEl ? fkEl.value : '';
+				obj.type = typeEl ? typeEl.value : 'graduated';
+				obj.up_to = upToEl ? upToEl.value : '';
+				obj.unit_amount = unitEl ? unitEl.value : '';
+				obj.flat_amount = flatEl ? flatEl.value : '';
+				obj.priority = prioEl ? prioEl.value : String(i);
+
+				if (obj.feature_key) result.push(obj);
+			}
+			hidden.value = JSON.stringify(result);
+		}
+
+		function syncMetadata() {
+			var container = document.getElementById('metadata-container');
+			var hidden = document.getElementById('metadata_json');
+			if (!container || !hidden) return;
+
+			var items = container.querySelectorAll('[data-oa-item="metadata"]');
+			var result = [];
+			for (var i = 0; i < items.length; i++) {
+				var keyEl = items[i].querySelector('input[name*=".key"]');
+				var valEl = items[i].querySelector('input[name*=".value"]');
+				var obj = {
+					key: keyEl ? keyEl.value : '',
+					value: valEl ? valEl.value : ''
+				};
+				if (obj.key) result.push(obj);
+			}
+			hidden.value = JSON.stringify(result);
+		}
+
+		// ─── Form submit interception ───────────────────────────────────────
+
+		// Listen for htmx:configRequest to sync data before HTMX sends POST
+		document.body.addEventListener('htmx:configRequest', function(event) {
+			var form = event.detail.elt;
+			if (form && form.id === 'plan-form') {
+				syncPlanFormData();
+			}
+			// Also handle if triggered from a child element
+			if (form && form.closest && form.closest('#plan-form')) {
+				syncPlanFormData();
+			}
+		});
+	})();
+	</script>
+}

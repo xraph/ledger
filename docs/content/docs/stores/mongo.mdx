@@ -35,7 +35,7 @@ defer engine.Stop()
 
 ## Migrations
 
-Migrations run automatically when `engine.Start()` is called. They create indexes on all Ledger collections. For manual control:
+Migrations run automatically when `engine.Start()` is called. They create collections with JSON Schema validation (auto-generated from Grove model structs) and apply indexes on all Ledger collections. For manual control:
 
 ```go
 if err := s.Migrate(ctx); err != nil {
@@ -55,9 +55,20 @@ var _ store.Store = (*Store)(nil)
 | Aspect | Detail |
 |--------|--------|
 | Driver | grove ORM + mongodriver |
-| Migrations | Index creation on collections |
+| Migrations | Grove migrations with JSON Schema validation + indexes |
 | Transactions | MongoDB sessions (replica-set required for multi-doc txns) |
 | Collections | `ledger_plans`, `ledger_subscriptions`, `ledger_usage_events`, `ledger_entitlement_cache`, `ledger_invoices`, `ledger_coupons` |
+
+## Grove Migrations
+
+The store exports a `Migrations` group for use with Grove's migration orchestrator. This enables tracked, versioned migrations across all stores in your application:
+
+```go
+import mongostore "github.com/xraph/ledger/store/mongo"
+
+// mongostore.Migrations is a migrate.Group for the ledger mongo store.
+// Register it with the grove migration orchestrator for coordinated migrations.
+```
 
 ## When to use
 

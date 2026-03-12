@@ -1,0 +1,13 @@
+package components
+
+import "github.com/xraph/forgeui/components/separator"
+
+// PluginSections renders plugin-contributed sections with separators between them.
+templ PluginSections(sections []templ.Component) {
+	for i, section := range sections {
+		if i > 0 {
+			@separator.Separator()
+		}
+		@section
+	}
+}

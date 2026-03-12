@@ -24,13 +24,16 @@ type Plan struct {
 	TrialDays   int               `json:"trial_days"`
 	Features    []Feature         `json:"features"`
 	Pricing     *Pricing          `json:"pricing,omitempty"`
-	AppID       string            `json:"app_id"`
-	Metadata    map[string]string `json:"metadata,omitempty"`
+	AppID        string            `json:"app_id"`
+	ProviderID   string            `json:"provider_id,omitempty"`
+	ProviderName string            `json:"provider_name,omitempty"`
+	Metadata     map[string]string `json:"metadata,omitempty"`
 }
 
 type Feature struct {
 	types.Entity
 	ID        id.FeatureID      `json:"id"`
+	CatalogID id.FeatureID      `json:"catalog_id,omitempty"` // links to standalone catalog feature
 	Key       string            `json:"key"`
 	Name      string            `json:"name"`
 	Type      FeatureType       `json:"type"`

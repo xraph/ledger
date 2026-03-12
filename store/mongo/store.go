@@ -16,6 +16,7 @@ import (
 	ledger "github.com/xraph/ledger"
 	"github.com/xraph/ledger/coupon"
 	"github.com/xraph/ledger/entitlement"
+	"github.com/xraph/ledger/feature"
 	"github.com/xraph/ledger/id"
 	"github.com/xraph/ledger/invoice"
 	"github.com/xraph/ledger/meter"
@@ -32,6 +33,7 @@ const (
 	colEntitlements  = "ledger_entitlement_cache"
 	colInvoices      = "ledger_invoices"
 	colCoupons       = "ledger_coupons"
+	colFeatures      = "ledger_features"
 )
 
 // compile-time interface check
@@ -780,6 +782,161 @@ func (s *Store) DeleteCoupon(ctx context.Context, couponID id.CouponID) error {
 	return nil
 }
 
+// ==================== Feature Catalog Store ====================
+
+func (s *Store) CreateFeature(ctx context.Context, f *feature.Feature) error {
+	m := toFeatureCatalogModel(f)
+	_, err := s.mdb.NewInsert(m).Exec(ctx)
+	if err != nil {
+		if mongo.IsDuplicateKeyError(err) {
+			return ledger.ErrDuplicateFeature
+		}
+		return fmt.Errorf("ledger/mongo: create feature: %w", err)
+	}
+	return nil
+}
+
+func (s *Store) GetFeature(ctx context.Context, featureID id.FeatureID) (*feature.Feature, error) {
+	var m featureCatalogModel
+	err := s.mdb.NewFind(&m).
+		Filter(bson.M{"_id": featureID.String()}).
+		Scan(ctx)
+	if err != nil {
+		if isNoDocuments(err) {
+			return nil, ledger.ErrFeatureNotFound
+		}
+		return nil, fmt.Errorf("ledger/mongo: get feature: %w", err)
+	}
+	return fromFeatureCatalogModel(&m)
+}
+
+func (s *Store) GetFeatureByKey(ctx context.Context, key string, appID string) (*feature.Feature, error) {
+	var m featureCatalogModel
+	err := s.mdb.NewFind(&m).
+		Filter(bson.M{"key": key, "app_id": appID}).
+		Scan(ctx)
+	if err != nil {
+		if isNoDocuments(err) {
+			return nil, ledger.ErrFeatureNotFound
+		}
+		return nil, fmt.Errorf("ledger/mongo: get feature by key: %w", err)
+	}
+	return fromFeatureCatalogModel(&m)
+}
+
+func (s *Store) ListFeatures(ctx context.Context, appID string, opts feature.ListOpts) ([]*feature.Feature, error) {
+	var models []featureCatalogModel
+
+	filter := bson.M{"app_id": appID}
+	if opts.Status != "" {
+		filter["status"] = string(opts.Status)
+	}
+
+	q := s.mdb.NewFind(&models).
+		Filter(filter).
+		Sort(bson.D{{Key: "created_at", Value: 1}})
+
+	if opts.Limit > 0 {
+		q = q.Limit(int64(opts.Limit))
+	}
+	if opts.Offset > 0 {
+		q = q.Skip(int64(opts.Offset))
+	}
+
+	if err := q.Scan(ctx); err != nil {
+		return nil, fmt.Errorf("ledger/mongo: list features: %w", err)
+	}
+
+	result := make([]*feature.Feature, len(models))
+	for i := range models {
+		f, err := fromFeatureCatalogModel(&models[i])
+		if err != nil {
+			return nil, err
+		}
+		result[i] = f
+	}
+	return result, nil
+}
+
+func (s *Store) ListGlobalFeatures(ctx context.Context, opts feature.ListOpts) ([]*feature.Feature, error) {
+	var models []featureCatalogModel
+
+	filter := bson.M{"app_id": ""}
+	if opts.Status != "" {
+		filter["status"] = string(opts.Status)
+	}
+
+	q := s.mdb.NewFind(&models).
+		Filter(filter).
+		Sort(bson.D{{Key: "created_at", Value: 1}})
+
+	if opts.Limit > 0 {
+		q = q.Limit(int64(opts.Limit))
+	}
+	if opts.Offset > 0 {
+		q = q.Skip(int64(opts.Offset))
+	}
+
+	if err := q.Scan(ctx); err != nil {
+		return nil, fmt.Errorf("ledger/mongo: list global features: %w", err)
+	}
+
+	result := make([]*feature.Feature, len(models))
+	for i := range models {
+		f, err := fromFeatureCatalogModel(&models[i])
+		if err != nil {
+			return nil, err
+		}
+		result[i] = f
+	}
+	return result, nil
+}
+
+func (s *Store) UpdateFeature(ctx context.Context, f *feature.Feature) error {
+	m := toFeatureCatalogModel(f)
+	m.UpdatedAt = now()
+
+	res, err := s.mdb.NewUpdate(m).
+		Filter(bson.M{"_id": m.ID}).
+		Exec(ctx)
+	if err != nil {
+		return fmt.Errorf("ledger/mongo: update feature: %w", err)
+	}
+	if res.MatchedCount() == 0 {
+		return ledger.ErrFeatureNotFound
+	}
+	return nil
+}
+
+func (s *Store) DeleteFeature(ctx context.Context, featureID id.FeatureID) error {
+	res, err := s.mdb.NewDelete((*featureCatalogModel)(nil)).
+		Filter(bson.M{"_id": featureID.String()}).
+		Exec(ctx)
+	if err != nil {
+		return fmt.Errorf("ledger/mongo: delete feature: %w", err)
+	}
+	if res.DeletedCount() == 0 {
+		return ledger.ErrFeatureNotFound
+	}
+	return nil
+}
+
+func (s *Store) ArchiveFeature(ctx context.Context, featureID id.FeatureID) error {
+	t := now()
+	res, err := s.mdb.NewUpdate((*featureCatalogModel)(nil)).
+		Filter(bson.M{"_id": featureID.String()}).
+		Set("status", string(feature.StatusArchived)).
+		Set("updated_at", t).
+		Exec(ctx)
+	if err != nil {
+		return fmt.Errorf("ledger/mongo: archive feature: %w", err)
+	}
+	if res.MatchedCount() == 0 {
+		return ledger.ErrFeatureNotFound
+	}
+	return nil
+}
+
 // ==================== Helpers ====================
 
 // now returns the current UTC time.
@@ -844,6 +1001,14 @@ func migrationIndexes() map[string][]mongo.IndexModel {
 				Options: options.Index().SetUnique(true),
 			},
 			{Keys: bson.D{{Key: "app_id", Value: 1}, {Key: "created_at", Value: -1}}},
+		},
+		colFeatures: {
+			{
+				Keys:    bson.D{{Key: "key", Value: 1}, {Key: "app_id", Value: 1}},
+				Options: options.Index().SetUnique(true),
+			},
+			{Keys: bson.D{{Key: "app_id", Value: 1}, {Key: "status", Value: 1}}},
+			{Keys: bson.D{{Key: "app_id", Value: 1}, {Key: "created_at", Value: 1}}},
 		},
 	}
 }

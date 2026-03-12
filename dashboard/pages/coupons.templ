@@ -1,0 +1,50 @@
+package pages
+
+import (
+	"strconv"
+
+	"github.com/xraph/forgeui/components/badge"
+	"github.com/xraph/forgeui/components/button"
+	"github.com/xraph/forgeui/components/card"
+	"github.com/xraph/forgeui/icons"
+	"github.com/xraph/ledger/coupon"
+	"github.com/xraph/ledger/dashboard/components"
+)
+
+templ CouponsPage(coupons []*coupon.Coupon) {
+	<div class="space-y-6">
+		<!-- Header Row -->
+		<div class="flex items-center justify-between">
+			<div class="flex items-center gap-3">
+				<h1 class="text-3xl font-bold tracking-tight">Coupons</h1>
+				@badge.Badge(badge.Props{Variant: badge.VariantSecondary}) {
+					{ strconv.Itoa(len(coupons)) }
+				}
+			</div>
+			@button.Button(button.Props{
+				Variant: button.VariantDefault,
+				Size:    button.SizeSm,
+				Attributes: templ.Attributes{
+					"hx-get":      "./coupons/new",
+					"hx-target":   "#content",
+					"hx-push-url": "true",
+					"hx-swap":     "innerHTML",
+				},
+			}) {
+				@icons.Plus(icons.WithSize(16))
+				Create Coupon
+			}
+		</div>
+
+		<!-- Coupons Table -->
+		@card.Card() {
+			@card.Content() {
+				if len(coupons) == 0 {
+					@components.EmptyState("ticket", "No coupons yet", "Create your first coupon to offer discounts.")
+				} else {
+					@components.CouponTable(coupons, "./coupons")
+				}
+			}
+		}
+	</div>
+}
