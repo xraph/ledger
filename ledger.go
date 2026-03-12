@@ -534,21 +534,21 @@ func (l *Ledger) GenerateInvoice(ctx context.Context, subID id.SubscriptionID) (
 	}
 
 	// Add metered usage charges
-	for _, feature := range p.Features {
-		if feature.Type == plan.FeatureMetered {
-			used, err := l.store.Aggregate(ctx, sub.TenantID, sub.AppID, feature.Key, feature.Period)
+	for _, pf := range p.Features {
+		if pf.Type == plan.FeatureMetered {
+			used, err := l.store.Aggregate(ctx, sub.TenantID, sub.AppID, pf.Key, pf.Period)
 			if err != nil {
-				return nil, fmt.Errorf("aggregate usage for feature %q: %w", feature.Key, err)
+				return nil, fmt.Errorf("aggregate usage for feature %q: %w", pf.Key, err)
 			}
-			if used > feature.Limit && feature.Limit > 0 {
-				overage := used - feature.Limit
+			if used > pf.Limit && pf.Limit > 0 {
+				overage := used - pf.Limit
 				// Would calculate overage charges based on pricing tiers
 				// For now, just note the overage
 				inv.LineItems = append(inv.LineItems, invoice.LineItem{
 					ID:          id.NewLineItemID(),
 					InvoiceID:   inv.ID,
-					FeatureKey:  feature.Key,
-					Description: feature.Name + " overage",
+					FeatureKey:  pf.Key,
+					Description: pf.Name + " overage",
 					Quantity:    overage,
 					UnitAmount:  types.Zero(p.Currency),
 					Amount:      types.Zero(p.Currency),
@@ -635,7 +635,7 @@ func (l *Ledger) ListPaymentMethods(ctx context.Context, tenantID string) ([]pro
 	prov, err := l.getProvider("")
 	if err != nil {
 		// No providers configured — return empty list (dev mode)
-		if err == ErrProviderNotConfigured {
+		if errors.Is(err, ErrProviderNotConfigured) {
 			return nil, nil
 		}
 		return nil, err
@@ -799,7 +799,7 @@ func (l *Ledger) ImportPlanFromProvider(ctx context.Context, providerName, provi
 	p, err := prov.ImportPlan(ctx, providerID)
 	if err != nil {
 		l.plugins.EmitProviderSync(ctx, prov.Name(), false, err)
-		return nil, fmt.Errorf("%w: import plan: %v", ErrProviderSync, err)
+		return nil, fmt.Errorf("%w: import plan: %w", ErrProviderSync, err)
 	}
 
 	// Assign local IDs and metadata
@@ -827,7 +827,7 @@ func (l *Ledger) ImportFeatureFromProvider(ctx context.Context, providerName, pr
 	f, err := prov.ImportFeature(ctx, providerID)
 	if err != nil {
 		l.plugins.EmitProviderSync(ctx, prov.Name(), false, err)
-		return nil, fmt.Errorf("%w: import feature: %v", ErrProviderSync, err)
+		return nil, fmt.Errorf("%w: import feature: %w", ErrProviderSync, err)
 	}
 
 	f.ID = id.NewFeatureID()
@@ -854,7 +854,7 @@ func (l *Ledger) ImportSubscriptionFromProvider(ctx context.Context, providerNam
 	s, err := prov.ImportSubscription(ctx, providerID)
 	if err != nil {
 		l.plugins.EmitProviderSync(ctx, prov.Name(), false, err)
-		return nil, fmt.Errorf("%w: import subscription: %v", ErrProviderSync, err)
+		return nil, fmt.Errorf("%w: import subscription: %w", ErrProviderSync, err)
 	}
 
 	s.ID = id.NewSubscriptionID()
@@ -881,7 +881,7 @@ func (l *Ledger) ImportInvoiceFromProvider(ctx context.Context, providerName, pr
 	inv, err := prov.ImportInvoice(ctx, providerID)
 	if err != nil {
 		l.plugins.EmitProviderSync(ctx, prov.Name(), false, err)
-		return nil, fmt.Errorf("%w: import invoice: %v", ErrProviderSync, err)
+		return nil, fmt.Errorf("%w: import invoice: %w", ErrProviderSync, err)
 	}
 
 	inv.ID = id.NewInvoiceID()
@@ -913,7 +913,7 @@ func (l *Ledger) HandleWebhook(ctx context.Context, providerName string, payload
 
 	result, err := prov.HandleWebhook(ctx, payload)
 	if err != nil {
-		return nil, fmt.Errorf("%w: %v", ErrProviderWebhook, err)
+		return nil, fmt.Errorf("%w: %w", ErrProviderWebhook, err)
 	}
 
 	return result, nil

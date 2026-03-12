@@ -810,7 +810,7 @@ func (s *Store) GetFeature(ctx context.Context, featureID id.FeatureID) (*featur
 	return fromFeatureCatalogModel(&m)
 }
 
-func (s *Store) GetFeatureByKey(ctx context.Context, key string, appID string) (*feature.Feature, error) {
+func (s *Store) GetFeatureByKey(ctx context.Context, key, appID string) (*feature.Feature, error) {
 	var m featureCatalogModel
 	err := s.mdb.NewFind(&m).
 		Filter(bson.M{"key": key, "app_id": appID}).

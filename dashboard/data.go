@@ -3,7 +3,6 @@ package dashboard
 import (
 	"context"
 	"fmt"
-	"time"
 
 	"github.com/xraph/ledger/coupon"
 	"github.com/xraph/ledger/invoice"
@@ -23,20 +22,17 @@ func fetchPlanStats(ctx context.Context, s store.Store, appID string) (total int
 }
 
 // fetchSubscriptionStats returns subscription counts for the given app.
-func fetchSubscriptionStats(ctx context.Context, s store.Store, appID string) (active, trialing int, err error) {
+func fetchSubscriptionStats(ctx context.Context, s store.Store, appID string) (active int, err error) {
 	subs, err := s.ListSubscriptions(ctx, "", appID, subscription.ListOpts{Limit: 1000})
 	if err != nil {
-		return 0, 0, fmt.Errorf("dashboard: fetch subscription stats: %w", err)
+		return 0, fmt.Errorf("dashboard: fetch subscription stats: %w", err)
 	}
 	for _, sub := range subs {
-		switch sub.Status {
-		case subscription.StatusActive:
+		if sub.Status == subscription.StatusActive {
 			active++
-		case subscription.StatusTrialing:
-			trialing++
 		}
 	}
-	return active, trialing, nil
+	return active, nil
 }
 
 // fetchInvoiceStats returns invoice counts for the given app.

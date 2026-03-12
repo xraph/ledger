@@ -549,7 +549,7 @@ func (s *Store) GetFeature(_ context.Context, featureID id.FeatureID) (*feature.
 	return nil, ledger.ErrFeatureNotFound
 }
 
-func (s *Store) GetFeatureByKey(_ context.Context, key string, appID string) (*feature.Feature, error) {
+func (s *Store) GetFeatureByKey(_ context.Context, key, appID string) (*feature.Feature, error) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 

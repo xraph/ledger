@@ -199,7 +199,7 @@ func (c *Contributor) renderOverview(ctx context.Context) (templ.Component, erro
 		totalPlans = 0
 	}
 
-	activeSubs, _, err := fetchSubscriptionStats(ctx, c.store, c.appID)
+	activeSubs, err := fetchSubscriptionStats(ctx, c.store, c.appID)
 	if err != nil {
 		activeSubs = 0
 	}
@@ -746,7 +746,7 @@ func (c *Contributor) renderStatsWidget(ctx context.Context) (templ.Component, e
 		totalPlans = 0
 	}
 
-	activeSubs, _, err := fetchSubscriptionStats(ctx, c.store, c.appID)
+	activeSubs, err := fetchSubscriptionStats(ctx, c.store, c.appID)
 	if err != nil {
 		activeSubs = 0
 	}

@@ -263,7 +263,7 @@ ALTER TABLE ledger_invoices ADD COLUMN provider_name TEXT NOT NULL DEFAULT '';
 `)
 				return err
 			},
-			Down: func(ctx context.Context, exec migrate.Executor) error {
+			Down: func(_ context.Context, _ migrate.Executor) error {
 				// SQLite does not support DROP COLUMN in older versions;
 				// these columns are harmless if left in place.
 				return nil

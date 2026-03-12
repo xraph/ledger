@@ -1,16 +1,17 @@
 package dashboard
 
 import (
+	"context"
+
 	"github.com/xraph/forge/extensions/dashboard/contributor"
 
-	ledger "github.com/xraph/ledger"
 	"github.com/xraph/ledger/plugin"
 )
 
 // NewManifest builds a contributor.Manifest for the ledger dashboard.
 // It defines core navigation, widgets, and settings, then merges any
 // additional contributions from plugins implementing DashboardPlugin.
-func NewManifest(engine *ledger.Ledger, plugins []plugin.Plugin) *contributor.Manifest {
+func NewManifest(_ interface{}, plugins []plugin.Plugin) *contributor.Manifest {
 	m := &contributor.Manifest{
 		Name:        "ledger",
 		DisplayName: "Ledger",
@@ -56,7 +57,7 @@ func NewManifest(engine *ledger.Ledger, plugins []plugin.Plugin) *contributor.Ma
 			})
 		}
 
-		for _, pw := range dp.DashboardWidgets(nil) {
+		for _, pw := range dp.DashboardWidgets(context.TODO()) {
 			m.Widgets = append(m.Widgets, contributor.WidgetDescriptor{
 				ID:         pw.ID,
 				Title:      pw.Title,

@@ -563,7 +563,7 @@ func (r *Registry) EmitPlanArchived(ctx context.Context, planID string) {
 }
 
 // EmitSubscriptionChanged emits a subscription changed event.
-func (r *Registry) EmitSubscriptionChanged(ctx context.Context, sub interface{}, oldPlan, newPlan interface{}) {
+func (r *Registry) EmitSubscriptionChanged(ctx context.Context, sub, oldPlan, newPlan interface{}) {
 	r.mu.RLock()
 	plugins := r.onSubscriptionChanged
 	r.mu.RUnlock()
