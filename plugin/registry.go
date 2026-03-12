@@ -3,10 +3,11 @@ package plugin
 import (
 	"context"
 	"fmt"
-	log "github.com/xraph/go-utils/log"
 	"reflect"
 	"sync"
 	"time"
+
+	log "github.com/xraph/go-utils/log"
 )
 
 // Registry manages all registered plugins and provides efficient dispatch.

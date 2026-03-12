@@ -3,9 +3,10 @@ package ledger_test
 import (
 	"context"
 	"log"
-	xlog "github.com/xraph/go-utils/log"
 	"testing"
 	"time"
+
+	xlog "github.com/xraph/go-utils/log"
 
 	"github.com/xraph/ledger"
 	"github.com/xraph/ledger/plan"

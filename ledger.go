@@ -3,9 +3,10 @@ package ledger
 import (
 	"context"
 	"fmt"
-	log "github.com/xraph/go-utils/log"
 	"sync"
 	"time"
+
+	log "github.com/xraph/go-utils/log"
 
 	"github.com/xraph/ledger/entitlement"
 	"github.com/xraph/ledger/feature"

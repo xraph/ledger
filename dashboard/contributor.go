@@ -194,12 +194,12 @@ func (c *Contributor) RenderSettings(ctx context.Context, settingID string) (tem
 // ─── Private Render Helpers ──────────────────────────────────────────────────
 
 func (c *Contributor) renderOverview(ctx context.Context) (templ.Component, error) {
-	totalPlans, _, err := fetchPlanStats(ctx, c.store, c.appID)
+	totalPlans, err := fetchPlanStats(ctx, c.store, c.appID)
 	if err != nil {
 		totalPlans = 0
 	}
 
-	_, activeSubs, _, err := fetchSubscriptionStats(ctx, c.store, c.appID)
+	activeSubs, _, err := fetchSubscriptionStats(ctx, c.store, c.appID)
 	if err != nil {
 		activeSubs = 0
 	}
@@ -316,7 +316,7 @@ func (c *Contributor) renderPlanForm(ctx context.Context, params contributor.Par
 		if isEdit {
 			newPlan.ID = p.ID
 			newPlan.Entity = p.Entity
-			newPlan.Entity.UpdatedAt = time.Now()
+			newPlan.UpdatedAt = time.Now()
 			if err := c.store.UpdatePlan(ctx, newPlan); err != nil {
 				return pages.PlanFormPage(pages.PlanFormData{
 					Plan: newPlan, IsEdit: true, Error: err.Error(), AppID: c.appID,
@@ -379,11 +379,11 @@ func (c *Contributor) renderSubscriptionDetail(ctx context.Context, params contr
 	// Fetch associated plan.
 	var p *plan.Plan
 	if !sub.PlanID.IsNil() {
-		p, _ = c.store.GetPlan(ctx, sub.PlanID)
+		p, _ = c.store.GetPlan(ctx, sub.PlanID) //nolint:errcheck // best-effort for display
 	}
 
 	// Fetch invoices for this subscription.
-	invoices, _ := c.store.ListInvoices(ctx, sub.TenantID, sub.AppID, invoice.ListOpts{Limit: 20})
+	invoices, _ := c.store.ListInvoices(ctx, sub.TenantID, sub.AppID, invoice.ListOpts{Limit: 20}) //nolint:errcheck // best-effort for display
 
 	data := pages.SubscriptionDetailData{
 		Subscription: sub,
@@ -430,7 +430,7 @@ func (c *Contributor) renderSubscriptionForm(ctx context.Context, params contrib
 		// Fetch the plan for the detail page.
 		var subPlan *plan.Plan
 		if !newSub.PlanID.IsNil() {
-			subPlan, _ = c.store.GetPlan(ctx, newSub.PlanID)
+			subPlan, _ = c.store.GetPlan(ctx, newSub.PlanID) //nolint:errcheck // best-effort for display
 		}
 
 		return pages.SubscriptionDetailPage(pages.SubscriptionDetailData{
@@ -480,7 +480,7 @@ func (c *Contributor) renderInvoiceDetail(ctx context.Context, params contributo
 	// Fetch subscription details.
 	var sub *subscription.Subscription
 	if !inv.SubscriptionID.IsNil() {
-		sub, _ = c.store.GetSubscription(ctx, inv.SubscriptionID)
+		sub, _ = c.store.GetSubscription(ctx, inv.SubscriptionID) //nolint:errcheck // best-effort for display
 	}
 
 	data := pages.InvoiceDetailData{
@@ -497,7 +497,7 @@ func (c *Contributor) renderInvoiceDetail(ctx context.Context, params contributo
 	}), nil
 }
 
-func (c *Contributor) renderCoupons(ctx context.Context, params contributor.Params) (templ.Component, error) {
+func (c *Contributor) renderCoupons(ctx context.Context, _ contributor.Params) (templ.Component, error) {
 	opts := coupon.ListOpts{Limit: 50}
 
 	coupons, err := fetchCoupons(ctx, c.store, c.appID, opts)
@@ -567,7 +567,7 @@ func (c *Contributor) renderCouponForm(ctx context.Context, params contributor.P
 		if isEdit {
 			newCoupon.ID = cpn.ID
 			newCoupon.Entity = cpn.Entity
-			newCoupon.Entity.UpdatedAt = time.Now()
+			newCoupon.UpdatedAt = time.Now()
 			newCoupon.TimesRedeemed = cpn.TimesRedeemed
 			if err := c.store.UpdateCoupon(ctx, newCoupon); err != nil {
 				return pages.CouponFormPage(pages.CouponFormData{
@@ -681,7 +681,7 @@ func (c *Contributor) renderFeatureForm(ctx context.Context, params contributor.
 		if isEdit {
 			newFeature.ID = f.ID
 			newFeature.Entity = f.Entity
-			newFeature.Entity.UpdatedAt = time.Now()
+			newFeature.UpdatedAt = time.Now()
 			if err := c.store.UpdateFeature(ctx, newFeature); err != nil {
 				return pages.FeatureFormPage(pages.FeatureFormData{
 					Feature: newFeature, IsEdit: true, Error: err.Error(), AppID: c.appID,
@@ -741,12 +741,12 @@ func (c *Contributor) renderSettings(_ context.Context) (templ.Component, error)
 // ─── Widget Render Helpers ───────────────────────────────────────────────────
 
 func (c *Contributor) renderStatsWidget(ctx context.Context) (templ.Component, error) {
-	totalPlans, _, err := fetchPlanStats(ctx, c.store, c.appID)
+	totalPlans, err := fetchPlanStats(ctx, c.store, c.appID)
 	if err != nil {
 		totalPlans = 0
 	}
 
-	_, activeSubs, _, err := fetchSubscriptionStats(ctx, c.store, c.appID)
+	activeSubs, _, err := fetchSubscriptionStats(ctx, c.store, c.appID)
 	if err != nil {
 		activeSubs = 0
 	}
@@ -964,10 +964,10 @@ func (c *Contributor) handleSubscriptionSync(ctx context.Context, params contrib
 
 	var p *plan.Plan
 	if !sub.PlanID.IsNil() {
-		p, _ = c.store.GetPlan(ctx, sub.PlanID)
+		p, _ = c.store.GetPlan(ctx, sub.PlanID) //nolint:errcheck // best-effort for display
 	}
 
-	invoices, _ := c.store.ListInvoices(ctx, sub.TenantID, sub.AppID, invoice.ListOpts{Limit: 20})
+	invoices, _ := c.store.ListInvoices(ctx, sub.TenantID, sub.AppID, invoice.ListOpts{Limit: 20}) //nolint:errcheck // best-effort for display
 
 	data := pages.SubscriptionDetailData{
 		Subscription: sub,
@@ -1008,7 +1008,7 @@ func (c *Contributor) handleInvoiceSync(ctx context.Context, params contributor.
 
 	var sub *subscription.Subscription
 	if !inv.SubscriptionID.IsNil() {
-		sub, _ = c.store.GetSubscription(ctx, inv.SubscriptionID)
+		sub, _ = c.store.GetSubscription(ctx, inv.SubscriptionID) //nolint:errcheck // best-effort for display
 	}
 
 	data := pages.InvoiceDetailData{
