@@ -47,9 +47,9 @@ type Provider interface {
 // provider side. It is never persisted locally.
 type PaymentMethod struct {
 	ID           string `json:"id"`
-	Type         string `json:"type"`          // "card", "bank_account", etc.
-	Last4        string `json:"last4"`         // last 4 digits
-	Brand        string `json:"brand"`         // "visa", "mastercard", etc.
+	Type         string `json:"type"`  // "card", "bank_account", etc.
+	Last4        string `json:"last4"` // last 4 digits
+	Brand        string `json:"brand"` // "visa", "mastercard", etc.
 	ExpiryMonth  int    `json:"expiry_month"`
 	ExpiryYear   int    `json:"expiry_year"`
 	IsDefault    bool   `json:"is_default"`

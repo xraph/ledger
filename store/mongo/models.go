@@ -22,15 +22,15 @@ import (
 type planModel struct {
 	grove.BaseModel `grove:"table:ledger_plans"`
 
-	ID          string            `grove:"id,pk"       bson:"_id"`
-	Name        string            `grove:"name"        bson:"name"`
-	Slug        string            `grove:"slug"        bson:"slug"`
-	Description string            `grove:"description" bson:"description"`
-	Currency    string            `grove:"currency"    bson:"currency"`
-	Status      string            `grove:"status"      bson:"status"`
-	TrialDays   int               `grove:"trial_days"  bson:"trial_days"`
-	Features    []featureModel    `grove:"features"    bson:"features"`
-	Pricing     *pricingModel     `grove:"pricing"     bson:"pricing,omitempty"`
+	ID           string            `grove:"id,pk"       bson:"_id"`
+	Name         string            `grove:"name"        bson:"name"`
+	Slug         string            `grove:"slug"        bson:"slug"`
+	Description  string            `grove:"description" bson:"description"`
+	Currency     string            `grove:"currency"    bson:"currency"`
+	Status       string            `grove:"status"      bson:"status"`
+	TrialDays    int               `grove:"trial_days"  bson:"trial_days"`
+	Features     []featureModel    `grove:"features"    bson:"features"`
+	Pricing      *pricingModel     `grove:"pricing"     bson:"pricing,omitempty"`
 	AppID        string            `grove:"app_id"          bson:"app_id"`
 	ProviderID   string            `grove:"provider_id"     bson:"provider_id"`
 	ProviderName string            `grove:"provider_name"   bson:"provider_name"`
@@ -119,15 +119,15 @@ func toPlanModel(p *plan.Plan) *planModel {
 	}
 
 	return &planModel{
-		ID:          p.ID.String(),
-		Name:        p.Name,
-		Slug:        p.Slug,
-		Description: p.Description,
-		Currency:    p.Currency,
-		Status:      string(p.Status),
-		TrialDays:   p.TrialDays,
-		Features:    features,
-		Pricing:     pricing,
+		ID:           p.ID.String(),
+		Name:         p.Name,
+		Slug:         p.Slug,
+		Description:  p.Description,
+		Currency:     p.Currency,
+		Status:       string(p.Status),
+		TrialDays:    p.TrialDays,
+		Features:     features,
+		Pricing:      pricing,
 		AppID:        p.AppID,
 		ProviderID:   p.ProviderID,
 		ProviderName: p.ProviderName,
@@ -209,15 +209,15 @@ func fromPlanModel(m *planModel) (*plan.Plan, error) {
 			CreatedAt: m.CreatedAt,
 			UpdatedAt: m.UpdatedAt,
 		},
-		ID:          planID,
-		Name:        m.Name,
-		Slug:        m.Slug,
-		Description: m.Description,
-		Currency:    m.Currency,
-		Status:      plan.Status(m.Status),
-		TrialDays:   m.TrialDays,
-		Features:    features,
-		Pricing:     pricing,
+		ID:           planID,
+		Name:         m.Name,
+		Slug:         m.Slug,
+		Description:  m.Description,
+		Currency:     m.Currency,
+		Status:       plan.Status(m.Status),
+		TrialDays:    m.TrialDays,
+		Features:     features,
+		Pricing:      pricing,
 		AppID:        m.AppID,
 		ProviderID:   m.ProviderID,
 		ProviderName: m.ProviderName,

@@ -15,15 +15,15 @@ const (
 
 type Plan struct {
 	types.Entity
-	ID          id.PlanID         `json:"id"`
-	Name        string            `json:"name"`
-	Slug        string            `json:"slug"`
-	Description string            `json:"description"`
-	Currency    string            `json:"currency"`
-	Status      Status            `json:"status"`
-	TrialDays   int               `json:"trial_days"`
-	Features    []Feature         `json:"features"`
-	Pricing     *Pricing          `json:"pricing,omitempty"`
+	ID           id.PlanID         `json:"id"`
+	Name         string            `json:"name"`
+	Slug         string            `json:"slug"`
+	Description  string            `json:"description"`
+	Currency     string            `json:"currency"`
+	Status       Status            `json:"status"`
+	TrialDays    int               `json:"trial_days"`
+	Features     []Feature         `json:"features"`
+	Pricing      *Pricing          `json:"pricing,omitempty"`
 	AppID        string            `json:"app_id"`
 	ProviderID   string            `json:"provider_id,omitempty"`
 	ProviderName string            `json:"provider_name,omitempty"`
