@@ -14,27 +14,20 @@ import (
 )
 
 // fetchPlanStats returns plan counts for the given app.
-func fetchPlanStats(ctx context.Context, s store.Store, appID string) (total, active int, err error) {
+func fetchPlanStats(ctx context.Context, s store.Store, appID string) (total int, err error) {
 	plans, err := s.ListPlans(ctx, appID, plan.ListOpts{Limit: 1000})
 	if err != nil {
-		return 0, 0, fmt.Errorf("dashboard: fetch plan stats: %w", err)
+		return 0, fmt.Errorf("dashboard: fetch plan stats: %w", err)
 	}
-	total = len(plans)
-	for _, p := range plans {
-		if p.Status == plan.StatusActive {
-			active++
-		}
-	}
-	return total, active, nil
+	return len(plans), nil
 }
 
 // fetchSubscriptionStats returns subscription counts for the given app.
-func fetchSubscriptionStats(ctx context.Context, s store.Store, appID string) (total, active, trialing int, err error) {
+func fetchSubscriptionStats(ctx context.Context, s store.Store, appID string) (active, trialing int, err error) {
 	subs, err := s.ListSubscriptions(ctx, "", appID, subscription.ListOpts{Limit: 1000})
 	if err != nil {
-		return 0, 0, 0, fmt.Errorf("dashboard: fetch subscription stats: %w", err)
+		return 0, 0, fmt.Errorf("dashboard: fetch subscription stats: %w", err)
 	}
-	total = len(subs)
 	for _, sub := range subs {
 		switch sub.Status {
 		case subscription.StatusActive:
@@ -43,7 +36,7 @@ func fetchSubscriptionStats(ctx context.Context, s store.Store, appID string) (t
 			trialing++
 		}
 	}
-	return total, active, trialing, nil
+	return active, trialing, nil
 }
 
 // fetchInvoiceStats returns invoice counts for the given app.
@@ -110,35 +103,4 @@ func fetchUsageEvents(ctx context.Context, s store.Store, tenantID, appID string
 		return nil, fmt.Errorf("dashboard: fetch usage events: %w", err)
 	}
 	return events, nil
-}
-
-// formatTimeAgo returns a human-readable relative time string.
-func formatTimeAgo(t time.Time) string {
-	d := time.Since(t)
-
-	switch {
-	case d < time.Minute:
-		return "just now"
-	case d < time.Hour:
-		return fmt.Sprintf("%dm ago", int(d.Minutes()))
-	case d < 24*time.Hour:
-		return fmt.Sprintf("%dh ago", int(d.Hours()))
-	case d < 30*24*time.Hour:
-		return fmt.Sprintf("%dd ago", int(d.Hours()/24))
-	case d < 365*24*time.Hour:
-		return fmt.Sprintf("%dmo ago", int(d.Hours()/(24*30)))
-	default:
-		return fmt.Sprintf("%dy ago", int(d.Hours()/(24*365)))
-	}
-}
-
-// truncateString shortens s to max characters and appends "..." if truncated.
-func truncateString(s string, max int) string {
-	if len(s) <= max {
-		return s
-	}
-	if max <= 3 {
-		return s[:max]
-	}
-	return s[:max-3] + "..."
 }

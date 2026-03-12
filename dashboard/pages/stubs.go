@@ -36,15 +36,15 @@ func formatTimeAgo(t time.Time) string {
 	}
 }
 
-// truncateString shortens s to max characters and appends "..." if truncated.
-func truncateString(s string, max int) string {
-	if len(s) <= max {
+// truncateString shortens s to maxLen characters and appends "..." if truncated.
+func truncateString(s string, maxLen int) string {
+	if len(s) <= maxLen {
 		return s
 	}
-	if max <= 3 {
-		return s[:max]
+	if maxLen <= 3 {
+		return s[:maxLen]
 	}
-	return s[:max-3] + "..."
+	return s[:maxLen-3] + "..."
 }
 
 // formatLimit returns a display string for a feature limit.
@@ -53,59 +53,6 @@ func formatLimit(limit int64) string {
 		return "Unlimited"
 	}
 	return fmt.Sprintf("%d", limit)
-}
-
-// isSubscriptionActive returns true if the subscription status is active.
-func isSubscriptionActive(s *subscription.Subscription) bool {
-	return s.Status == subscription.StatusActive
-}
-
-// planStatusClass returns a CSS-friendly class name for a plan status.
-func planStatusClass(status plan.Status) string {
-	switch status {
-	case plan.StatusActive:
-		return "default"
-	case plan.StatusDraft:
-		return "secondary"
-	case plan.StatusArchived:
-		return "outline"
-	default:
-		return "secondary"
-	}
-}
-
-// invoiceStatusClass returns a CSS-friendly class name for an invoice status.
-func invoiceStatusClass(status invoice.Status) string {
-	switch status {
-	case invoice.StatusPaid:
-		return "default"
-	case invoice.StatusPending:
-		return "outline"
-	case invoice.StatusDraft:
-		return "secondary"
-	case invoice.StatusPastDue, invoice.StatusVoided:
-		return "destructive"
-	default:
-		return "secondary"
-	}
-}
-
-// subscriptionStatusClass returns a CSS-friendly class name for a subscription status.
-func subscriptionStatusClass(status subscription.Status) string {
-	switch status {
-	case subscription.StatusActive:
-		return "default"
-	case subscription.StatusTrialing:
-		return "secondary"
-	case subscription.StatusPastDue, subscription.StatusExpired:
-		return "destructive"
-	case subscription.StatusCanceled:
-		return "outline"
-	case subscription.StatusPaused:
-		return "secondary"
-	default:
-		return "secondary"
-	}
 }
 
 // OverviewStats holds aggregate stats for the overview page.
@@ -482,7 +429,7 @@ type tierJSON struct {
 }
 
 // parseTiersJSON parses the tiers_json hidden input.
-func parseTiersJSON(jsonStr string, currency string) ([]plan.PriceTier, error) {
+func parseTiersJSON(jsonStr, currency string) ([]plan.PriceTier, error) {
 	var raw []tierJSON
 	if err := json.Unmarshal([]byte(jsonStr), &raw); err != nil {
 		return nil, err

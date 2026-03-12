@@ -2,6 +2,7 @@ package ledger
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"sync"
 	"time"
@@ -184,7 +185,7 @@ func (l *Ledger) GetFeature(ctx context.Context, featureID id.FeatureID) (*featu
 }
 
 // GetFeatureByKey retrieves a catalog feature by key and app scope.
-func (l *Ledger) GetFeatureByKey(ctx context.Context, key string, appID string) (*feature.Feature, error) {
+func (l *Ledger) GetFeatureByKey(ctx context.Context, key, appID string) (*feature.Feature, error) {
 	return l.store.GetFeatureByKey(ctx, key, appID)
 }
 
@@ -420,9 +421,9 @@ func (l *Ledger) Entitled(ctx context.Context, featureKey string) (*entitlement.
 		}, nil
 	}
 
-	// Find feature
-	feature := p.FindFeature(featureKey)
-	if feature == nil {
+	// Find feature in plan
+	feat := p.FindFeature(featureKey)
+	if feat == nil {
 		return &entitlement.Result{
 			Allowed: false,
 			Feature: featureKey,
@@ -431,18 +432,18 @@ func (l *Ledger) Entitled(ctx context.Context, featureKey string) (*entitlement.
 	}
 
 	// Boolean feature
-	if feature.Type == plan.FeatureBoolean {
+	if feat.Type == plan.FeatureBoolean {
 		result := &entitlement.Result{
-			Allowed: feature.Limit > 0,
+			Allowed: feat.Limit > 0,
 			Feature: featureKey,
-			Limit:   feature.Limit,
+			Limit:   feat.Limit,
 		}
 		_ = l.store.SetCached(ctx, tenantID, appID, featureKey, result, l.entitlementCacheTTL) //nolint:errcheck // best-effort cache set
 		return result, nil
 	}
 
 	// Metered/seat feature
-	used, err := l.store.Aggregate(ctx, tenantID, appID, featureKey, feature.Period)
+	used, err := l.store.Aggregate(ctx, tenantID, appID, featureKey, feat.Period)
 	if err != nil {
 		return nil, err
 	}
@@ -450,24 +451,24 @@ func (l *Ledger) Entitled(ctx context.Context, featureKey string) (*entitlement.
 	result := &entitlement.Result{
 		Feature:   featureKey,
 		Used:      used,
-		Limit:     feature.Limit,
-		Remaining: max(0, feature.Limit-used),
-		SoftLimit: feature.SoftLimit,
+		Limit:     feat.Limit,
+		Remaining: max(0, feat.Limit-used),
+		SoftLimit: feat.SoftLimit,
 	}
 
 	switch {
-	case feature.Limit == -1:
+	case feat.Limit == -1:
 		result.Allowed = true
 		result.Remaining = -1
-	case used < feature.Limit:
+	case used < feat.Limit:
 		result.Allowed = true
-	case feature.SoftLimit:
+	case feat.SoftLimit:
 		result.Allowed = true
 		result.Reason = "over soft limit"
 	default:
 		result.Allowed = false
 		result.Reason = "quota exceeded"
-		l.plugins.EmitQuotaExceeded(ctx, tenantID, featureKey, used, feature.Limit)
+		l.plugins.EmitQuotaExceeded(ctx, tenantID, featureKey, used, feat.Limit)
 	}
 
 	_ = l.store.SetCached(ctx, tenantID, appID, featureKey, result, l.entitlementCacheTTL) //nolint:errcheck // best-effort cache set
