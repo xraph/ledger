@@ -3,7 +3,7 @@ module github.com/xraph/ledger
 go 1.25.7
 
 require (
-	github.com/a-h/templ v0.3.977
+	github.com/a-h/templ v0.3.1001
 	github.com/xraph/forge v1.3.1
 	github.com/xraph/forgeui v1.3.0
 	github.com/xraph/go-utils v1.0.0
