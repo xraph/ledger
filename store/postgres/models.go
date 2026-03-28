@@ -42,6 +42,10 @@ type planModel struct {
 func toPlanModel(p *plan.Plan) *planModel {
 	features, _ := json.Marshal(p.Features) //nolint:errcheck // best-effort
 	pricing, _ := json.Marshal(p.Pricing)   //nolint:errcheck // best-effort
+	metadata := p.Metadata
+	if metadata == nil {
+		metadata = make(map[string]string)
+	}
 
 	return &planModel{
 		ID:           p.ID.String(),
@@ -56,7 +60,7 @@ func toPlanModel(p *plan.Plan) *planModel {
 		AppID:        p.AppID,
 		ProviderID:   p.ProviderID,
 		ProviderName: p.ProviderName,
-		Metadata:     p.Metadata,
+		Metadata:     metadata,
 		CreatedAt:    p.CreatedAt,
 		UpdatedAt:    p.UpdatedAt,
 	}
@@ -125,6 +129,10 @@ type subscriptionModel struct {
 }
 
 func toSubscriptionModel(s *subscription.Subscription) *subscriptionModel {
+	metadata := s.Metadata
+	if metadata == nil {
+		metadata = make(map[string]string)
+	}
 	return &subscriptionModel{
 		ID:                 s.ID.String(),
 		TenantID:           s.TenantID,
@@ -140,7 +148,7 @@ func toSubscriptionModel(s *subscription.Subscription) *subscriptionModel {
 		AppID:              s.AppID,
 		ProviderID:         s.ProviderID,
 		ProviderName:       s.ProviderName,
-		Metadata:           s.Metadata,
+		Metadata:           metadata,
 		CreatedAt:          s.CreatedAt,
 		UpdatedAt:          s.UpdatedAt,
 	}
@@ -196,6 +204,10 @@ type usageEventModel struct {
 }
 
 func toUsageEventModel(e *meter.UsageEvent) *usageEventModel {
+	metadata := e.Metadata
+	if metadata == nil {
+		metadata = make(map[string]string)
+	}
 	return &usageEventModel{
 		ID:             e.ID.String(),
 		TenantID:       e.TenantID,
@@ -204,7 +216,7 @@ func toUsageEventModel(e *meter.UsageEvent) *usageEventModel {
 		Quantity:       e.Quantity,
 		Timestamp:      e.Timestamp,
 		IdempotencyKey: e.IdempotencyKey,
-		Metadata:       e.Metadata,
+		Metadata:       metadata,
 		CreatedAt:      time.Now().UTC(),
 	}
 }
@@ -313,6 +325,10 @@ type invoiceModel struct {
 
 func toInvoiceModel(inv *invoice.Invoice) *invoiceModel {
 	lineItems, _ := json.Marshal(inv.LineItems) //nolint:errcheck // best-effort
+	metadata := inv.Metadata
+	if metadata == nil {
+		metadata = make(map[string]string)
+	}
 
 	return &invoiceModel{
 		ID:                  inv.ID.String(),
@@ -339,7 +355,7 @@ func toInvoiceModel(inv *invoice.Invoice) *invoiceModel {
 		ProviderID:          inv.ProviderID,
 		ProviderName:        inv.ProviderName,
 		AppID:               inv.AppID,
-		Metadata:            inv.Metadata,
+		Metadata:            metadata,
 		CreatedAt:           inv.CreatedAt,
 		UpdatedAt:           inv.UpdatedAt,
 	}
@@ -413,6 +429,10 @@ type couponModel struct {
 }
 
 func toCouponModel(c *coupon.Coupon) *couponModel {
+	metadata := c.Metadata
+	if metadata == nil {
+		metadata = make(map[string]string)
+	}
 	return &couponModel{
 		ID:             c.ID.String(),
 		Code:           c.Code,
@@ -427,7 +447,7 @@ func toCouponModel(c *coupon.Coupon) *couponModel {
 		ValidFrom:      c.ValidFrom,
 		ValidUntil:     c.ValidUntil,
 		AppID:          c.AppID,
-		Metadata:       c.Metadata,
+		Metadata:       metadata,
 		CreatedAt:      c.CreatedAt,
 		UpdatedAt:      c.UpdatedAt,
 	}
@@ -483,6 +503,10 @@ type featureModel struct {
 }
 
 func toFeatureModel(f *feature.Feature) *featureModel {
+	metadata := f.Metadata
+	if metadata == nil {
+		metadata = make(map[string]string)
+	}
 	return &featureModel{
 		ID:           f.ID.String(),
 		Key:          f.Key,
@@ -496,7 +520,7 @@ func toFeatureModel(f *feature.Feature) *featureModel {
 		AppID:        f.AppID,
 		ProviderID:   f.ProviderID,
 		ProviderName: f.ProviderName,
-		Metadata:     f.Metadata,
+		Metadata:     metadata,
 		CreatedAt:    f.CreatedAt,
 		UpdatedAt:    f.UpdatedAt,
 	}

@@ -96,7 +96,7 @@ func (s *Store) ListPlans(_ context.Context, appID string, opts plan.ListOpts) (
 
 	result := make([]*plan.Plan, 0)
 	for _, p := range s.plans {
-		if p.AppID == appID {
+		if appID == "" || p.AppID == appID {
 			if opts.Status == "" || p.Status == opts.Status {
 				result = append(result, p)
 			}
@@ -187,7 +187,7 @@ func (s *Store) ListSubscriptions(_ context.Context, tenantID, appID string, opt
 
 	result := make([]*subscription.Subscription, 0)
 	for _, sub := range s.subscriptions {
-		if sub.TenantID == tenantID && sub.AppID == appID {
+		if (tenantID == "" || sub.TenantID == tenantID) && (appID == "" || sub.AppID == appID) {
 			if opts.Status == "" || sub.Status == opts.Status {
 				result = append(result, sub)
 			}
@@ -278,7 +278,7 @@ func (s *Store) QueryUsage(_ context.Context, tenantID, appID string, opts meter
 	result := make([]*meter.UsageEvent, 0)
 	for i := range s.usageEvents {
 		e := &s.usageEvents[i]
-		if e.TenantID == tenantID && e.AppID == appID {
+		if (tenantID == "" || e.TenantID == tenantID) && (appID == "" || e.AppID == appID) {
 			if opts.FeatureKey == "" || e.FeatureKey == opts.FeatureKey {
 				if (opts.Start.IsZero() || e.Timestamp.After(opts.Start)) &&
 					(opts.End.IsZero() || e.Timestamp.Before(opts.End)) {
@@ -382,7 +382,7 @@ func (s *Store) ListInvoices(_ context.Context, tenantID, appID string, opts inv
 
 	result := make([]*invoice.Invoice, 0)
 	for _, inv := range s.invoices {
-		if inv.TenantID == tenantID && inv.AppID == appID {
+		if (tenantID == "" || inv.TenantID == tenantID) && (appID == "" || inv.AppID == appID) {
 			if opts.Status == "" || inv.Status == opts.Status {
 				result = append(result, inv)
 			}
@@ -418,7 +418,7 @@ func (s *Store) ListPendingInvoices(_ context.Context, appID string) ([]*invoice
 
 	result := make([]*invoice.Invoice, 0)
 	for _, inv := range s.invoices {
-		if inv.AppID == appID && inv.Status == invoice.StatusPending {
+		if (appID == "" || inv.AppID == appID) && inv.Status == invoice.StatusPending {
 			result = append(result, inv)
 		}
 	}
@@ -491,7 +491,7 @@ func (s *Store) ListCoupons(_ context.Context, appID string, opts coupon.ListOpt
 	now := time.Now()
 
 	for _, c := range s.coupons {
-		if c.AppID == appID {
+		if appID == "" || c.AppID == appID {
 			if opts.Active {
 				if (c.ValidFrom == nil || now.After(*c.ValidFrom)) &&
 					(c.ValidUntil == nil || now.Before(*c.ValidUntil)) {
@@ -567,7 +567,7 @@ func (s *Store) ListFeatures(_ context.Context, appID string, opts feature.ListO
 
 	result := make([]*feature.Feature, 0)
 	for _, f := range s.features {
-		if f.AppID == appID {
+		if appID == "" || f.AppID == appID {
 			if opts.Status == "" || f.Status == opts.Status {
 				result = append(result, f)
 			}

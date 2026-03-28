@@ -92,6 +92,9 @@ func WithEntitlementCacheTTL(ttl time.Duration) Option {
 	}
 }
 
+// Store returns the underlying ledger store.
+func (l *Ledger) Store() store.Store { return l.store }
+
 // Start begins background workers.
 func (l *Ledger) Start(ctx context.Context) error {
 	// Migrate database

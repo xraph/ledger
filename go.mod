@@ -3,14 +3,14 @@ module github.com/xraph/ledger
 go 1.25.7
 
 require (
-	github.com/a-h/templ v0.3.977
-	github.com/xraph/forge v1.3.1
-	github.com/xraph/forgeui v1.3.0
-	github.com/xraph/go-utils v1.0.0
-	github.com/xraph/grove v1.3.1
-	github.com/xraph/grove/drivers/mongodriver v1.3.1
-	github.com/xraph/grove/drivers/pgdriver v1.3.1
-	github.com/xraph/grove/drivers/sqlitedriver v1.3.1
+	github.com/a-h/templ v0.3.1001
+	github.com/xraph/forge v1.4.0
+	github.com/xraph/forgeui v1.4.0
+	github.com/xraph/go-utils v1.1.0
+	github.com/xraph/grove v1.4.0
+	github.com/xraph/grove/drivers/mongodriver v1.4.0
+	github.com/xraph/grove/drivers/pgdriver v1.4.0
+	github.com/xraph/grove/drivers/sqlitedriver v1.4.0
 	github.com/xraph/vessel v1.0.0
 	go.jetify.com/typeid/v2 v2.0.0-alpha.3
 	go.mongodb.org/mongo-driver/v2 v2.5.0
@@ -108,7 +108,7 @@ require (
 	golang.org/x/sync v0.19.0 // indirect
 	golang.org/x/sys v0.41.0 // indirect
 	golang.org/x/term v0.39.0 // indirect
-	golang.org/x/text v0.33.0 // indirect
+	golang.org/x/text v0.34.0 // indirect
 	golang.org/x/time v0.12.0 // indirect
 	google.golang.org/genproto/googleapis/api v0.0.0-20260128011058-8636f8732409 // indirect
 	google.golang.org/genproto/googleapis/rpc v0.0.0-20260128011058-8636f8732409 // indirect

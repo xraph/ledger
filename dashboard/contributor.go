@@ -602,16 +602,18 @@ func (c *Contributor) renderFeatures(ctx context.Context, params contributor.Par
 		return nil, fmt.Errorf("dashboard: render features: %w", err)
 	}
 
-	// Also include global features.
-	globalFeatures, err := c.store.ListGlobalFeatures(ctx, opts)
-	if err != nil {
-		globalFeatures = nil
+	// When appID is set, also include global features.
+	// When appID is empty, ListFeatures already returns all features.
+	allFeatures := features
+	if c.appID != "" {
+		globalFeatures, err := c.store.ListGlobalFeatures(ctx, opts)
+		if err != nil {
+			globalFeatures = nil
+		}
+		allFeatures = make([]*feature.Feature, 0, len(features)+len(globalFeatures))
+		allFeatures = append(allFeatures, features...)
+		allFeatures = append(allFeatures, globalFeatures...)
 	}
-
-	// Merge: app-scoped first, then global.
-	allFeatures := make([]*feature.Feature, 0, len(features)+len(globalFeatures))
-	allFeatures = append(allFeatures, features...)
-	allFeatures = append(allFeatures, globalFeatures...)
 
 	return pages.FeaturesPage(pages.FeatureListData{
 		Features: allFeatures,

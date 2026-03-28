@@ -108,9 +108,13 @@ func (s *Store) GetPlanBySlug(ctx context.Context, slug, appID string) (*plan.Pl
 
 func (s *Store) ListPlans(ctx context.Context, appID string, opts plan.ListOpts) ([]*plan.Plan, error) {
 	var models []planModel
-	q := s.pg.NewSelect(&models).Where("app_id = $1", appID)
+	q := s.pg.NewSelect(&models)
 
-	argIdx := 1
+	argIdx := 0
+	if appID != "" {
+		argIdx++
+		q = q.Where(fmt.Sprintf("app_id = $%d", argIdx), appID)
+	}
 	if opts.Status != "" {
 		argIdx++
 		q = q.Where(fmt.Sprintf("status = $%d", argIdx), string(opts.Status))
@@ -234,9 +238,13 @@ func (s *Store) GetFeatureByKey(ctx context.Context, key, appID string) (*featur
 
 func (s *Store) ListFeatures(ctx context.Context, appID string, opts feature.ListOpts) ([]*feature.Feature, error) {
 	var models []featureModel
-	q := s.pg.NewSelect(&models).Where("app_id = $1", appID)
+	q := s.pg.NewSelect(&models)
 
-	argIdx := 1
+	argIdx := 0
+	if appID != "" {
+		argIdx++
+		q = q.Where(fmt.Sprintf("app_id = $%d", argIdx), appID)
+	}
 	if opts.Status != "" {
 		argIdx++
 		q = q.Where(fmt.Sprintf("status = $%d", argIdx), string(opts.Status))
@@ -392,11 +400,17 @@ func (s *Store) GetActiveSubscription(ctx context.Context, tenantID, appID strin
 
 func (s *Store) ListSubscriptions(ctx context.Context, tenantID, appID string, opts subscription.ListOpts) ([]*subscription.Subscription, error) {
 	var models []subscriptionModel
-	q := s.pg.NewSelect(&models).
-		Where("tenant_id = $1", tenantID).
-		Where("app_id = $2", appID)
+	q := s.pg.NewSelect(&models)
 
-	argIdx := 2
+	argIdx := 0
+	if tenantID != "" {
+		argIdx++
+		q = q.Where(fmt.Sprintf("tenant_id = $%d", argIdx), tenantID)
+	}
+	if appID != "" {
+		argIdx++
+		q = q.Where(fmt.Sprintf("app_id = $%d", argIdx), appID)
+	}
 	if opts.Status != "" {
 		argIdx++
 		q = q.Where(fmt.Sprintf("status = $%d", argIdx), string(opts.Status))
@@ -502,11 +516,17 @@ func (s *Store) AggregateMulti(ctx context.Context, tenantID, appID string, feat
 
 func (s *Store) QueryUsage(ctx context.Context, tenantID, appID string, opts meter.QueryOpts) ([]*meter.UsageEvent, error) {
 	var models []usageEventModel
-	q := s.pg.NewSelect(&models).
-		Where("tenant_id = $1", tenantID).
-		Where("app_id = $2", appID)
+	q := s.pg.NewSelect(&models)
 
-	argIdx := 2
+	argIdx := 0
+	if tenantID != "" {
+		argIdx++
+		q = q.Where(fmt.Sprintf("tenant_id = $%d", argIdx), tenantID)
+	}
+	if appID != "" {
+		argIdx++
+		q = q.Where(fmt.Sprintf("app_id = $%d", argIdx), appID)
+	}
 	if opts.FeatureKey != "" {
 		argIdx++
 		q = q.Where(fmt.Sprintf("feature_key = $%d", argIdx), opts.FeatureKey)
@@ -632,11 +652,17 @@ func (s *Store) GetInvoice(ctx context.Context, invID id.InvoiceID) (*invoice.In
 
 func (s *Store) ListInvoices(ctx context.Context, tenantID, appID string, opts invoice.ListOpts) ([]*invoice.Invoice, error) {
 	var models []invoiceModel
-	q := s.pg.NewSelect(&models).
-		Where("tenant_id = $1", tenantID).
-		Where("app_id = $2", appID)
+	q := s.pg.NewSelect(&models)
 
-	argIdx := 2
+	argIdx := 0
+	if tenantID != "" {
+		argIdx++
+		q = q.Where(fmt.Sprintf("tenant_id = $%d", argIdx), tenantID)
+	}
+	if appID != "" {
+		argIdx++
+		q = q.Where(fmt.Sprintf("app_id = $%d", argIdx), appID)
+	}
 	if opts.Status != "" {
 		argIdx++
 		q = q.Where(fmt.Sprintf("status = $%d", argIdx), string(opts.Status))
@@ -698,10 +724,17 @@ func (s *Store) GetInvoiceByPeriod(ctx context.Context, tenantID, appID string, 
 
 func (s *Store) ListPendingInvoices(ctx context.Context, appID string) ([]*invoice.Invoice, error) {
 	var models []invoiceModel
-	err := s.pg.NewSelect(&models).
-		Where("app_id = $1", appID).
-		Where("status = $2", string(invoice.StatusPending)).
-		OrderExpr("created_at DESC").
+	q := s.pg.NewSelect(&models)
+
+	argIdx := 0
+	if appID != "" {
+		argIdx++
+		q = q.Where(fmt.Sprintf("app_id = $%d", argIdx), appID)
+	}
+	argIdx++
+	q = q.Where(fmt.Sprintf("status = $%d", argIdx), string(invoice.StatusPending))
+
+	err := q.OrderExpr("created_at DESC").
 		Scan(ctx)
 	if err != nil {
 		return nil, err
@@ -801,11 +834,19 @@ func (s *Store) GetCouponByID(ctx context.Context, couponID id.CouponID) (*coupo
 
 func (s *Store) ListCoupons(ctx context.Context, appID string, opts coupon.ListOpts) ([]*coupon.Coupon, error) {
 	var models []couponModel
-	q := s.pg.NewSelect(&models).Where("app_id = $1", appID)
+	q := s.pg.NewSelect(&models)
 
+	argIdx := 0
+	if appID != "" {
+		argIdx++
+		q = q.Where(fmt.Sprintf("app_id = $%d", argIdx), appID)
+	}
 	if opts.Active {
-		q = q.Where("(valid_from IS NULL OR valid_from <= $2)", time.Now().UTC()).
-			Where("(valid_until IS NULL OR valid_until >= $3)", time.Now().UTC())
+		t := time.Now().UTC()
+		argIdx++
+		q = q.Where(fmt.Sprintf("(valid_from IS NULL OR valid_from <= $%d)", argIdx), t)
+		argIdx++
+		q = q.Where(fmt.Sprintf("(valid_until IS NULL OR valid_until >= $%d)", argIdx), t)
 	}
 	if opts.Limit > 0 {
 		q = q.Limit(opts.Limit)

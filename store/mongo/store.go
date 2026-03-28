@@ -124,7 +124,10 @@ func (s *Store) GetPlanBySlug(ctx context.Context, slug, appID string) (*plan.Pl
 func (s *Store) ListPlans(ctx context.Context, appID string, opts plan.ListOpts) ([]*plan.Plan, error) {
 	var models []planModel
 
-	filter := bson.M{"app_id": appID}
+	filter := bson.M{}
+	if appID != "" {
+		filter["app_id"] = appID
+	}
 	if opts.Status != "" {
 		filter["status"] = string(opts.Status)
 	}
@@ -248,7 +251,13 @@ func (s *Store) GetActiveSubscription(ctx context.Context, tenantID, appID strin
 func (s *Store) ListSubscriptions(ctx context.Context, tenantID, appID string, opts subscription.ListOpts) ([]*subscription.Subscription, error) {
 	var models []subscriptionModel
 
-	filter := bson.M{"tenant_id": tenantID, "app_id": appID}
+	filter := bson.M{}
+	if tenantID != "" {
+		filter["tenant_id"] = tenantID
+	}
+	if appID != "" {
+		filter["app_id"] = appID
+	}
 	if opts.Status != "" {
 		filter["status"] = string(opts.Status)
 	}
@@ -389,7 +398,13 @@ func (s *Store) AggregateMulti(ctx context.Context, tenantID, appID string, feat
 func (s *Store) QueryUsage(ctx context.Context, tenantID, appID string, opts meter.QueryOpts) ([]*meter.UsageEvent, error) {
 	var models []usageEventModel
 
-	filter := bson.M{"tenant_id": tenantID, "app_id": appID}
+	filter := bson.M{}
+	if tenantID != "" {
+		filter["tenant_id"] = tenantID
+	}
+	if appID != "" {
+		filter["app_id"] = appID
+	}
 	if opts.FeatureKey != "" {
 		filter["feature_key"] = opts.FeatureKey
 	}
@@ -544,7 +559,13 @@ func (s *Store) GetInvoice(ctx context.Context, invID id.InvoiceID) (*invoice.In
 func (s *Store) ListInvoices(ctx context.Context, tenantID, appID string, opts invoice.ListOpts) ([]*invoice.Invoice, error) {
 	var models []invoiceModel
 
-	filter := bson.M{"tenant_id": tenantID, "app_id": appID}
+	filter := bson.M{}
+	if tenantID != "" {
+		filter["tenant_id"] = tenantID
+	}
+	if appID != "" {
+		filter["app_id"] = appID
+	}
 	if opts.Status != "" {
 		filter["status"] = string(opts.Status)
 	}
@@ -616,8 +637,13 @@ func (s *Store) GetInvoiceByPeriod(ctx context.Context, tenantID, appID string, 
 func (s *Store) ListPendingInvoices(ctx context.Context, appID string) ([]*invoice.Invoice, error) {
 	var models []invoiceModel
 
+	filter := bson.M{"status": string(invoice.StatusPending)}
+	if appID != "" {
+		filter["app_id"] = appID
+	}
+
 	err := s.mdb.NewFind(&models).
-		Filter(bson.M{"app_id": appID, "status": string(invoice.StatusPending)}).
+		Filter(filter).
 		Sort(bson.D{{Key: "created_at", Value: -1}}).
 		Scan(ctx)
 	if err != nil {
@@ -713,7 +739,10 @@ func (s *Store) GetCouponByID(ctx context.Context, couponID id.CouponID) (*coupo
 func (s *Store) ListCoupons(ctx context.Context, appID string, opts coupon.ListOpts) ([]*coupon.Coupon, error) {
 	var models []couponModel
 
-	filter := bson.M{"app_id": appID}
+	filter := bson.M{}
+	if appID != "" {
+		filter["app_id"] = appID
+	}
 	if opts.Active {
 		t := time.Now().UTC()
 		filter["$and"] = bson.A{
@@ -827,7 +856,10 @@ func (s *Store) GetFeatureByKey(ctx context.Context, key, appID string) (*featur
 func (s *Store) ListFeatures(ctx context.Context, appID string, opts feature.ListOpts) ([]*feature.Feature, error) {
 	var models []featureCatalogModel
 
-	filter := bson.M{"app_id": appID}
+	filter := bson.M{}
+	if appID != "" {
+		filter["app_id"] = appID
+	}
 	if opts.Status != "" {
 		filter["status"] = string(opts.Status)
 	}
