@@ -4,13 +4,13 @@ go 1.26.0
 
 require (
 	github.com/a-h/templ v0.3.1001
-	github.com/xraph/forge v1.9.2
+	github.com/xraph/forge v1.9.8
 	github.com/xraph/forgeui v1.4.1
 	github.com/xraph/go-utils v1.1.6
-	github.com/xraph/grove v1.6.0
-	github.com/xraph/grove/drivers/mongodriver v1.6.0
-	github.com/xraph/grove/drivers/pgdriver v1.6.0
-	github.com/xraph/grove/drivers/sqlitedriver v1.6.0
+	github.com/xraph/grove v1.6.1
+	github.com/xraph/grove/drivers/mongodriver v1.6.1
+	github.com/xraph/grove/drivers/pgdriver v1.6.1
+	github.com/xraph/grove/drivers/sqlitedriver v1.6.1
 	github.com/xraph/vessel v1.0.4
 	go.jetify.com/typeid/v2 v2.0.0-alpha.3
 	go.mongodb.org/mongo-driver/v2 v2.5.0
@@ -54,7 +54,7 @@ require (
 	github.com/gobwas/httphead v0.1.0 // indirect
 	github.com/gobwas/pool v0.2.1 // indirect
 	github.com/gobwas/ws v1.4.0 // indirect
-	github.com/gofrs/uuid/v5 v5.3.2 // indirect
+	github.com/gofrs/uuid/v5 v5.5.1 // indirect
 	github.com/google/gnostic-models v0.7.1 // indirect
 	github.com/google/uuid v1.6.0 // indirect
 	github.com/grpc-ecosystem/grpc-gateway/v2 v2.28.0 // indirect
@@ -74,6 +74,7 @@ require (
 	github.com/jackc/puddle/v2 v2.2.2 // indirect
 	github.com/json-iterator/go v1.1.12 // indirect
 	github.com/klauspost/compress v1.19.1 // indirect
+	github.com/klauspost/cpuid/v2 v2.4.0 // indirect
 	github.com/leodido/go-urn v1.5.0 // indirect
 	github.com/mattn/go-colorable v0.1.15 // indirect
 	github.com/mattn/go-isatty v0.0.24 // indirect
