@@ -381,42 +381,61 @@ func testUsageTenantIsolation(t *testing.T, s ledgerstore.Store) {
 //
 // PINNED BEHAVIOUR: every store.Store implementation in this repository
 // (memory, sqlite, postgres, mongo) treats tenantID == "" as "do not filter
-// by tenant" rather than "match no tenant". A caller that fails to resolve a
-// tenant and passes "" straight through gets every tenant's rows back for
-// the given app, not zero rows. That is a real, present-day gap: a contract
-// layer sitting in front of these stores must refuse to call them with an
-// empty tenant id, because the stores themselves will not stop it. This test
-// exists so that guard has something concrete to defend, and so this
-// behaviour cannot silently change in either direction without a test
+// by tenant" while the appID filter still applies normally. A caller that
+// fails to resolve a tenant and passes "" straight through gets every
+// tenant's rows back for the given app — not zero rows, but also not every
+// row in the table regardless of app. That is a real, present-day gap: a
+// contract layer sitting in front of these stores must refuse to call them
+// with an empty tenant id, because the stores themselves will not stop it.
+// This test exists so that guard has something concrete to defend, and so
+// this behaviour cannot silently change in either direction without a test
 // failing here first. If a future backend disagreed with the others, that
 // would be a finding to report, not a difference to average away.
+//
+// A third fixture row lives under a different appID entirely. It is the
+// control: presence-only assertions ("does the result contain tenant A and
+// tenant B") would also be satisfied by a strictly worse, undocumented
+// behaviour where the appID filter is dropped too and every app's rows come
+// back. The control row plus an exact count on top of the two presence
+// checks is what tells those two behaviours apart.
 func testEmptyTenantIDBehavior(t *testing.T, s ledgerstore.Store) {
 	ctx := context.Background()
 	appID := "app-" + uniqueSuffix()
+	otherAppID := "app-other-" + uniqueSuffix()
 	tenantA := "tenant-a-" + uniqueSuffix()
 	tenantB := "tenant-b-" + uniqueSuffix()
+	tenantOther := "tenant-other-" + uniqueSuffix()
 
 	subA := newTestSubscription(tenantA, appID)
 	subB := newTestSubscription(tenantB, appID)
+	subOther := newTestSubscription(tenantOther, otherAppID)
 	if err := s.CreateSubscription(ctx, subA); err != nil {
 		t.Fatalf("CreateSubscription(tenantA): %v", err)
 	}
 	if err := s.CreateSubscription(ctx, subB); err != nil {
 		t.Fatalf("CreateSubscription(tenantB): %v", err)
 	}
+	if err := s.CreateSubscription(ctx, subOther); err != nil {
+		t.Fatalf("CreateSubscription(otherApp): %v", err)
+	}
 
 	invA := newTestInvoice(tenantA, appID)
 	invB := newTestInvoice(tenantB, appID)
+	invOther := newTestInvoice(tenantOther, otherAppID)
 	if err := s.CreateInvoice(ctx, invA); err != nil {
 		t.Fatalf("CreateInvoice(tenantA): %v", err)
 	}
 	if err := s.CreateInvoice(ctx, invB); err != nil {
 		t.Fatalf("CreateInvoice(tenantB): %v", err)
 	}
+	if err := s.CreateInvoice(ctx, invOther); err != nil {
+		t.Fatalf("CreateInvoice(otherApp): %v", err)
+	}
 
 	evtA := newTestUsageEvent(tenantA, appID)
 	evtB := newTestUsageEvent(tenantB, appID)
-	if err := s.IngestBatch(ctx, []*meter.UsageEvent{evtA, evtB}); err != nil {
+	evtOther := newTestUsageEvent(tenantOther, otherAppID)
+	if err := s.IngestBatch(ctx, []*meter.UsageEvent{evtA, evtB, evtOther}); err != nil {
 		t.Fatalf("IngestBatch: %v", err)
 	}
 
@@ -428,6 +447,13 @@ func testEmptyTenantIDBehavior(t *testing.T, s ledgerstore.Store) {
 		t.Errorf("ListSubscriptions(tenantID=%q, appID=%s): got %d row(s) not covering both tenants; "+
 			"an empty tenant id is expected, today, to match every tenant under the app", "", appID, len(subs))
 	}
+	if hasSubscriptionID(subs, subOther.ID) {
+		t.Errorf("ListSubscriptions(tenantID=%q, appID=%s): got otherApp's subscription %s; "+
+			"an empty tenant id must not also drop the appID filter", "", appID, subOther.ID)
+	}
+	if len(subs) != 2 {
+		t.Errorf("ListSubscriptions(tenantID=%q, appID=%s): got %d row(s), want exactly 2 (tenantA + tenantB)", "", appID, len(subs))
+	}
 
 	invs, err := s.ListInvoices(ctx, "", appID, invoice.ListOpts{})
 	if err != nil {
@@ -437,6 +463,13 @@ func testEmptyTenantIDBehavior(t *testing.T, s ledgerstore.Store) {
 		t.Errorf("ListInvoices(tenantID=%q, appID=%s): got %d row(s) not covering both tenants; "+
 			"an empty tenant id is expected, today, to match every tenant under the app", "", appID, len(invs))
 	}
+	if hasInvoiceID(invs, invOther.ID) {
+		t.Errorf("ListInvoices(tenantID=%q, appID=%s): got otherApp's invoice %s; "+
+			"an empty tenant id must not also drop the appID filter", "", appID, invOther.ID)
+	}
+	if len(invs) != 2 {
+		t.Errorf("ListInvoices(tenantID=%q, appID=%s): got %d row(s), want exactly 2 (tenantA + tenantB)", "", appID, len(invs))
+	}
 
 	evts, err := s.QueryUsage(ctx, "", appID, meter.QueryOpts{})
 	if err != nil {
@@ -445,5 +478,12 @@ func testEmptyTenantIDBehavior(t *testing.T, s ledgerstore.Store) {
 	if !hasUsageEventID(evts, evtA.ID) || !hasUsageEventID(evts, evtB.ID) {
 		t.Errorf("QueryUsage(tenantID=%q, appID=%s): got %d row(s) not covering both tenants; "+
 			"an empty tenant id is expected, today, to match every tenant under the app", "", appID, len(evts))
+	}
+	if hasUsageEventID(evts, evtOther.ID) {
+		t.Errorf("QueryUsage(tenantID=%q, appID=%s): got otherApp's usage event %s; "+
+			"an empty tenant id must not also drop the appID filter", "", appID, evtOther.ID)
+	}
+	if len(evts) != 2 {
+		t.Errorf("QueryUsage(tenantID=%q, appID=%s): got %d row(s), want exactly 2 (tenantA + tenantB)", "", appID, len(evts))
 	}
 }
