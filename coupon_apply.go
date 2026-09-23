@@ -14,8 +14,18 @@ import (
 //
 // Every check that can fail runs before any write, so a rejected coupon
 // leaves no application row and no incremented redemption count. The
-// redemption count is incremented after the application row lands: a count
-// without a row is unexplainable, a row without a count is recoverable.
+// application row and the redemption count are written together through
+// l.store.RedeemCoupon, which the store commits as one unit: a review of
+// the previous two-write version found both of its assumptions false. A
+// coupon read as under its cap could still be over its cap by the time the
+// write landed, because the check and the write were two separate steps
+// with no lock between them - a barrier test redeemed a coupon capped at 1
+// five times this way. And a row without a count turned out not to be
+// recoverable either: a retry after a failure between the two writes saw
+// the application row already there and returned ErrCouponAlreadyApplied,
+// so the count never caught up. RedeemCoupon closes both gaps by enforcing
+// the cap with a conditional increment inside the same unit that records
+// the application, rather than a read followed by a write.
 func (l *Ledger) ApplyCoupon(ctx context.Context, subID id.SubscriptionID, code string) (*coupon.Coupon, error) {
 	sub, err := l.store.GetSubscription(ctx, subID)
 	if err != nil {
@@ -86,12 +96,8 @@ func (l *Ledger) ApplyCoupon(ctx context.Context, subID id.SubscriptionID, code 
 		}
 	}
 
-	if err := l.store.ApplyCoupon(ctx, subID, c.ID); err != nil {
+	if err := l.store.RedeemCoupon(ctx, subID, c.ID); err != nil {
 		return nil, err
-	}
-
-	if err := l.store.IncrementCouponRedemptions(ctx, c.ID); err != nil {
-		return nil, fmt.Errorf("ledger: coupon applied but redemption count not incremented: %w", err)
 	}
 
 	// Re-read rather than incrementing c.TimesRedeemed locally: some store

@@ -14,9 +14,16 @@ type Store interface {
 	Update(ctx context.Context, c *Coupon) error
 	Delete(ctx context.Context, couponID id.CouponID) error
 
+	// Apply and IncrementRedemptions are low-level operations kept for
+	// backends and tests that need them separately. Engine code redeems
+	// through Redeem, which performs both as one unit.
 	Apply(ctx context.Context, subID id.SubscriptionID, couponID id.CouponID) error
 	ListApplied(ctx context.Context, subID id.SubscriptionID) ([]*Coupon, error)
 	IncrementRedemptions(ctx context.Context, couponID id.CouponID) error
+	// Redeem records a coupon's application and increments its redemption
+	// count as a single unit, enforcing the redemption cap with a
+	// conditional increment rather than a read followed by a write.
+	Redeem(ctx context.Context, subID id.SubscriptionID, couponID id.CouponID) error
 }
 
 type ListOpts struct {

@@ -75,9 +75,19 @@ type Store interface {
 	ListCoupons(ctx context.Context, appID string, opts coupon.ListOpts) ([]*coupon.Coupon, error)
 	UpdateCoupon(ctx context.Context, c *coupon.Coupon) error
 	DeleteCoupon(ctx context.Context, couponID id.CouponID) error
+	// ApplyCoupon and IncrementCouponRedemptions are low-level operations
+	// kept for backends and tests that need them separately. Engine code
+	// redeems through RedeemCoupon, which performs both as one unit.
 	ApplyCoupon(ctx context.Context, subID id.SubscriptionID, couponID id.CouponID) error
 	ListAppliedCoupons(ctx context.Context, subID id.SubscriptionID) ([]*coupon.Coupon, error)
 	IncrementCouponRedemptions(ctx context.Context, couponID id.CouponID) error
+	// RedeemCoupon records a coupon's application to a subscription and
+	// increments its redemption count as a single unit: either both land or
+	// neither does. The redemption cap (MaxRedemptions) is enforced by a
+	// conditional increment inside that unit, not by a read followed by a
+	// separate write, so it holds under concurrent callers racing the same
+	// coupon toward its cap.
+	RedeemCoupon(ctx context.Context, subID id.SubscriptionID, couponID id.CouponID) error
 
 	// Core methods
 	Migrate(ctx context.Context) error

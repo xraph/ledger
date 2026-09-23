@@ -535,6 +535,9 @@ func (s *Store) couponApplicationsFor(subID id.SubscriptionID) []*coupon.Applica
 	return s.couponApplications[subID.String()]
 }
 
+// ApplyCoupon is a low-level operation kept for callers and tests that need
+// it separately. Engine code redeems through RedeemCoupon, which records
+// the application and increments the redemption count as one unit.
 func (s *Store) ApplyCoupon(_ context.Context, subID id.SubscriptionID, couponID id.CouponID) error {
 	if err := validateSubscriptionID(subID); err != nil {
 		return err
@@ -585,6 +588,19 @@ func (s *Store) ListAppliedCoupons(_ context.Context, subID id.SubscriptionID) (
 	return result, nil
 }
 
+// IncrementCouponRedemptions is a low-level operation kept for callers and
+// tests that need it separately. Engine code redeems through RedeemCoupon,
+// which increments the count and records the application as one unit.
+//
+// This replaces the map's entry with an updated copy rather than mutating
+// the existing *coupon.Coupon in place. GetCoupon and GetCouponByID hand
+// out the pointer this store holds internally rather than a copy, so a
+// caller can be sitting on that pointer - reading, say, TimesRedeemed for
+// Ledger.ApplyCoupon's fast-path exhaustion check - at the exact moment
+// another goroutine redeems the same coupon. Mutating fields on the shared
+// object in place would race with that read; swapping in a fresh copy
+// under the lock does not, because the object an earlier caller is holding
+// is never written to again once published.
 func (s *Store) IncrementCouponRedemptions(_ context.Context, couponID id.CouponID) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -594,8 +610,63 @@ func (s *Store) IncrementCouponRedemptions(_ context.Context, couponID id.Coupon
 		return ledger.ErrCouponNotFound
 	}
 
-	c.TimesRedeemed++
-	c.Touch()
+	updated := *c
+	updated.TimesRedeemed++
+	updated.Touch()
+	s.coupons[couponID.String()] = &updated
+
+	return nil
+}
+
+// RedeemCoupon records a coupon's application to a subscription and
+// increments its redemption count under one lock, so a reader can never
+// observe the count moved without the application row that explains it, or
+// see a stale TimesRedeemed while deciding whether the coupon is exhausted.
+// The cap (MaxRedemptions) is checked and the count incremented atomically
+// with respect to every other call on this store: there is no window
+// between reading TimesRedeemed and writing it where a concurrent call
+// could also pass the cap check.
+//
+// Like IncrementCouponRedemptions, this swaps in an updated copy of the
+// coupon rather than mutating the stored pointer in place, so a caller
+// holding a pointer obtained from an earlier Get never observes a
+// concurrent redemption's write - see that method's comment for why that
+// matters for this store specifically.
+func (s *Store) RedeemCoupon(_ context.Context, subID id.SubscriptionID, couponID id.CouponID) error {
+	if err := validateSubscriptionID(subID); err != nil {
+		return err
+	}
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	c, ok := s.coupons[couponID.String()]
+	if !ok {
+		return ledger.ErrCouponNotFound
+	}
+
+	key := subID.String()
+	for _, a := range s.couponApplications[key] {
+		if a.CouponID.String() == couponID.String() {
+			return ledger.ErrCouponAlreadyApplied
+		}
+	}
+
+	if c.MaxRedemptions > 0 && c.TimesRedeemed >= c.MaxRedemptions {
+		return ledger.ErrCouponExhausted
+	}
+
+	s.couponApplications[key] = append(s.couponApplications[key], &coupon.Application{
+		ID:             id.NewCouponApplicationID(),
+		CouponID:       couponID,
+		SubscriptionID: subID,
+		AppliedAt:      time.Now().UTC(),
+	})
+
+	updated := *c
+	updated.TimesRedeemed++
+	updated.Touch()
+	s.coupons[couponID.String()] = &updated
 
 	return nil
 }

@@ -812,6 +812,9 @@ func (s *Store) DeleteCoupon(ctx context.Context, couponID id.CouponID) error {
 	return nil
 }
 
+// ApplyCoupon is a low-level operation kept for callers and tests that need
+// it separately. Engine code redeems through RedeemCoupon, which records
+// the application and increments the redemption count as one unit.
 func (s *Store) ApplyCoupon(ctx context.Context, subID id.SubscriptionID, couponID id.CouponID) error {
 	if err := validateSubscriptionID(subID); err != nil {
 		return err
@@ -879,6 +882,9 @@ func (s *Store) ListAppliedCoupons(ctx context.Context, subID id.SubscriptionID)
 	return result, nil
 }
 
+// IncrementCouponRedemptions is a low-level operation kept for callers and
+// tests that need it separately. Engine code redeems through RedeemCoupon,
+// which increments the count and records the application as one unit.
 func (s *Store) IncrementCouponRedemptions(ctx context.Context, couponID id.CouponID) error {
 	res, err := s.mdb.NewUpdate((*couponModel)(nil)).
 		Filter(bson.M{"_id": couponID.String()}).
@@ -895,6 +901,94 @@ func (s *Store) IncrementCouponRedemptions(ctx context.Context, couponID id.Coup
 	}
 
 	return nil
+}
+
+// RedeemCoupon records a coupon's application to a subscription and
+// increments its redemption count.
+//
+// This is compensating, not transactional: MongoDB multi-document
+// transactions need a replica set, and the harness this store is tested
+// against cannot assume one is available, so this method cannot open a
+// session transaction the way the SQL backends open a database
+// transaction. Instead it performs the two writes in sequence and undoes
+// the first by hand when the second doesn't land as a success: insert the
+// application row, then run the redemption-count increment as a single
+// filtered update whose filter itself encodes the cap
+// (`{max_redemptions: 0} OR {$expr: {$lt: [times_redeemed,
+// max_redemptions]}}`), which MongoDB evaluates and applies atomically
+// against that one document. A document update in MongoDB is always atomic
+// per document, so the increment step alone is race-free the same way the
+// SQL backends' conditional UPDATE is; what is not race-free is the gap
+// between the two writes, during which another process could observe the
+// application row before the count catches up. Given no replica set to
+// transact against, this is the closest available approximation, and it is
+// unverified against a live MongoDB in this environment - no
+// LEDGER_TEST_MONGO_URI was available when this was written, so only the
+// SQL backends' conformance runs and this method's logic have been
+// checked.
+func (s *Store) RedeemCoupon(ctx context.Context, subID id.SubscriptionID, couponID id.CouponID) error {
+	if err := validateSubscriptionID(subID); err != nil {
+		return err
+	}
+
+	if _, err := s.GetCouponByID(ctx, couponID); err != nil {
+		return err
+	}
+
+	appDoc := &couponApplicationDoc{
+		ID:             id.NewCouponApplicationID().String(),
+		CouponID:       couponID.String(),
+		SubscriptionID: subID.String(),
+		AppliedAt:      now(),
+	}
+	if _, err := s.mdb.NewInsert(appDoc).Exec(ctx); err != nil {
+		if isDuplicateKeyError(err) {
+			return ledger.ErrCouponAlreadyApplied
+		}
+		return fmt.Errorf("ledger/mongo: redeem coupon: insert application: %w", err)
+	}
+
+	res, err := s.mdb.NewUpdate((*couponModel)(nil)).
+		Filter(bson.M{
+			"_id": couponID.String(),
+			"$or": []bson.M{
+				{"max_redemptions": 0},
+				{"$expr": bson.M{"$lt": bson.A{"$times_redeemed", "$max_redemptions"}}},
+			},
+		}).
+		SetUpdate(bson.M{
+			"$inc": bson.M{"times_redeemed": 1},
+			"$set": bson.M{"updated_at": now()},
+		}).
+		Exec(ctx)
+	if err != nil {
+		if delErr := s.deleteCouponApplication(ctx, appDoc.ID); delErr != nil {
+			return fmt.Errorf("ledger/mongo: redeem coupon: increment failed (%v) and the compensating delete of the application row also failed: %w", err, delErr)
+		}
+		return fmt.Errorf("ledger/mongo: redeem coupon: increment: %w", err)
+	}
+	if res.MatchedCount() == 0 {
+		// The coupon exists (confirmed above), so no match here means the
+		// filter's cap clause rejected it: the cap was reached. Delete the
+		// application row inserted above so no discount is left attached
+		// to a redemption that was never counted.
+		if delErr := s.deleteCouponApplication(ctx, appDoc.ID); delErr != nil {
+			return fmt.Errorf("ledger/mongo: redeem coupon: coupon exhausted, and the compensating delete of the application row also failed: %w", delErr)
+		}
+		return ledger.ErrCouponExhausted
+	}
+
+	return nil
+}
+
+// deleteCouponApplication removes a single coupon application row by its
+// own id. It backs RedeemCoupon's compensating delete after an increment
+// that failed or hit the cap.
+func (s *Store) deleteCouponApplication(ctx context.Context, applicationID string) error {
+	_, err := s.mdb.NewDelete((*couponApplicationDoc)(nil)).
+		Filter(bson.M{"_id": applicationID}).
+		Exec(ctx)
+	return err
 }
 
 // ==================== Feature Catalog Store ====================

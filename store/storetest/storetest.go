@@ -42,6 +42,12 @@ func Run(t *testing.T, newStore func(t *testing.T) ledgerstore.Store) {
 	t.Run("ApplyCouponRejectsInvalidSubscriptionID", func(t *testing.T) { testApplyCouponRejectsInvalidSubscriptionID(t, newStore(t)) })
 	t.Run("ListAppliedCouponsWithNilSubscriptionID", func(t *testing.T) { testListAppliedCouponsWithNilSubscriptionID(t, newStore(t)) })
 	t.Run("ApplyCouponConcurrentDoubleApply", func(t *testing.T) { testApplyCouponConcurrentDoubleApply(t, newStore(t)) })
+	t.Run("RedeemCouponRecordsAndCounts", func(t *testing.T) { testRedeemCouponRecordsAndCounts(t, newStore(t)) })
+	t.Run("RedeemCouponRespectsTheCap", func(t *testing.T) { testRedeemCouponRespectsTheCap(t, newStore(t)) })
+	t.Run("RedeemCouponUnlimited", func(t *testing.T) { testRedeemCouponUnlimited(t, newStore(t)) })
+	t.Run("RedeemCouponDuplicate", func(t *testing.T) { testRedeemCouponDuplicate(t, newStore(t)) })
+	t.Run("RedeemCouponRejectsBadInput", func(t *testing.T) { testRedeemCouponRejectsBadInput(t, newStore(t)) })
+	t.Run("RedeemCouponConcurrentCap", func(t *testing.T) { testRedeemCouponConcurrentCap(t, newStore(t)) })
 	t.Run("SubscriptionTenantIsolation", func(t *testing.T) { testSubscriptionTenantIsolation(t, newStore(t)) })
 	t.Run("InvoiceTenantIsolation", func(t *testing.T) { testInvoiceTenantIsolation(t, newStore(t)) })
 	t.Run("UsageTenantIsolation", func(t *testing.T) { testUsageTenantIsolation(t, newStore(t)) })
@@ -560,6 +566,291 @@ func testApplyCouponConcurrentDoubleApply(t *testing.T, s ledgerstore.Store) {
 	}
 	if len(applied) != 1 {
 		t.Errorf("got %d applied coupons after a concurrent double apply, want exactly 1", len(applied))
+	}
+}
+
+// testRedeemCouponRecordsAndCounts asserts a single redemption both records
+// the application and increments the count, the two things RedeemCoupon
+// exists to do as one unit.
+func testRedeemCouponRecordsAndCounts(t *testing.T, s ledgerstore.Store) {
+	ctx := context.Background()
+	appID := "app-" + uniqueSuffix()
+
+	c := newTestCoupon(appID)
+	if err := s.CreateCoupon(ctx, c); err != nil {
+		t.Fatalf("CreateCoupon: %v", err)
+	}
+
+	subID := id.NewSubscriptionID()
+	if err := s.RedeemCoupon(ctx, subID, c.ID); err != nil {
+		t.Fatalf("RedeemCoupon: %v", err)
+	}
+
+	applied, err := s.ListAppliedCoupons(ctx, subID)
+	if err != nil {
+		t.Fatalf("ListAppliedCoupons: %v", err)
+	}
+	if len(applied) != 1 {
+		t.Fatalf("got %d applied coupons, want 1", len(applied))
+	}
+	if applied[0].ID.String() != c.ID.String() {
+		t.Errorf("got applied coupon %s, want %s", applied[0].ID, c.ID)
+	}
+
+	got, err := s.GetCouponByID(ctx, c.ID)
+	if err != nil {
+		t.Fatalf("GetCouponByID: %v", err)
+	}
+	if got.TimesRedeemed != 1 {
+		t.Errorf("got TimesRedeemed %d, want 1", got.TimesRedeemed)
+	}
+}
+
+// testRedeemCouponRespectsTheCap redeems a MaxRedemptions-2 coupon onto
+// three different subscriptions in sequence: the first two must succeed,
+// the third must be refused as exhausted, and the third subscription must
+// end up with no application row of its own.
+func testRedeemCouponRespectsTheCap(t *testing.T, s ledgerstore.Store) {
+	ctx := context.Background()
+	appID := "app-" + uniqueSuffix()
+
+	c := newTestCoupon(appID)
+	c.MaxRedemptions = 2
+	if err := s.CreateCoupon(ctx, c); err != nil {
+		t.Fatalf("CreateCoupon: %v", err)
+	}
+
+	sub1, sub2, sub3 := id.NewSubscriptionID(), id.NewSubscriptionID(), id.NewSubscriptionID()
+
+	if err := s.RedeemCoupon(ctx, sub1, c.ID); err != nil {
+		t.Fatalf("RedeemCoupon sub1: %v", err)
+	}
+	if err := s.RedeemCoupon(ctx, sub2, c.ID); err != nil {
+		t.Fatalf("RedeemCoupon sub2: %v", err)
+	}
+	if err := s.RedeemCoupon(ctx, sub3, c.ID); !errors.Is(err, ledger.ErrCouponExhausted) {
+		t.Fatalf("RedeemCoupon sub3: got %v, want a wrap of ErrCouponExhausted", err)
+	}
+
+	applied, err := s.ListAppliedCoupons(ctx, sub3)
+	if err != nil {
+		t.Fatalf("ListAppliedCoupons sub3: %v", err)
+	}
+	if len(applied) != 0 {
+		t.Errorf("sub3 got %d applied coupons after an exhausted redeem, want 0", len(applied))
+	}
+
+	got, err := s.GetCouponByID(ctx, c.ID)
+	if err != nil {
+		t.Fatalf("GetCouponByID: %v", err)
+	}
+	if got.TimesRedeemed != 2 {
+		t.Errorf("got TimesRedeemed %d, want 2", got.TimesRedeemed)
+	}
+}
+
+// testRedeemCouponUnlimited asserts MaxRedemptions 0 never trips the cap,
+// no matter how high TimesRedeemed already is.
+func testRedeemCouponUnlimited(t *testing.T, s ledgerstore.Store) {
+	ctx := context.Background()
+	appID := "app-" + uniqueSuffix()
+
+	c := newTestCoupon(appID)
+	c.MaxRedemptions = 0
+	c.TimesRedeemed = 5
+	if err := s.CreateCoupon(ctx, c); err != nil {
+		t.Fatalf("CreateCoupon: %v", err)
+	}
+
+	subID := id.NewSubscriptionID()
+	if err := s.RedeemCoupon(ctx, subID, c.ID); err != nil {
+		t.Fatalf("RedeemCoupon: %v", err)
+	}
+
+	got, err := s.GetCouponByID(ctx, c.ID)
+	if err != nil {
+		t.Fatalf("GetCouponByID: %v", err)
+	}
+	if got.TimesRedeemed != 6 {
+		t.Errorf("got TimesRedeemed %d, want 6", got.TimesRedeemed)
+	}
+}
+
+// testRedeemCouponDuplicate asserts redeeming the same (subscription,
+// coupon) pair twice rejects the second call without moving the count or
+// adding a second application row.
+func testRedeemCouponDuplicate(t *testing.T, s ledgerstore.Store) {
+	ctx := context.Background()
+	appID := "app-" + uniqueSuffix()
+
+	c := newTestCoupon(appID)
+	if err := s.CreateCoupon(ctx, c); err != nil {
+		t.Fatalf("CreateCoupon: %v", err)
+	}
+
+	subID := id.NewSubscriptionID()
+	if err := s.RedeemCoupon(ctx, subID, c.ID); err != nil {
+		t.Fatalf("first RedeemCoupon: %v", err)
+	}
+	if err := s.RedeemCoupon(ctx, subID, c.ID); !errors.Is(err, ledger.ErrCouponAlreadyApplied) {
+		t.Fatalf("second RedeemCoupon: got %v, want a wrap of ErrCouponAlreadyApplied", err)
+	}
+
+	got, err := s.GetCouponByID(ctx, c.ID)
+	if err != nil {
+		t.Fatalf("GetCouponByID: %v", err)
+	}
+	if got.TimesRedeemed != 1 {
+		t.Errorf("got TimesRedeemed %d, want 1", got.TimesRedeemed)
+	}
+
+	applied, err := s.ListAppliedCoupons(ctx, subID)
+	if err != nil {
+		t.Fatalf("ListAppliedCoupons: %v", err)
+	}
+	if len(applied) != 1 {
+		t.Errorf("got %d applied coupons, want 1", len(applied))
+	}
+}
+
+// testRedeemCouponRejectsBadInput asserts every rejection RedeemCoupon owes
+// on bad input - an unknown coupon, a nil subscription id, a subscription
+// id that names some other kind of entity - leaves no row and no count
+// change behind, exactly like ApplyCoupon's equivalent checks.
+func testRedeemCouponRejectsBadInput(t *testing.T, s ledgerstore.Store) {
+	ctx := context.Background()
+	appID := "app-" + uniqueSuffix()
+
+	c := newTestCoupon(appID)
+	if err := s.CreateCoupon(ctx, c); err != nil {
+		t.Fatalf("CreateCoupon: %v", err)
+	}
+
+	checkNoRowsNoCountChange := func(t *testing.T, subID id.SubscriptionID) {
+		t.Helper()
+		if !subID.IsNil() {
+			applied, err := s.ListAppliedCoupons(ctx, subID)
+			if err != nil {
+				t.Fatalf("ListAppliedCoupons: %v", err)
+			}
+			if len(applied) != 0 {
+				t.Errorf("got %d applied coupons after a rejected redeem, want 0", len(applied))
+			}
+		}
+		got, err := s.GetCouponByID(ctx, c.ID)
+		if err != nil {
+			t.Fatalf("GetCouponByID: %v", err)
+		}
+		if got.TimesRedeemed != 0 {
+			t.Errorf("got TimesRedeemed %d after a rejected redeem, want 0", got.TimesRedeemed)
+		}
+	}
+
+	t.Run("unknown coupon", func(t *testing.T) {
+		subID := id.NewSubscriptionID()
+		unknownCoupon := id.NewCouponID()
+		if err := s.RedeemCoupon(ctx, subID, unknownCoupon); !errors.Is(err, ledger.ErrCouponNotFound) {
+			t.Fatalf("got %v, want a wrap of ErrCouponNotFound", err)
+		}
+		applied, err := s.ListAppliedCoupons(ctx, subID)
+		if err != nil {
+			t.Fatalf("ListAppliedCoupons: %v", err)
+		}
+		if len(applied) != 0 {
+			t.Errorf("got %d applied coupons after a rejected redeem, want 0", len(applied))
+		}
+	})
+
+	t.Run("nil subscription id", func(t *testing.T) {
+		if err := s.RedeemCoupon(ctx, id.Nil, c.ID); !errors.Is(err, ledger.ErrInvalidInput) {
+			t.Fatalf("got %v, want a wrap of ErrInvalidInput", err)
+		}
+		checkNoRowsNoCountChange(t, id.Nil)
+	})
+
+	t.Run("a plan id as the subscription id", func(t *testing.T) {
+		wrongPrefix := id.NewPlanID()
+		if err := s.RedeemCoupon(ctx, wrongPrefix, c.ID); !errors.Is(err, ledger.ErrInvalidInput) {
+			t.Fatalf("got %v, want a wrap of ErrInvalidInput", err)
+		}
+		checkNoRowsNoCountChange(t, wrongPrefix)
+	})
+}
+
+// testRedeemCouponConcurrentCap is the load-bearing proof: a coupon capped
+// at 3 redemptions, redeemed onto 12 different subscriptions by 12
+// goroutines at once. If the cap were enforced by a read of TimesRedeemed
+// followed by a separate write, several goroutines could read the count
+// before any of them writes it and all decide they are under the cap; a
+// conditional increment inside one unit cannot make that mistake because
+// there is no gap between the check and the write for another goroutine to
+// land in. Exactly 3 must succeed, exactly 9 must see ErrCouponExhausted,
+// the stored count must land on exactly 3, and the 12 subscriptions' lists
+// must hold exactly 3 applications between them - not more, and not fewer
+// than the 3 that were supposed to win.
+func testRedeemCouponConcurrentCap(t *testing.T, s ledgerstore.Store) {
+	ctx := context.Background()
+	appID := "app-" + uniqueSuffix()
+
+	c := newTestCoupon(appID)
+	c.MaxRedemptions = 3
+	if err := s.CreateCoupon(ctx, c); err != nil {
+		t.Fatalf("CreateCoupon: %v", err)
+	}
+
+	const n = 12
+	subIDs := make([]id.SubscriptionID, n)
+	for i := range subIDs {
+		subIDs[i] = id.NewSubscriptionID()
+	}
+
+	errs := make([]error, n)
+	var wg sync.WaitGroup
+	wg.Add(n)
+	for i := range n {
+		go func(i int) {
+			defer wg.Done()
+			errs[i] = s.RedeemCoupon(ctx, subIDs[i], c.ID)
+		}(i)
+	}
+	wg.Wait()
+
+	var wins, exhausted int
+	for _, err := range errs {
+		switch {
+		case err == nil:
+			wins++
+		case errors.Is(err, ledger.ErrCouponExhausted):
+			exhausted++
+		default:
+			t.Errorf("got an error from a concurrent RedeemCoupon that is neither nil nor ErrCouponExhausted: %v", err)
+		}
+	}
+	if wins != 3 {
+		t.Errorf("got %d winning RedeemCoupon calls out of %d, want exactly 3 (exhausted=%d)", wins, n, exhausted)
+	}
+	if exhausted != n-3 {
+		t.Errorf("got %d exhausted RedeemCoupon calls out of %d, want exactly %d", exhausted, n, n-3)
+	}
+
+	got, err := s.GetCouponByID(ctx, c.ID)
+	if err != nil {
+		t.Fatalf("GetCouponByID: %v", err)
+	}
+	if got.TimesRedeemed != 3 {
+		t.Errorf("got TimesRedeemed %d, want exactly 3", got.TimesRedeemed)
+	}
+
+	total := 0
+	for _, subID := range subIDs {
+		applied, err := s.ListAppliedCoupons(ctx, subID)
+		if err != nil {
+			t.Fatalf("ListAppliedCoupons: %v", err)
+		}
+		total += len(applied)
+	}
+	if total != 3 {
+		t.Errorf("got %d applications across all 12 subscriptions, want exactly 3", total)
 	}
 }
 

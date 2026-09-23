@@ -861,6 +861,9 @@ func (s *Store) DeleteCoupon(ctx context.Context, couponID id.CouponID) error {
 	return nil
 }
 
+// ApplyCoupon is a low-level operation kept for callers and tests that need
+// it separately. Engine code redeems through RedeemCoupon, which records
+// the application and increments the redemption count as one unit.
 func (s *Store) ApplyCoupon(ctx context.Context, subID id.SubscriptionID, couponID id.CouponID) error {
 	if err := validateSubscriptionID(subID); err != nil {
 		return err
@@ -933,6 +936,9 @@ func (s *Store) ListAppliedCoupons(ctx context.Context, subID id.SubscriptionID)
 	return result, nil
 }
 
+// IncrementCouponRedemptions is a low-level operation kept for callers and
+// tests that need it separately. Engine code redeems through RedeemCoupon,
+// which increments the count and records the application as one unit.
 func (s *Store) IncrementCouponRedemptions(ctx context.Context, couponID id.CouponID) error {
 	res, err := s.sdb.NewUpdate((*couponModel)(nil)).
 		Set("times_redeemed = times_redeemed + 1").
@@ -952,6 +958,83 @@ func (s *Store) IncrementCouponRedemptions(ctx context.Context, couponID id.Coup
 	}
 
 	return nil
+}
+
+// RedeemCoupon records a coupon's application to a subscription and
+// increments its redemption count in one transaction, committing only when
+// both writes land. The cap (MaxRedemptions) is enforced by a conditional
+// UPDATE - `times_redeemed = times_redeemed + 1 WHERE id = ? AND
+// (max_redemptions = 0 OR times_redeemed < max_redemptions)` - rather than
+// a read of TimesRedeemed followed by a separate write, so two concurrent
+// transactions racing the same coupon toward its cap cannot both read the
+// count before either writes it: Postgres and SQLite both take a row lock
+// on the first UPDATE to reach the row and block the second until it
+// commits, at which point the second's WHERE re-evaluates against the
+// already-incremented count.
+//
+// The transaction opens with a SELECT, which SQLite must not treat as a
+// deferred read: see the _txlock=immediate comment on storetest.NewSQLite.
+func (s *Store) RedeemCoupon(ctx context.Context, subID id.SubscriptionID, couponID id.CouponID) error {
+	if err := validateSubscriptionID(subID); err != nil {
+		return err
+	}
+
+	tx, err := s.sdb.BeginTxQuery(ctx, nil)
+	if err != nil {
+		return err
+	}
+	// Rollback is documented as safe to call after a successful Commit, so
+	// this unconditional defer is a no-op on the success path and the
+	// cleanup for every other one - including a failure inside Commit
+	// itself, which can leave the transaction still open.
+	defer func() { _ = tx.Rollback() }()
+
+	// Confirm the coupon exists before the application row references it,
+	// so a zero-rows result from the conditional increment below can only
+	// mean the cap was reached, never that the coupon was never there.
+	probe := new(couponModel)
+	if err := tx.NewSelect(probe).Where("id = ?", couponID.String()).Scan(ctx); err != nil {
+		if isNoRows(err) {
+			return ledger.ErrCouponNotFound
+		}
+		return err
+	}
+
+	appModel := &couponApplicationModel{
+		ID:             id.NewCouponApplicationID().String(),
+		CouponID:       couponID.String(),
+		SubscriptionID: subID.String(),
+		AppliedAt:      now(),
+	}
+	if _, err := tx.NewInsert(appModel).Exec(ctx); err != nil {
+		if isUniqueViolation(err) {
+			return ledger.ErrCouponAlreadyApplied
+		}
+		return err
+	}
+
+	res, err := tx.NewUpdate((*couponModel)(nil)).
+		Set("times_redeemed = times_redeemed + 1").
+		Set("updated_at = ?", now()).
+		Where("id = ?", couponID.String()).
+		Where("(max_redemptions = 0 OR times_redeemed < max_redemptions)").
+		Exec(ctx)
+	if err != nil {
+		return err
+	}
+
+	rows, err := res.RowsAffected()
+	if err != nil {
+		return err
+	}
+	if rows == 0 {
+		// The coupon exists (confirmed above), so zero rows here means the
+		// conditional increment's WHERE clause rejected it: the cap was
+		// reached. The deferred rollback undoes the application insert.
+		return ledger.ErrCouponExhausted
+	}
+
+	return tx.Commit()
 }
 
 // ==================== Helpers ====================

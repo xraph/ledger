@@ -26,7 +26,10 @@ func newInternalTestStore(t *testing.T) *Store {
 	ctx := context.Background()
 
 	dbPath := filepath.Join(t.TempDir(), "internal.db")
-	dsn := "file:" + dbPath + "?_pragma=busy_timeout(5000)"
+	// _txlock=immediate: see the comment on storetest.NewSQLite for why a
+	// transaction that reads before it writes needs this to avoid a
+	// SQLITE_BUSY on lock upgrade under concurrency.
+	dsn := "file:" + dbPath + "?_pragma=busy_timeout(5000)&_txlock=immediate"
 
 	sdb := sqlitedriver.New()
 	if err := sdb.Open(ctx, dsn); err != nil {

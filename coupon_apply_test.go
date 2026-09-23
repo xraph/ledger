@@ -3,6 +3,7 @@ package ledger_test
 import (
 	"context"
 	"errors"
+	"sync"
 	"testing"
 	"time"
 
@@ -417,4 +418,97 @@ func TestApplyCouponConsultsPluginValidators(t *testing.T) {
 			t.Error("the validator was consulted despite an earlier, built-in refusal")
 		}
 	})
+}
+
+// TestApplyCouponCannotExceedTheCapConcurrently is the engine-level
+// counterpart to the store-level RedeemCouponConcurrentCap conformance
+// test: it drives the race through Ledger.ApplyCoupon itself, the path a
+// real caller uses, rather than the store's RedeemCoupon directly. A
+// coupon capped at 3 redemptions, applied to 10 different subscriptions on
+// the same plan by 10 goroutines at once, must let exactly 3 through and
+// refuse the rest with ErrCouponExhausted - the same guarantee the review
+// found broken when ApplyCoupon read TimesRedeemed before writing it.
+func TestApplyCouponCannotExceedTheCapConcurrently(t *testing.T) {
+	ctx := context.Background()
+
+	s := memory.New()
+	l := ledger.New(s)
+
+	p := &plan.Plan{
+		Entity:   types.NewEntity(),
+		ID:       id.NewPlanID(),
+		Name:     "Pro",
+		Slug:     "pro",
+		Currency: "usd",
+		Status:   plan.StatusActive,
+		AppID:    "app_1",
+		Pricing: &plan.Pricing{
+			ID:            id.NewPriceID(),
+			BaseAmount:    types.USD(4900),
+			BillingPeriod: plan.PeriodMonthly,
+		},
+	}
+	if err := s.CreatePlan(ctx, p); err != nil {
+		t.Fatalf("CreatePlan: %v", err)
+	}
+
+	c := baseCoupon()
+	c.MaxRedemptions = 3
+	mustCreateCoupon(t, s, c)
+
+	const n = 10
+	subIDs := make([]id.SubscriptionID, n)
+	for i := range subIDs {
+		sub := &subscription.Subscription{
+			Entity:             types.NewEntity(),
+			ID:                 id.NewSubscriptionID(),
+			TenantID:           "tenant_1",
+			PlanID:             p.ID,
+			Status:             subscription.StatusActive,
+			CurrentPeriodStart: time.Now().UTC().Add(-24 * time.Hour),
+			CurrentPeriodEnd:   time.Now().UTC().Add(24 * time.Hour),
+			AppID:              "app_1",
+		}
+		if err := s.CreateSubscription(ctx, sub); err != nil {
+			t.Fatalf("CreateSubscription %d: %v", i, err)
+		}
+		subIDs[i] = sub.ID
+	}
+
+	errs := make([]error, n)
+	var wg sync.WaitGroup
+	wg.Add(n)
+	for i := range n {
+		go func(i int) {
+			defer wg.Done()
+			_, errs[i] = l.ApplyCoupon(ctx, subIDs[i], "LAUNCH10")
+		}(i)
+	}
+	wg.Wait()
+
+	var wins, exhausted int
+	for _, err := range errs {
+		switch {
+		case err == nil:
+			wins++
+		case errors.Is(err, ledger.ErrCouponExhausted):
+			exhausted++
+		default:
+			t.Errorf("got an error from a concurrent ApplyCoupon that is neither nil nor ErrCouponExhausted: %v", err)
+		}
+	}
+	if wins != 3 {
+		t.Errorf("got %d winning ApplyCoupon calls out of %d, want exactly 3 (exhausted=%d)", wins, n, exhausted)
+	}
+	if exhausted != n-3 {
+		t.Errorf("got %d exhausted ApplyCoupon calls out of %d, want exactly %d", exhausted, n, n-3)
+	}
+
+	stored, err := s.GetCouponByID(ctx, c.ID)
+	if err != nil {
+		t.Fatalf("GetCouponByID: %v", err)
+	}
+	if stored.TimesRedeemed != 3 {
+		t.Errorf("got TimesRedeemed %d, want exactly 3", stored.TimesRedeemed)
+	}
 }
