@@ -156,6 +156,37 @@ func TestApplyCouponRejections(t *testing.T) {
 			code:    "LAUNCH10",
 			wantErr: ledger.ErrCouponInvalid,
 		},
+		{
+			// The label lies: this coupon says "usd" but the Money it
+			// actually discounts by is EUR. Money.Subtract panics on the
+			// Money's Currency field, not the label, so the check must
+			// look at c.Amount.Currency, not c.Currency.
+			name: "amount coupon labelled usd holds euros",
+			mutate: func(c *coupon.Coupon) {
+				c.Type = coupon.CouponTypeAmount
+				c.Amount = types.EUR(500)
+				// c.Currency is left at "usd" from baseCoupon: the
+				// mismatched label.
+			},
+			code:    "LAUNCH10",
+			wantErr: ledger.ErrCouponInvalid,
+		},
+		{
+			name: "amount coupon has no currency anywhere",
+			mutate: func(c *coupon.Coupon) {
+				c.Type = coupon.CouponTypeAmount
+				c.Currency = ""
+				c.Amount = types.Money{Amount: 500}
+			},
+			code:    "LAUNCH10",
+			wantErr: ledger.ErrCouponInvalid,
+		},
+		{
+			name:    "coupon belongs to a different app",
+			mutate:  func(c *coupon.Coupon) { c.AppID = "app_2" },
+			code:    "LAUNCH10",
+			wantErr: ledger.ErrCouponNotFound,
+		},
 	}
 
 	for _, tt := range tests {
@@ -167,16 +198,28 @@ func TestApplyCouponRejections(t *testing.T) {
 			tt.mutate(c)
 			mustCreateCoupon(t, s, c)
 
+			// Capture before the call: on the memory store, GetCoupon and
+			// GetCouponByID return the same pointer this test created, so
+			// comparing stored.TimesRedeemed against c.TimesRedeemed after
+			// the call would always compare a value against itself.
+			want := c.TimesRedeemed
+
 			_, err := l.ApplyCoupon(ctx, subID, tt.code)
 			if !errors.Is(err, tt.wantErr) {
 				t.Fatalf("got error %v, want %v", err, tt.wantErr)
 			}
 
-			// A rejected coupon must leave no trace.
+			// A rejected coupon must leave no trace. The coupon was created
+			// above regardless of which row this is (including "unknown
+			// code" and "different app", where the applied code or app
+			// doesn't match it), so the re-read must succeed.
 			stored, getErr := s.GetCouponByID(ctx, c.ID)
-			if getErr == nil && stored.TimesRedeemed != c.TimesRedeemed {
+			if getErr != nil {
+				t.Fatalf("GetCouponByID: %v", getErr)
+			}
+			if stored.TimesRedeemed != want {
 				t.Errorf("a rejected apply changed TimesRedeemed: got %d, want %d",
-					stored.TimesRedeemed, c.TimesRedeemed)
+					stored.TimesRedeemed, want)
 			}
 
 			applied, listErr := l.ListAppliedCoupons(ctx, subID)
@@ -188,6 +231,36 @@ func TestApplyCouponRejections(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestApplyCouponCurrencyIsCaseInsensitive(t *testing.T) {
+	t.Run("percentage coupon labelled uppercase applies", func(t *testing.T) {
+		ctx := context.Background()
+		l, s, subID := fixture(t)
+
+		c := baseCoupon()
+		c.Currency = "USD"
+		mustCreateCoupon(t, s, c)
+
+		if _, err := l.ApplyCoupon(ctx, subID, "LAUNCH10"); err != nil {
+			t.Fatalf("ApplyCoupon: %v", err)
+		}
+	})
+
+	t.Run("amount coupon labelled and priced uppercase applies", func(t *testing.T) {
+		ctx := context.Background()
+		l, s, subID := fixture(t)
+
+		c := baseCoupon()
+		c.Type = coupon.CouponTypeAmount
+		c.Currency = "USD"
+		c.Amount = types.Money{Amount: 500, Currency: "USD"}
+		mustCreateCoupon(t, s, c)
+
+		if _, err := l.ApplyCoupon(ctx, subID, "LAUNCH10"); err != nil {
+			t.Fatalf("ApplyCoupon: %v", err)
+		}
+	})
 }
 
 func TestApplyCouponTwiceIsRejected(t *testing.T) {
@@ -231,10 +304,20 @@ func TestApplyCouponUnlimitedRedemptions(t *testing.T) {
 		Status:   subscription.StatusActive,
 		AppID:    "app_1",
 	}
-	_ = s.CreateSubscription(ctx, sub2)
+	if err := s.CreateSubscription(ctx, sub2); err != nil {
+		t.Fatalf("CreateSubscription: %v", err)
+	}
 
 	if _, err := l.ApplyCoupon(ctx, sub2.ID, "LAUNCH10"); err != nil {
 		t.Fatalf("ApplyCoupon with MaxRedemptions 0: %v", err)
+	}
+
+	stored, err := s.GetCouponByID(ctx, c.ID)
+	if err != nil {
+		t.Fatalf("GetCouponByID: %v", err)
+	}
+	if stored.TimesRedeemed != 10000 {
+		t.Errorf("got TimesRedeemed %d, want 10000", stored.TimesRedeemed)
 	}
 }
 
@@ -262,26 +345,76 @@ func TestApplyCouponConsultsPluginValidators(t *testing.T) {
 			Entity: types.NewEntity(), ID: id.NewPlanID(), Currency: "usd",
 			Status: plan.StatusActive, AppID: "app_1", Slug: "pro",
 		}
-		_ = s.CreatePlan(ctx, p)
+		if err := s.CreatePlan(ctx, p); err != nil {
+			t.Fatalf("CreatePlan: %v", err)
+		}
 		sub := &subscription.Subscription{
 			Entity: types.NewEntity(), ID: id.NewSubscriptionID(),
 			TenantID: "tenant_1", PlanID: p.ID,
 			Status: subscription.StatusActive, AppID: "app_1",
 		}
-		_ = s.CreateSubscription(ctx, sub)
-		mustCreateCoupon(t, s, baseCoupon())
+		if err := s.CreateSubscription(ctx, sub); err != nil {
+			t.Fatalf("CreateSubscription: %v", err)
+		}
+		c := mustCreateCoupon(t, s, baseCoupon())
 
 		_, err := l.ApplyCoupon(ctx, sub.ID, "LAUNCH10")
-		if err == nil {
-			t.Fatal("got nil error, want the validator's refusal")
+		if !errors.Is(err, v.err) {
+			t.Fatalf("got error %v, want %v", err, v.err)
 		}
 		if !v.called {
 			t.Error("the validator was never consulted")
 		}
 
-		applied, _ := l.ListAppliedCoupons(ctx, sub.ID)
+		stored, getErr := s.GetCouponByID(ctx, c.ID)
+		if getErr != nil {
+			t.Fatalf("GetCouponByID: %v", getErr)
+		}
+		if stored.TimesRedeemed != 0 {
+			t.Errorf("a refused apply changed TimesRedeemed: got %d, want 0", stored.TimesRedeemed)
+		}
+
+		applied, err := l.ListAppliedCoupons(ctx, sub.ID)
+		if err != nil {
+			t.Fatalf("ListAppliedCoupons: %v", err)
+		}
 		if len(applied) != 0 {
 			t.Errorf("a refused apply recorded %d applications, want 0", len(applied))
+		}
+	})
+
+	t.Run("a built-in check refuses before the validator is consulted", func(t *testing.T) {
+		v := &stubValidator{err: errors.New("should never be asked")}
+		s := memory.New()
+		l := ledger.New(s, ledger.WithPlugin(v))
+
+		p := &plan.Plan{
+			Entity: types.NewEntity(), ID: id.NewPlanID(), Currency: "usd",
+			Status: plan.StatusActive, AppID: "app_1", Slug: "pro",
+		}
+		if err := s.CreatePlan(ctx, p); err != nil {
+			t.Fatalf("CreatePlan: %v", err)
+		}
+		sub := &subscription.Subscription{
+			Entity: types.NewEntity(), ID: id.NewSubscriptionID(),
+			TenantID: "tenant_1", PlanID: p.ID,
+			Status: subscription.StatusActive, AppID: "app_1",
+		}
+		if err := s.CreateSubscription(ctx, sub); err != nil {
+			t.Fatalf("CreateSubscription: %v", err)
+		}
+
+		past := time.Now().UTC().Add(-48 * time.Hour)
+		c := baseCoupon()
+		c.ValidUntil = &past
+		mustCreateCoupon(t, s, c)
+
+		_, err := l.ApplyCoupon(ctx, sub.ID, "LAUNCH10")
+		if !errors.Is(err, ledger.ErrCouponExpired) {
+			t.Fatalf("got error %v, want ErrCouponExpired", err)
+		}
+		if v.called {
+			t.Error("the validator was consulted despite an earlier, built-in refusal")
 		}
 	})
 }

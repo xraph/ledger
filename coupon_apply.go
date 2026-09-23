@@ -3,6 +3,7 @@ package ledger
 import (
 	"context"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/xraph/ledger/coupon"
@@ -39,17 +40,43 @@ func (l *Ledger) ApplyCoupon(ctx context.Context, subID id.SubscriptionID, code 
 		return nil, ErrCouponExhausted
 	}
 
-	// Currency must match the plan the subscription bills in. Money.Add and
-	// Subtract panic across currencies, so a mismatch caught here is the
-	// difference between an error and a crash during invoice generation.
+	// Currency must match the Money the discount will actually be computed
+	// from, not just the coupon's Currency label — Money.Add and Subtract
+	// panic when the two Money values' Currency fields differ, and a label
+	// can lie about what an amount coupon's Money actually holds. Comparison
+	// is case-insensitive: "USD" and "usd" name the same currency.
 	if !sub.PlanID.IsNil() {
 		p, planErr := l.store.GetPlan(ctx, sub.PlanID)
 		if planErr != nil {
 			return nil, fmt.Errorf("ledger: resolve plan for coupon currency check: %w", planErr)
 		}
-		if p.Currency != "" && c.Currency != "" && p.Currency != c.Currency {
-			return nil, fmt.Errorf("%w: coupon is in %s, plan bills in %s",
-				ErrCouponInvalid, c.Currency, p.Currency)
+
+		if p.Currency != "" {
+			planCurrency := strings.ToLower(p.Currency)
+
+			switch c.Type {
+			case coupon.CouponTypeAmount:
+				// The Money value is what Subtract will actually operate
+				// on. Fall back to the label only when the Money itself
+				// carries no currency, and refuse when neither says
+				// anything — that is not a currency to skip the check for.
+				couponCurrency := c.Amount.Currency
+				if couponCurrency == "" {
+					couponCurrency = c.Currency
+				}
+				if couponCurrency == "" || strings.ToLower(couponCurrency) != planCurrency {
+					return nil, fmt.Errorf("%w: coupon is in %q, plan bills in %q",
+						ErrCouponInvalid, couponCurrency, p.Currency)
+				}
+			default:
+				// No Money is involved before the discount is computed for
+				// a percentage coupon, but a coupon explicitly labelled for
+				// another currency is still refused.
+				if c.Currency != "" && strings.ToLower(c.Currency) != planCurrency {
+					return nil, fmt.Errorf("%w: coupon is in %q, plan bills in %q",
+						ErrCouponInvalid, c.Currency, p.Currency)
+				}
+			}
 		}
 	}
 
@@ -73,8 +100,9 @@ func (l *Ledger) ApplyCoupon(ctx context.Context, subID id.SubscriptionID, code 
 	updated, err := l.store.GetCouponByID(ctx, c.ID)
 	if err != nil {
 		// The write above already succeeded; a failure to re-read the coupon
-		// back is not a failure to apply it.
-		c.TimesRedeemed++
+		// back is not a failure to apply it. Return the coupon as resolved
+		// before the increment rather than mutating c, which may be the
+		// same pointer the store holds internally.
 		return c, nil
 	}
 
