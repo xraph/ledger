@@ -4,11 +4,13 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strings"
 	"sync"
 	"time"
 
 	log "github.com/xraph/go-utils/log"
 
+	"github.com/xraph/ledger/coupon"
 	"github.com/xraph/ledger/entitlement"
 	"github.com/xraph/ledger/feature"
 	"github.com/xraph/ledger/id"
@@ -494,6 +496,17 @@ func (l *Ledger) Remaining(ctx context.Context, featureKey string) (int64, error
 // ──────────────────────────────────────────────────
 
 // GenerateInvoice generates an invoice for a subscription period.
+//
+// It assembles line items in a fixed order: the base fee, then metered
+// usage overage per feature in plan order, then seat charges per seat
+// feature in plan order, then one discount line per applied coupon, then
+// one tax line. Every Money the function builds is normalised to one
+// lowercased currency taken from the plan, so two values built from
+// different casings of the same currency (e.g. "USD" and "usd") never trip
+// Money.Add/Subtract's case-sensitive mismatch panic. Tax is computed on
+// the net amount — subtotal less discounts, clamped at zero — not the
+// gross subtotal, so a discounted invoice is never taxed on money the
+// customer was never charged.
 func (l *Ledger) GenerateInvoice(ctx context.Context, subID id.SubscriptionID) (*invoice.Invoice, error) {
 	sub, err := l.store.GetSubscription(ctx, subID)
 	if err != nil {
@@ -505,64 +518,213 @@ func (l *Ledger) GenerateInvoice(ctx context.Context, subID id.SubscriptionID) (
 		return nil, err
 	}
 
+	currency := strings.ToLower(p.Currency)
+
 	inv := &invoice.Invoice{
 		Entity:         types.NewEntity(),
 		ID:             id.NewInvoiceID(),
 		TenantID:       sub.TenantID,
 		SubscriptionID: sub.ID,
 		Status:         invoice.StatusDraft,
-		Currency:       p.Currency,
-		Subtotal:       types.Zero(p.Currency),
-		TaxAmount:      types.Zero(p.Currency),
-		DiscountAmount: types.Zero(p.Currency),
-		Total:          types.Zero(p.Currency),
+		Currency:       currency,
+		Subtotal:       types.Zero(currency),
+		TaxAmount:      types.Zero(currency),
+		DiscountAmount: types.Zero(currency),
+		Total:          types.Zero(currency),
 		PeriodStart:    sub.CurrentPeriodStart,
 		PeriodEnd:      sub.CurrentPeriodEnd,
 		AppID:          sub.AppID,
 		LineItems:      []invoice.LineItem{},
 	}
 
-	// Add base subscription fee
+	// 1. Base subscription fee. A base price stored in a currency other
+	// than the plan's is a catalogue error, not something to panic over:
+	// reject it before it ever reaches Money.Add.
 	if p.Pricing != nil && p.Pricing.BaseAmount.IsPositive() {
+		if p.Pricing.BaseAmount.Currency != "" && !strings.EqualFold(p.Pricing.BaseAmount.Currency, currency) {
+			return nil, fmt.Errorf("%w: plan %s base price is in %q, plan bills in %q",
+				ErrInvalidPricing, p.ID, p.Pricing.BaseAmount.Currency, p.Currency)
+		}
+
+		base := types.Money{Amount: p.Pricing.BaseAmount.Amount, Currency: currency}
 		inv.LineItems = append(inv.LineItems, invoice.LineItem{
 			ID:          id.NewLineItemID(),
 			InvoiceID:   inv.ID,
 			Description: "Base subscription fee",
 			Quantity:    1,
-			UnitAmount:  p.Pricing.BaseAmount,
-			Amount:      p.Pricing.BaseAmount,
+			UnitAmount:  base,
+			Amount:      base,
 			Type:        invoice.LineItemBase,
 		})
-		inv.Subtotal = inv.Subtotal.Add(p.Pricing.BaseAmount)
+		inv.Subtotal = inv.Subtotal.Add(base)
 	}
 
-	// Add metered usage charges
+	// 2. Metered usage overage, priced from the plan's tiers.
+	var tiers []plan.PriceTier
+	if p.Pricing != nil {
+		tiers = p.Pricing.Tiers
+	}
+
 	for _, pf := range p.Features {
-		if pf.Type == plan.FeatureMetered {
-			used, err := l.store.Aggregate(ctx, sub.TenantID, sub.AppID, pf.Key, pf.Period)
-			if err != nil {
-				return nil, fmt.Errorf("aggregate usage for feature %q: %w", pf.Key, err)
-			}
-			if used > pf.Limit && pf.Limit > 0 {
-				overage := used - pf.Limit
-				// Would calculate overage charges based on pricing tiers
-				// For now, just note the overage
-				inv.LineItems = append(inv.LineItems, invoice.LineItem{
-					ID:          id.NewLineItemID(),
-					InvoiceID:   inv.ID,
-					FeatureKey:  pf.Key,
-					Description: pf.Name + " overage",
-					Quantity:    overage,
-					UnitAmount:  types.Zero(p.Currency),
-					Amount:      types.Zero(p.Currency),
-					Type:        invoice.LineItemOverage,
-				})
-			}
+		if pf.Type != plan.FeatureMetered {
+			continue
 		}
+
+		used, aggErr := l.store.Aggregate(ctx, sub.TenantID, sub.AppID, pf.Key, pf.Period)
+		if aggErr != nil {
+			return nil, fmt.Errorf("aggregate usage for feature %q: %w", pf.Key, aggErr)
+		}
+
+		billable := used - pf.Limit
+		if pf.Limit < 0 || billable <= 0 {
+			continue
+		}
+
+		featureTiers := tiersFor(tiers, pf.Key)
+		if vErr := invoice.ValidateTiers(featureTiers, currency); vErr != nil {
+			return nil, fmt.Errorf("plan %s feature %q: %w", p.ID, pf.Key, vErr)
+		}
+
+		amount := invoice.ComputeOverage(featureTiers, used, pf.Limit, currency)
+		if amount.IsZero() {
+			continue
+		}
+
+		inv.LineItems = append(inv.LineItems, invoice.LineItem{
+			ID:          id.NewLineItemID(),
+			InvoiceID:   inv.ID,
+			FeatureKey:  pf.Key,
+			Description: pf.Name + " overage",
+			Quantity:    billable,
+			UnitAmount:  types.Zero(currency),
+			Amount:      amount,
+			Type:        invoice.LineItemOverage,
+		})
+		inv.Subtotal = inv.Subtotal.Add(amount)
 	}
 
-	// Calculate total
-	inv.Total = inv.Subtotal.Add(inv.TaxAmount).Subtract(inv.DiscountAmount)
+	// 3. Seat charges, from the quantities carried on the subscription.
+	// ComputeOverage prices the full seat count against an allowance of
+	// zero, so every seat is billed rather than only the seats past some
+	// included count — seat features do not carry an allowance.
+	for _, pf := range p.Features {
+		if pf.Type != plan.FeatureSeat {
+			continue
+		}
+
+		seats := sub.Quantity[pf.Key]
+		if seats <= 0 {
+			continue
+		}
+
+		featureTiers := tiersFor(tiers, pf.Key)
+		if vErr := invoice.ValidateTiers(featureTiers, currency); vErr != nil {
+			return nil, fmt.Errorf("plan %s feature %q: %w", p.ID, pf.Key, vErr)
+		}
+
+		amount := invoice.ComputeOverage(featureTiers, seats, 0, currency)
+		if amount.IsZero() {
+			continue
+		}
+
+		inv.LineItems = append(inv.LineItems, invoice.LineItem{
+			ID:          id.NewLineItemID(),
+			InvoiceID:   inv.ID,
+			FeatureKey:  pf.Key,
+			Description: pf.Name,
+			Quantity:    seats,
+			UnitAmount:  types.Zero(currency),
+			Amount:      amount,
+			Type:        invoice.LineItemSeat,
+		})
+		inv.Subtotal = inv.Subtotal.Add(amount)
+	}
+
+	// 4. Coupon discounts. Percentage coupons compute against the subtotal
+	// as it stood before any discount, so two stacked percentages do not
+	// compound. Amount coupons subtract flat. ApplyCoupon has already
+	// refused any coupon whose currency differs from the plan's, which is
+	// what keeps Money.Add from panicking here.
+	applied, couponErr := l.store.ListAppliedCoupons(ctx, sub.ID)
+	if couponErr != nil {
+		return nil, fmt.Errorf("list applied coupons: %w", couponErr)
+	}
+
+	discountBase := inv.Subtotal
+	for _, c := range applied {
+		var amount types.Money
+		switch c.Type {
+		case coupon.CouponTypePercentage:
+			amount = discountBase.Percent(c.Percentage)
+		case coupon.CouponTypeAmount:
+			amount = types.Money{Amount: c.Amount.Amount, Currency: currency}
+		default:
+			continue
+		}
+		if amount.IsZero() {
+			continue
+		}
+
+		inv.LineItems = append(inv.LineItems, invoice.LineItem{
+			ID:          id.NewLineItemID(),
+			InvoiceID:   inv.ID,
+			Description: "Discount " + c.Code,
+			Quantity:    1,
+			UnitAmount:  amount.Negate(),
+			Amount:      amount.Negate(),
+			Type:        invoice.LineItemDiscount,
+		})
+		inv.DiscountAmount = inv.DiscountAmount.Add(amount)
+	}
+
+	// The net amount is what tax is actually charged on, and what the
+	// final total is built from. It is clamped at zero here, before tax:
+	// Ledger has no refund path, so a discount larger than the bill must
+	// produce a free invoice, never a negative one.
+	net := inv.Subtotal.Subtract(inv.DiscountAmount)
+	if net.IsNegative() {
+		net = types.Zero(currency)
+	}
+
+	// 5. Tax, from whichever plugins provide it, computed on the net
+	// amount. The interface returns interface{}, so a plugin that hands
+	// back the wrong type fails generation rather than silently
+	// contributing nothing.
+	for _, tc := range l.plugins.GetTaxCalculators() {
+		raw, taxErr := tc.CalculateTax(ctx, net, sub.TenantID)
+		if taxErr != nil {
+			return nil, fmt.Errorf("tax calculator %q: %w", tc.Name(), taxErr)
+		}
+		if raw == nil {
+			continue
+		}
+
+		amount, ok := raw.(types.Money)
+		if !ok {
+			return nil, fmt.Errorf("tax calculator %q returned %T, want types.Money", tc.Name(), raw)
+		}
+		if amount.Currency != "" && !strings.EqualFold(amount.Currency, currency) {
+			return nil, fmt.Errorf("tax calculator %q returned %s, want %s",
+				tc.Name(), amount.Currency, currency)
+		}
+
+		inv.TaxAmount = inv.TaxAmount.Add(types.Money{Amount: amount.Amount, Currency: currency})
+	}
+
+	if inv.TaxAmount.IsPositive() {
+		inv.LineItems = append(inv.LineItems, invoice.LineItem{
+			ID:          id.NewLineItemID(),
+			InvoiceID:   inv.ID,
+			Description: "Tax",
+			Quantity:    1,
+			UnitAmount:  inv.TaxAmount,
+			Amount:      inv.TaxAmount,
+			Type:        invoice.LineItemTax,
+		})
+	}
+
+	// Total is the already-clamped net amount plus tax.
+	inv.Total = net.Add(inv.TaxAmount)
 
 	// Save invoice
 	if err := l.store.CreateInvoice(ctx, inv); err != nil {
@@ -597,6 +759,18 @@ func extractAppID(ctx context.Context) string {
 		}
 	}
 	return ""
+}
+
+// tiersFor returns the tiers belonging to one feature key.
+func tiersFor(tiers []plan.PriceTier, featureKey string) []plan.PriceTier {
+	out := make([]plan.PriceTier, 0, len(tiers))
+	for _, t := range tiers {
+		if t.FeatureKey == featureKey {
+			out = append(out, t)
+		}
+	}
+
+	return out
 }
 
 // ──────────────────────────────────────────────────
