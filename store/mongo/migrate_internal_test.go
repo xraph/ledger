@@ -118,13 +118,15 @@ func seedOldSparseIdempotencyKeyIndex(ctx context.Context, t *testing.T, s *Stor
 // twice over (idempotent), without disturbing any of that seeded data or its
 // dedup guarantees.
 //
-// This is the seeded-old-schema counterpart to the earlier version of this
+// This is the seeded-old-schema counterpart to an earlier version of this
 // test, which ran Migrate against a freshly created database that never had
 // the old index in the first place - meaning it could not actually exercise
 // the "drop the superseded sparse index" behavior at all; removing that step
 // from Migrate would have left it green by accident. Seeding here closes
-// that gap. See TestMigrateDiscriminatesOnMissingDropStep below for the
-// direct proof.
+// that gap: confirmed directly by temporarily disabling Migrate's drop step
+// (migrationSupersededIndexes returning an empty map) and re-running this
+// test, which then failed exactly as expected - recorded in the task's
+// fix-round-1 report, restored immediately after.
 func TestMigrateTransitionsFromOldSparseIndexWithoutLosingData(t *testing.T) {
 	ctx := context.Background()
 	s := newUnmigratedInternalTestStore(t)
@@ -217,41 +219,43 @@ func TestMigrateTransitionsFromOldSparseIndexWithoutLosingData(t *testing.T) {
 	}
 }
 
-// TestMigrateDiscriminatesOnMissingDropStep is the direct proof that
-// TestMigrateTransitionsFromOldSparseIndexWithoutLosingData actually
-// exercises the drop-the-old-index behavior, rather than passing vacuously
-// against a database that never had the old index to begin with. It
-// reproduces that test's scenario against Migrate with the drop step
-// removed (inlined here rather than by editing store.go, so the two tests
-// stay independent of each other's ordering) and confirms the old index
-// remains - i.e. confirms this test SHAPE fails without the fix, which is
-// what makes the real test above meaningful when it passes.
-func TestMigrateDiscriminatesOnMissingDropStep(t *testing.T) {
+// TestPartialAndSparseIndexesCanCoexistOnSameKeyPattern pins down the one
+// mongo-server-version-specific fact Migrate's create-before-drop design
+// depends on: a partial unique index can be created over the SAME key
+// pattern as an existing sparse index, without dropping the sparse one
+// first.
+//
+// This does NOT test Migrate - it builds both indexes directly to isolate
+// exactly that one server behavior. The actual proof that Migrate itself
+// transitions a seeded old-schema database correctly (create new, then drop
+// superseded) is TestMigrateTransitionsFromOldSparseIndexWithoutLosingData
+// above; the live discrimination proof against Migrate's real drop step,
+// temporarily disabled and restored, is recorded in the task's fix-round-1
+// report rather than kept as a permanent test (a discrimination proof
+// belongs in a temporary mutation of the code under test, not in a
+// permanent copy of it that could silently drift out of sync).
+func TestPartialAndSparseIndexesCanCoexistOnSameKeyPattern(t *testing.T) {
 	ctx := context.Background()
 	s := newUnmigratedInternalTestStore(t)
 	resetUsageEventsCollection(ctx, t, s)
 
 	seedOldSparseIdempotencyKeyIndex(ctx, t, s)
 
-	// Create-only, deliberately skipping the drop-superseded-indexes half of
-	// Migrate, to reproduce what the real Migrate would do if that step
-	// were ever deleted.
-	if _, err := s.mdb.Collection(colUsageEvents).Indexes().CreateMany(ctx, migrationIndexes()[colUsageEvents]); err != nil {
-		t.Fatalf("create-only step: %v", err)
+	uniqueModels := migrationUniqueIndexes()[colUsageEvents]
+	if len(uniqueModels) != 1 {
+		t.Fatalf("migrationUniqueIndexes()[%q] has %d model(s), want exactly 1", colUsageEvents, len(uniqueModels))
+	}
+	if _, err := s.mdb.Collection(colUsageEvents).Indexes().CreateOne(ctx, uniqueModels[0]); err != nil {
+		t.Fatalf("create the new partial index while the old sparse index still exists: %v", err)
 	}
 
 	names := listIndexNames(ctx, t, s, colUsageEvents)
 	if !names[oldIdempotencyKeyIndexName] {
-		t.Fatal("sanity check failed: the old index should still be present when the drop step is skipped")
+		t.Error("old sparse index missing after creating the new one alongside it")
 	}
 	if !names[newIdempotencyKeyIndexName] {
-		t.Fatal("sanity check failed: the new index should have been created")
+		t.Error("new partial index missing after creating it")
 	}
-	// This is the assertion the real Migrate must satisfy and this
-	// create-only reproduction must fail: with the drop step skipped, the
-	// old index is still here, which is exactly the bug a reviewer would
-	// catch if the drop step were ever deleted from Migrate.
-	t.Log("confirmed: without the drop step, the old sparse index survives Migrate's create phase - this is the failure TestMigrateTransitionsFromOldSparseIndexWithoutLosingData exists to catch")
 }
 
 // TestMigrateReportsDuplicatesWithoutDeletingAnything covers the case I2
@@ -262,8 +266,18 @@ func TestMigrateDiscriminatesOnMissingDropStep(t *testing.T) {
 // reason - the worst case, not the common one). Migrate must:
 //   - fail loudly, naming the collection, rather than silently succeeding
 //     with a corrupt, unprotected collection;
+//   - describe what actually happened, and nothing false: it must NOT
+//     claim an old index was "left in place" to protect the data, since a
+//     genuinely superseded old index (the sparse one, while it exists)
+//     already enforces uniqueness over every document with a real key,
+//     making this failure impossible to reach at all - so whenever it DOES
+//     fire, there either never was an old index, or it was already gone;
 //   - never delete the duplicate documents to "fix" the conflict;
-//   - never leave the collection in a WORSE state than it found it in.
+//   - never leave the collection in a WORSE state than it found it in;
+//   - still create ledger_usage_events' other, unrelated query indexes,
+//     since the unique index's own failed build must not block them (this
+//     is why that index is created in its own call, separate from the
+//     others - see migrationUniqueIndexes).
 //
 // Exact state documented here rather than left implicit: this test seeds
 // zero protection (it creates the old index and then immediately drops it
@@ -274,8 +288,8 @@ func TestMigrateDiscriminatesOnMissingDropStep(t *testing.T) {
 // exists, identical to the zero-protection state the test put the
 // collection in before calling Migrate. Migrate is not asked to (and does
 // not) restore the old sparse index in this scenario - only to avoid making
-// things worse and to fail with a clear, named error instead of silently
-// leaving duplicates uncaught.
+// things worse and to fail with a clear, accurate, named error instead of
+// silently leaving duplicates uncaught.
 func TestMigrateReportsDuplicatesWithoutDeletingAnything(t *testing.T) {
 	ctx := context.Background()
 	s := newUnmigratedInternalTestStore(t)
@@ -316,8 +330,23 @@ func TestMigrateReportsDuplicatesWithoutDeletingAnything(t *testing.T) {
 	if err == nil {
 		t.Fatal("Migrate over a collection with duplicate non-empty keys: got nil error, want one naming the collection")
 	}
-	if !strings.Contains(err.Error(), colUsageEvents) {
-		t.Errorf("Migrate error %q does not name the collection %q", err.Error(), colUsageEvents)
+	msg := err.Error()
+	if !strings.Contains(msg, colUsageEvents) {
+		t.Errorf("Migrate error %q does not name the collection %q", msg, colUsageEvents)
+	}
+	// The message must not claim an old index protected this data - that is
+	// never true when this error can fire (see the doc comment above and
+	// duplicateKeyMigrateError's doc comment in store.go for why).
+	if strings.Contains(msg, "left in place") || strings.Contains(msg, "old index") {
+		t.Errorf("Migrate error %q falsely claims an old index was left in place/kept; this error only ever fires when no such protection existed", msg)
+	}
+	// It should instead say what actually happened: something was left
+	// unchanged, and the operator needs to resolve duplicates and re-run.
+	if !strings.Contains(msg, "no data was changed") {
+		t.Errorf("Migrate error %q does not state that no data was changed", msg)
+	}
+	if !strings.Contains(msg, "re-run Migrate") {
+		t.Errorf("Migrate error %q does not tell the operator to re-run Migrate after resolving the duplicates", msg)
 	}
 	// errors.As (which isDuplicateKeyError uses under the hood) walks an
 	// errors.Join tree's Unwrap() []error just as it walks a single Unwrap()
@@ -336,16 +365,39 @@ func TestMigrateReportsDuplicatesWithoutDeletingAnything(t *testing.T) {
 		t.Errorf("got %d document(s) after the failed Migrate, want 2 (Migrate must never delete data)", count)
 	}
 
-	// No worse than before: before this Migrate call there was zero
-	// idempotency_key protection (this test dropped the old index itself);
-	// after the failed call there must still be none of either kind - not
-	// a half-built new index, not a resurrected old one.
+	// No worse than before on the idempotency_key front: before this
+	// Migrate call there was zero idempotency_key protection (this test
+	// dropped the old index itself); after the failed call there must
+	// still be none of either kind - not a half-built new index, not a
+	// resurrected old one.
 	names := listIndexNames(ctx, t, s, colUsageEvents)
 	if names[oldIdempotencyKeyIndexName] {
 		t.Errorf("old index %q unexpectedly present after a failed Migrate", oldIdempotencyKeyIndexName)
 	}
 	if names[newIdempotencyKeyIndexName] {
 		t.Errorf("new index %q unexpectedly present after a failed Migrate (it must not partially succeed)", newIdempotencyKeyIndexName)
+	}
+
+	// But strictly better than "everything on this collection failed": the
+	// two plain query indexes bundled in migrationIndexes()[colUsageEvents]
+	// must still have been created, since the unique index that failed to
+	// build lives in its own separate CreateOne call (migrationUniqueIndexes)
+	// precisely so a failure there doesn't block them. Counted rather than
+	// matched by exact name, since mongo's default index names are an
+	// implementation detail this test shouldn't need to hardcode: every
+	// index on the collection other than "_id_" and the two
+	// idempotency_key ones must be one of those two query indexes.
+	other := 0
+	for name := range names {
+		if name == "_id_" || name == oldIdempotencyKeyIndexName || name == newIdempotencyKeyIndexName {
+			continue
+		}
+		other++
+	}
+	if other != 2 {
+		t.Errorf("got %d non-idempotency-key index(es) on %s after the failed Migrate, want 2 "+
+			"(the collection's other query indexes must still be created even when the unique "+
+			"index's own build fails)", other, colUsageEvents)
 	}
 }
 

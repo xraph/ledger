@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"sort"
+	"strings"
 	"time"
 
 	"go.mongodb.org/mongo-driver/v2/bson"
@@ -92,8 +93,13 @@ func (s *Store) DB() *grove.DB { return s.db }
 // never runs against that data. A collection whose superseded index failed
 // to get dropped (index-not-found aside) simply keeps both the old and new
 // index; a collection whose NEW index failed to get created (most likely
-// because existing documents already violate it, an E11000) keeps only its
-// old index and is reported as a failure - its data is never touched.
+// because existing documents already violate it, an E11000) is reported as
+// a failure via the joined error, and its data is never touched.
+//
+// An index listed in migrationUniqueIndexes is created in its own call,
+// separate from the rest of its collection's indexes (which share one
+// CreateMany): a duplicate-key failure building that one index must not
+// also prevent the collection's other, unrelated indexes from landing.
 //
 // Every collection is attempted, in a fixed (sorted) order, even after an
 // earlier one fails: a bad collection must not leave every collection after
@@ -101,34 +107,43 @@ func (s *Store) DB() *grove.DB { return s.db }
 // via errors.Join.
 func (s *Store) Migrate(ctx context.Context) error {
 	indexes := migrationIndexes()
-	cols := make([]string, 0, len(indexes))
-	for col := range indexes {
-		cols = append(cols, col)
-	}
-	sort.Strings(cols)
+	uniqueIndexes := migrationUniqueIndexes()
+	cols := unionSortedIndexKeys(indexes, uniqueIndexes)
 
 	var errs []error
 	created := make(map[string]bool, len(cols))
 
 	for _, col := range cols {
-		models := indexes[col]
-		if len(models) == 0 {
-			created[col] = true
-			continue
-		}
-		if _, err := s.mdb.Collection(col).Indexes().CreateMany(ctx, models); err != nil {
-			if isDuplicateKeyError(err) {
-				errs = append(errs, fmt.Errorf(
-					"ledger/mongo: migrate: collection %q: cannot create a new unique index because "+
-						"existing documents already contain duplicate keys; the old index on this "+
-						"collection was left in place, and no data was deleted - the duplicates must "+
-						"be resolved by hand before migration can complete: %w", col, err))
-			} else {
-				errs = append(errs, fmt.Errorf("ledger/mongo: migrate: create %s indexes: %w", col, err))
+		ok := true
+
+		if models := indexes[col]; len(models) > 0 {
+			if _, err := s.mdb.Collection(col).Indexes().CreateMany(ctx, models); err != nil {
+				if isDuplicateKeyError(err) {
+					errs = append(errs, duplicateKeyMigrateError(col, err))
+				} else {
+					errs = append(errs, fmt.Errorf("ledger/mongo: migrate: create %s indexes: %w", col, err))
+				}
+				ok = false
 			}
-			continue
 		}
-		created[col] = true
+
+		// Each index that might collide with pre-existing duplicate data is
+		// created in its OWN call, separate from the collection's other
+		// indexes above: a duplicate-key failure building THIS index alone
+		// must not also prevent the collection's other, perfectly fine
+		// indexes from being created.
+		for _, m := range uniqueIndexes[col] {
+			if _, err := s.mdb.Collection(col).Indexes().CreateOne(ctx, m); err != nil {
+				if isDuplicateKeyError(err) {
+					errs = append(errs, duplicateKeyMigrateError(col, err))
+				} else {
+					errs = append(errs, fmt.Errorf("ledger/mongo: migrate: create %s indexes: %w", col, err))
+				}
+				ok = false
+			}
+		}
+
+		created[col] = ok
 	}
 
 	supersededByCol := migrationSupersededIndexes()
@@ -1313,12 +1328,16 @@ func isDuplicateKeyError(err error) bool {
 // isIndexNotFound reports whether err is mongo's "index not found" (code 27)
 // or "namespace not found" (code 26) server error. dropIndexes returns
 // IndexNotFound when the collection exists but the named index does not,
-// and NamespaceNotFound when the collection itself does not exist yet -
-// which is exactly what happens on a brand new database, since Migrate
-// drops the old idempotency_key index before CreateMany has had a chance to
-// (implicitly) create ledger_usage_events. Migrate relies on this to make
-// dropping the old index idempotent on both a fresh database and one that
-// has already been migrated under the new scheme.
+// and NamespaceNotFound when the collection itself does not exist at all.
+// Migrate creates every new index before dropping anything superseded, so
+// by the time it drops a superseded index the collection has necessarily
+// already been created (building an index implicitly creates its
+// collection) - meaning IndexNotFound is the case Migrate actually
+// exercises in normal operation, on both a fresh database (which never had
+// the superseded index) and one already migrated under the new scheme
+// (which no longer has it). NamespaceNotFound is tolerated too, defensively,
+// in case a collection somehow still doesn't exist by drop time; either
+// way, Migrate treats "there is nothing left to drop" as success.
 func isIndexNotFound(err error) bool {
 	if err == nil {
 		return false
@@ -1358,19 +1377,8 @@ func migrationIndexes() map[string][]mongo.IndexModel {
 		colUsageEvents: {
 			{Keys: bson.D{{Key: "tenant_id", Value: 1}, {Key: "app_id", Value: 1}, {Key: "feature_key", Value: 1}, {Key: "timestamp", Value: -1}}},
 			{Keys: bson.D{{Key: "timestamp", Value: -1}}},
-			{
-				Keys: bson.D{{Key: "idempotency_key", Value: 1}},
-				Options: options.Index().
-					SetName(newIdempotencyKeyIndexName).
-					SetUnique(true).
-					// $gt "" matches only non-empty strings: type bracketing
-					// in mongo's BSON comparison order excludes null and
-					// missing values from a $gt "" match, so this indexes
-					// (and enforces uniqueness over) exactly the documents
-					// with a genuine idempotency key, same as sqlite/postgres'
-					// `WHERE idempotency_key != ''` partial unique index.
-					SetPartialFilterExpression(bson.M{"idempotency_key": bson.M{"$gt": ""}}),
-			},
+			// The idempotency_key partial unique index lives in
+			// migrationUniqueIndexes, not here: see that function for why.
 		},
 		colEntitlements: {
 			{Keys: bson.D{{Key: "tenant_id", Value: 1}, {Key: "app_id", Value: 1}}},
@@ -1415,4 +1423,107 @@ func migrationSupersededIndexes() map[string][]string {
 	return map[string][]string{
 		colUsageEvents: {oldIdempotencyKeyIndexName},
 	}
+}
+
+// migrationUniqueIndexes returns, per collection, indexes that Migrate
+// creates in their OWN CreateOne call rather than bundled into
+// migrationIndexes' single CreateMany for that collection.
+//
+// This is specifically for an index whose build can fail against
+// pre-existing data with an E11000 - the idempotency_key partial unique
+// index is exactly that case, replacing an old sparse index that a
+// database may carry duplicate-under-the-new-rules data past. Isolating it
+// in its own call means a duplicate-key failure building THIS index alone
+// does not also block ledger_usage_events' other, unrelated query indexes
+// from being created.
+func migrationUniqueIndexes() map[string][]mongo.IndexModel {
+	return map[string][]mongo.IndexModel{
+		colUsageEvents: {
+			{
+				Keys: bson.D{{Key: "idempotency_key", Value: 1}},
+				Options: options.Index().
+					SetName(newIdempotencyKeyIndexName).
+					SetUnique(true).
+					// $gt "" matches only non-empty strings: type bracketing
+					// in mongo's BSON comparison order excludes null and
+					// missing values from a $gt "" match, so this indexes
+					// (and enforces uniqueness over) exactly the documents
+					// with a genuine idempotency key, same as sqlite/postgres'
+					// `WHERE idempotency_key != ''` partial unique index.
+					SetPartialFilterExpression(bson.M{"idempotency_key": bson.M{"$gt": ""}}),
+			},
+		},
+	}
+}
+
+// unionSortedIndexKeys returns every collection name appearing in any of
+// the given maps, sorted, so Migrate visits collections in a fixed,
+// deterministic order regardless of which map(s) mention them.
+func unionSortedIndexKeys(maps ...map[string][]mongo.IndexModel) []string {
+	seen := make(map[string]struct{})
+	for _, m := range maps {
+		for col := range m {
+			seen[col] = struct{}{}
+		}
+	}
+	cols := make([]string, 0, len(seen))
+	for col := range seen {
+		cols = append(cols, col)
+	}
+	sort.Strings(cols)
+	return cols
+}
+
+// duplicateKeyMigrateError builds the error Migrate returns when building
+// an index fails because existing documents already hold duplicate values
+// for it (a typed E11000, per isDuplicateKeyError).
+//
+// It must not claim an old index was "left in place" to protect the data:
+// that is never true when this error can fire. A genuinely superseded old
+// index (the sparse idempotency_key one, while it still exists) already
+// enforces uniqueness over every document carrying a real key, which makes
+// building the new index impossible to fail this way in the first place -
+// so whenever this error DOES fire, either there was never an old index
+// protecting this collection, or it was already gone by the time the
+// conflicting documents were written. The same branch is reached for
+// colPlans, colCoupons, colCouponApplications and colFeatures' own unique
+// indexes too, none of which ever had a superseded predecessor at all - so
+// the message says only what is true and checkable in every case: which
+// collection, which index (when the raw driver error names one, which an
+// index-build E11000 always does), that nothing was deleted, and what to
+// do next.
+func duplicateKeyMigrateError(col string, err error) error {
+	if name := duplicateKeyIndexName(err); name != "" {
+		return fmt.Errorf(
+			"ledger/mongo: migrate: existing documents in %q hold duplicate values for %q; "+
+				"no data was changed; resolve the duplicates and re-run Migrate: %w",
+			col, name, err)
+	}
+	return fmt.Errorf(
+		"ledger/mongo: migrate: existing documents in %q hold duplicate values under a new "+
+			"unique index; no data was changed; resolve the duplicates and re-run Migrate: %w",
+		col, err)
+}
+
+// duplicateKeyIndexName extracts the offending index's name from a mongo
+// duplicate-key error's own message. An index-build E11000 always includes
+// "index: <name> dup key: {...}" in its text (this is the server's own
+// error format, not something this repo constructs), so this is read
+// straight from the driver's error rather than tracked separately and
+// risking drift from what the server actually rejected. Returns "" if the
+// shape doesn't match, in which case the caller's message degrades to
+// naming just the collection.
+func duplicateKeyIndexName(err error) string {
+	const marker = "index: "
+	msg := err.Error()
+	i := strings.Index(msg, marker)
+	if i < 0 {
+		return ""
+	}
+	rest := msg[i+len(marker):]
+	end := strings.IndexAny(rest, " \t\n")
+	if end < 0 {
+		return rest
+	}
+	return rest[:end]
 }
