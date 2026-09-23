@@ -145,13 +145,24 @@ func fromPlanModel(m *planModel) (*plan.Plan, error) {
 
 	features := make([]plan.Feature, len(m.Features))
 	for i, f := range m.Features {
-		fID, err := id.ParseFeatureID(f.ID)
-		if err != nil {
-			// Use the raw string if parsing fails
-			fID, err = id.ParseAny(f.ID)
+		// A plan feature's id is legitimately optional: Ledger.CreatePlan
+		// only mints the plan's own id (ledger.go), never one per feature,
+		// so a plan built the way the README quick start does - a
+		// plan.Feature literal with no ID set - reaches this store with an
+		// empty feature id. An empty stored value round-trips as id.Nil
+		// rather than failing id.ParseFeatureID, which errors on an empty
+		// string.
+		fID := id.Nil
+		if f.ID != "" {
+			parsed, err := id.ParseFeatureID(f.ID)
 			if err != nil {
-				return nil, fmt.Errorf("failed to parse feature ID %q: %w", f.ID, err)
+				// Use the raw string if parsing fails
+				parsed, err = id.ParseAny(f.ID)
+				if err != nil {
+					return nil, fmt.Errorf("failed to parse feature ID %q: %w", f.ID, err)
+				}
 			}
+			fID = parsed
 		}
 		features[i] = plan.Feature{
 			Entity: types.Entity{
@@ -171,9 +182,19 @@ func fromPlanModel(m *planModel) (*plan.Plan, error) {
 
 	var pricing *plan.Pricing
 	if m.Pricing != nil {
-		priceID, priceErr := id.ParsePriceID(m.Pricing.ID)
-		if priceErr != nil {
-			return nil, priceErr
+		// The pricing block's own id is also legitimately optional, for the
+		// same reason as feature ids above: Ledger.CreatePlan never mints
+		// one (ledger.go only sets p.ID), and the README quick start builds
+		// a plan.Pricing literal with no ID. An empty stored value
+		// round-trips as id.Nil rather than failing id.ParsePriceID, which
+		// errors on an empty string.
+		priceID := id.Nil
+		if m.Pricing.ID != "" {
+			parsed, priceErr := id.ParsePriceID(m.Pricing.ID)
+			if priceErr != nil {
+				return nil, priceErr
+			}
+			priceID = parsed
 		}
 		// PlanID is a redundant back-reference to the owning plan and is
 		// legitimately optional: a plan.Pricing is normally constructed

@@ -87,25 +87,12 @@ func init() {
 					return err
 				}
 
-				// The idempotency_key index here must stay in sync with
-				// migrationIndexes() in store.go, which is what Migrate()
-				// actually builds indexes from - this migrate.Group is not
-				// currently invoked by Migrate(). It is a PARTIAL unique
-				// index (non-empty keys only, via $gt ""), not a sparse one:
-				// a sparse index still enforces uniqueness among documents
-				// that do carry the field, even with an empty string value,
-				// which silently drops the second and later keyless usage
-				// events ingested. See store.go's index name constants for
-				// the full rationale.
 				return mexec.CreateIndexes(ctx, colUsageEvents, []mongo.IndexModel{
 					{Keys: bson.D{{Key: "tenant_id", Value: 1}, {Key: "app_id", Value: 1}, {Key: "feature_key", Value: 1}, {Key: "timestamp", Value: -1}}},
 					{Keys: bson.D{{Key: "timestamp", Value: -1}}},
 					{
-						Keys: bson.D{{Key: "idempotency_key", Value: 1}},
-						Options: options.Index().
-							SetName(newIdempotencyKeyIndexName).
-							SetUnique(true).
-							SetPartialFilterExpression(bson.M{"idempotency_key": bson.M{"$gt": ""}}),
+						Keys:    bson.D{{Key: "idempotency_key", Value: 1}},
+						Options: options.Index().SetUnique(true).SetSparse(true),
 					},
 				})
 			},
@@ -257,6 +244,80 @@ func init() {
 					return fmt.Errorf("expected mongomigrate executor, got %T", exec)
 				}
 				return mexec.DropCollection(ctx, (*couponApplicationDoc)(nil))
+			},
+		},
+		&migrate.Migration{
+			// Swaps ledger_usage_events' unique index on idempotency_key
+			// from the original sparse index (migration 20240101000003,
+			// left as originally written above) to a PARTIAL unique index
+			// over non-empty keys only. A sparse index still enforces
+			// uniqueness among documents that carry the field even with an
+			// empty string value, so once one keyless usage event lands,
+			// every later keyless event collides and is silently dropped -
+			// see store.go's index name constants and Migrate for the full
+			// rationale. This must run for databases migrated through
+			// grove's orchestrator to receive the same fix Store.Migrate
+			// applies directly via migrationIndexes(); keep the two in
+			// sync.
+			//
+			// Create-then-drop, never drop-then-create: on MongoDB 7.0.41,
+			// a partial index with the same key pattern as an existing
+			// sparse one can be created while the old index still exists,
+			// so there is no need to ever leave the collection with zero
+			// uniqueness protection. Dropping first would open exactly
+			// that gap - a duplicate non-empty key written in the gap
+			// would defeat the very check this migration exists to fix.
+			Name:    "usage_events_idempotency_key_partial_index",
+			Version: "20240101000009",
+			Up: func(ctx context.Context, exec migrate.Executor) error {
+				mexec, ok := exec.(*mongomigrate.Executor)
+				if !ok {
+					return fmt.Errorf("expected mongomigrate executor, got %T", exec)
+				}
+
+				if err := mexec.CreateIndexes(ctx, colUsageEvents, []mongo.IndexModel{
+					{
+						Keys: bson.D{{Key: "idempotency_key", Value: 1}},
+						Options: options.Index().
+							SetName(newIdempotencyKeyIndexName).
+							SetUnique(true).
+							SetPartialFilterExpression(bson.M{"idempotency_key": bson.M{"$gt": ""}}),
+					},
+				}); err != nil {
+					return fmt.Errorf("create new %s index: %w", newIdempotencyKeyIndexName, err)
+				}
+
+				if err := mexec.DB().Collection(colUsageEvents).Indexes().DropOne(ctx, oldIdempotencyKeyIndexName); err != nil {
+					if !isIndexNotFound(err) {
+						return fmt.Errorf("drop old %s index: %w", oldIdempotencyKeyIndexName, err)
+					}
+				}
+				return nil
+			},
+			Down: func(ctx context.Context, exec migrate.Executor) error {
+				mexec, ok := exec.(*mongomigrate.Executor)
+				if !ok {
+					return fmt.Errorf("expected mongomigrate executor, got %T", exec)
+				}
+
+				// Same discipline in reverse: recreate the old sparse index
+				// before dropping the partial one, so there is no gap here
+				// either.
+				if err := mexec.CreateIndexes(ctx, colUsageEvents, []mongo.IndexModel{
+					{
+						Keys:    bson.D{{Key: "idempotency_key", Value: 1}},
+						Options: options.Index().SetUnique(true).SetSparse(true),
+					},
+				}); err != nil {
+					return fmt.Errorf("recreate old %s index: %w", oldIdempotencyKeyIndexName, err)
+				}
+
+				if err := mexec.DB().Collection(colUsageEvents).Indexes().DropOne(ctx, newIdempotencyKeyIndexName); err != nil {
+					if !isIndexNotFound(err) {
+						return fmt.Errorf("drop new %s index: %w", newIdempotencyKeyIndexName, err)
+					}
+				}
+				return nil
 			},
 		},
 	)

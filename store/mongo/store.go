@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"sort"
 	"time"
 
 	"go.mongodb.org/mongo-driver/v2/bson"
@@ -77,34 +78,85 @@ func New(db *grove.DB) *Store {
 // DB returns the underlying grove database for direct access.
 func (s *Store) DB() *grove.DB { return s.db }
 
-// Migrate creates indexes for all ledger collections.
+// Migrate creates indexes for all ledger collections, then drops any index
+// a new one has superseded (currently just the old sparse idempotency_key
+// index on ledger_usage_events, replaced by a partial unique one).
 //
-// It first drops the old sparse idempotency_key index by name, tolerating
-// "index not found" so this is idempotent whether or not that index still
-// exists: a fresh database never had it, an existing one migrated before
-// this fix does, and a database this has already run against does not.
-// Mongo refuses to create an index over one with the same keys but
-// different options, so the old index must be gone before CreateMany below
-// installs the new partial one.
+// It creates every new index BEFORE dropping anything superseded, never the
+// other way around: verified live against MongoDB 7.0.41 that a partial
+// index can be created while an old index with the same key pattern still
+// exists, so there is no need to ever leave a collection with a moment of
+// zero uniqueness protection. Dropping first would open exactly that gap -
+// a duplicate key written into it would defeat the very check being
+// installed, permanently, since the create that would normally catch it
+// never runs against that data. A collection whose superseded index failed
+// to get dropped (index-not-found aside) simply keeps both the old and new
+// index; a collection whose NEW index failed to get created (most likely
+// because existing documents already violate it, an E11000) keeps only its
+// old index and is reported as a failure - its data is never touched.
+//
+// Every collection is attempted, in a fixed (sorted) order, even after an
+// earlier one fails: a bad collection must not leave every collection after
+// it in the iteration order unindexed. All failures are returned together
+// via errors.Join.
 func (s *Store) Migrate(ctx context.Context) error {
-	if err := s.mdb.Collection(colUsageEvents).Indexes().DropOne(ctx, oldIdempotencyKeyIndexName); err != nil {
-		if !isIndexNotFound(err) {
-			return fmt.Errorf("ledger/mongo: migrate: drop old %s index: %w", oldIdempotencyKeyIndexName, err)
-		}
-	}
-
 	indexes := migrationIndexes()
+	cols := make([]string, 0, len(indexes))
+	for col := range indexes {
+		cols = append(cols, col)
+	}
+	sort.Strings(cols)
 
-	for col, models := range indexes {
+	var errs []error
+	created := make(map[string]bool, len(cols))
+
+	for _, col := range cols {
+		models := indexes[col]
 		if len(models) == 0 {
+			created[col] = true
 			continue
 		}
-		_, err := s.mdb.Collection(col).Indexes().CreateMany(ctx, models)
-		if err != nil {
-			return fmt.Errorf("ledger/mongo: migrate %s indexes: %w", col, err)
+		if _, err := s.mdb.Collection(col).Indexes().CreateMany(ctx, models); err != nil {
+			if isDuplicateKeyError(err) {
+				errs = append(errs, fmt.Errorf(
+					"ledger/mongo: migrate: collection %q: cannot create a new unique index because "+
+						"existing documents already contain duplicate keys; the old index on this "+
+						"collection was left in place, and no data was deleted - the duplicates must "+
+						"be resolved by hand before migration can complete: %w", col, err))
+			} else {
+				errs = append(errs, fmt.Errorf("ledger/mongo: migrate: create %s indexes: %w", col, err))
+			}
+			continue
+		}
+		created[col] = true
+	}
+
+	supersededByCol := migrationSupersededIndexes()
+	supersededCols := make([]string, 0, len(supersededByCol))
+	for col := range supersededByCol {
+		supersededCols = append(supersededCols, col)
+	}
+	sort.Strings(supersededCols)
+
+	for _, col := range supersededCols {
+		if !created[col] {
+			// This collection's replacement index didn't get created above
+			// (or there was nothing to create for it, which can't happen
+			// here since every superseded-index collection also appears in
+			// migrationIndexes()). Leave its old index alone rather than
+			// dropping protection a replacement never took over.
+			continue
+		}
+		for _, name := range supersededByCol[col] {
+			if err := s.mdb.Collection(col).Indexes().DropOne(ctx, name); err != nil {
+				if !isIndexNotFound(err) {
+					errs = append(errs, fmt.Errorf("ledger/mongo: migrate: drop superseded %s index on %q: %w", name, col, err))
+				}
+			}
 		}
 	}
-	return nil
+
+	return errors.Join(errs...)
 }
 
 // Ping checks database connectivity.
@@ -1352,5 +1404,15 @@ func migrationIndexes() map[string][]mongo.IndexModel {
 			{Keys: bson.D{{Key: "app_id", Value: 1}, {Key: "status", Value: 1}}},
 			{Keys: bson.D{{Key: "app_id", Value: 1}, {Key: "created_at", Value: 1}}},
 		},
+	}
+}
+
+// migrationSupersededIndexes lists, per collection, the names of indexes
+// that an entry in migrationIndexes has replaced and Migrate should drop -
+// but only after the replacement above has been created successfully, and
+// only by name, never by deleting documents.
+func migrationSupersededIndexes() map[string][]string {
+	return map[string][]string{
+		colUsageEvents: {oldIdempotencyKeyIndexName},
 	}
 }

@@ -25,6 +25,7 @@ func Run(t *testing.T, newStore func(t *testing.T) ledgerstore.Store) {
 
 	t.Run("PlanRoundTrip", func(t *testing.T) { testPlanRoundTrip(t, newStore(t)) })
 	t.Run("PlanRoundTripWithoutPricingPlanID", func(t *testing.T) { testPlanRoundTripWithoutPricingPlanID(t, newStore(t)) })
+	t.Run("PlanRoundTripWithoutChildIDs", func(t *testing.T) { testPlanRoundTripWithoutChildIDs(t, newStore(t)) })
 	t.Run("CouponRoundTrip", func(t *testing.T) { testCouponRoundTrip(t, newStore(t)) })
 	t.Run("GetCouponByIDUnknown", func(t *testing.T) { testGetCouponByIDUnknown(t, newStore(t)) })
 	t.Run("PlanAppIsolation", func(t *testing.T) { testPlanAppIsolation(t, newStore(t)) })
@@ -141,6 +142,55 @@ func testPlanRoundTripWithoutPricingPlanID(t *testing.T, s ledgerstore.Store) {
 	}
 	if !got.Pricing.PlanID.IsNil() {
 		t.Errorf("got Pricing.PlanID %q, want nil (an unset PlanID must round-trip as nil)", got.Pricing.PlanID)
+	}
+}
+
+// testPlanRoundTripWithoutChildIDs pins down that a plan built the way the
+// README quick start (and Ledger.CreatePlan, which only ever mints the
+// plan's OWN id - never one per feature, never one for the pricing block)
+// actually produces - a feature and a pricing block that never had their
+// own ID set - round-trips cleanly on every backend. The read-back feature
+// and pricing ids must come back nil, not fail the whole read.
+func testPlanRoundTripWithoutChildIDs(t *testing.T, s ledgerstore.Store) {
+	ctx := context.Background()
+	appID := "app-" + uniqueSuffix()
+	slug := "pro-nochildids-" + uniqueSuffix()
+
+	p := &plan.Plan{
+		Entity: types.NewEntity(), ID: id.NewPlanID(),
+		Name: "Pro", Slug: slug, Currency: "usd",
+		Status: plan.StatusActive, AppID: appID,
+		Features: []plan.Feature{
+			{
+				// ID intentionally left unset, as the README quick start does.
+				Key: "api_calls", Name: "API Calls",
+				Type: plan.FeatureMetered, Limit: 10000, Period: plan.PeriodMonthly,
+			},
+		},
+		Pricing: &plan.Pricing{
+			// ID intentionally left unset, as the README quick start does.
+			BaseAmount: types.USD(4900), BillingPeriod: plan.PeriodMonthly,
+		},
+	}
+	if err := s.CreatePlan(ctx, p); err != nil {
+		t.Fatalf("CreatePlan: %v", err)
+	}
+
+	got, err := s.GetPlan(ctx, p.ID)
+	if err != nil {
+		t.Fatalf("GetPlan: %v", err)
+	}
+	if len(got.Features) != 1 {
+		t.Fatalf("got %d feature(s), want exactly 1", len(got.Features))
+	}
+	if !got.Features[0].ID.IsNil() {
+		t.Errorf("got Features[0].ID %q, want nil (an unset feature ID must round-trip as nil)", got.Features[0].ID)
+	}
+	if got.Pricing == nil {
+		t.Fatal("Pricing did not survive the round trip")
+	}
+	if !got.Pricing.ID.IsNil() {
+		t.Errorf("got Pricing.ID %q, want nil (an unset pricing ID must round-trip as nil)", got.Pricing.ID)
 	}
 }
 
@@ -1038,8 +1088,6 @@ func testInvoiceTenantIsolation(t *testing.T, s ledgerstore.Store) {
 	}
 }
 
-// testUsageTenantIsolation is the usage-event analogue of
-// testSubscriptionTenantIsolation.
 // testIngestKeylessEventsAreAllCounted pins down that usage events with no
 // idempotency key are never treated as duplicates of one another. A store
 // backend that enforces uniqueness on the literal (possibly empty) stored
@@ -1149,6 +1197,8 @@ func testIngestKeyedAndKeylessMix(t *testing.T, s ledgerstore.Store) {
 	}
 }
 
+// testUsageTenantIsolation is the usage-event analogue of
+// testSubscriptionTenantIsolation.
 func testUsageTenantIsolation(t *testing.T, s ledgerstore.Store) {
 	ctx := context.Background()
 	appID := "app-" + uniqueSuffix()
