@@ -24,6 +24,7 @@ func Run(t *testing.T, newStore func(t *testing.T) ledgerstore.Store) {
 	t.Helper()
 
 	t.Run("PlanRoundTrip", func(t *testing.T) { testPlanRoundTrip(t, newStore(t)) })
+	t.Run("PlanRoundTripWithoutPricingPlanID", func(t *testing.T) { testPlanRoundTripWithoutPricingPlanID(t, newStore(t)) })
 	t.Run("CouponRoundTrip", func(t *testing.T) { testCouponRoundTrip(t, newStore(t)) })
 	t.Run("GetCouponByIDUnknown", func(t *testing.T) { testGetCouponByIDUnknown(t, newStore(t)) })
 	t.Run("PlanAppIsolation", func(t *testing.T) { testPlanAppIsolation(t, newStore(t)) })
@@ -52,6 +53,9 @@ func Run(t *testing.T, newStore func(t *testing.T) ledgerstore.Store) {
 	t.Run("InvoiceTenantIsolation", func(t *testing.T) { testInvoiceTenantIsolation(t, newStore(t)) })
 	t.Run("UsageTenantIsolation", func(t *testing.T) { testUsageTenantIsolation(t, newStore(t)) })
 	t.Run("EmptyTenantIDBehavior", func(t *testing.T) { testEmptyTenantIDBehavior(t, newStore(t)) })
+	t.Run("IngestKeylessEventsAreAllCounted", func(t *testing.T) { testIngestKeylessEventsAreAllCounted(t, newStore(t)) })
+	t.Run("IngestDuplicateKeyIsCountedOnce", func(t *testing.T) { testIngestDuplicateKeyIsCountedOnce(t, newStore(t)) })
+	t.Run("IngestKeyedAndKeylessMix", func(t *testing.T) { testIngestKeyedAndKeylessMix(t, newStore(t)) })
 }
 
 // uniqueSuffix returns a value that differs on every call, including across
@@ -100,6 +104,43 @@ func testPlanRoundTrip(t *testing.T, s ledgerstore.Store) {
 	}
 	if !got.Pricing.BaseAmount.Equal(types.USD(4900)) {
 		t.Errorf("got base amount %v, want $49.00", got.Pricing.BaseAmount)
+	}
+}
+
+// testPlanRoundTripWithoutPricingPlanID pins down that a plan.Pricing built
+// without ever setting its PlanID - the normal construction, since the
+// pricing is always reached through its owning plan and doesn't strictly
+// need to know its own parent's id redundantly - round-trips cleanly. The
+// read-back Pricing.PlanID must come back nil, not forge a value and not
+// fail the whole read.
+func testPlanRoundTripWithoutPricingPlanID(t *testing.T, s ledgerstore.Store) {
+	ctx := context.Background()
+	appID := "app-" + uniqueSuffix()
+	slug := "pro-nopid-" + uniqueSuffix()
+
+	p := &plan.Plan{
+		Entity: types.NewEntity(), ID: id.NewPlanID(),
+		Name: "Pro", Slug: slug, Currency: "usd",
+		Status: plan.StatusActive, AppID: appID,
+		Pricing: &plan.Pricing{
+			ID: id.NewPriceID(), BaseAmount: types.USD(4900),
+			BillingPeriod: plan.PeriodMonthly,
+			// PlanID intentionally left unset.
+		},
+	}
+	if err := s.CreatePlan(ctx, p); err != nil {
+		t.Fatalf("CreatePlan: %v", err)
+	}
+
+	got, err := s.GetPlan(ctx, p.ID)
+	if err != nil {
+		t.Fatalf("GetPlan: %v", err)
+	}
+	if got.Pricing == nil {
+		t.Fatal("Pricing did not survive the round trip")
+	}
+	if !got.Pricing.PlanID.IsNil() {
+		t.Errorf("got Pricing.PlanID %q, want nil (an unset PlanID must round-trip as nil)", got.Pricing.PlanID)
 	}
 }
 
@@ -999,6 +1040,115 @@ func testInvoiceTenantIsolation(t *testing.T, s ledgerstore.Store) {
 
 // testUsageTenantIsolation is the usage-event analogue of
 // testSubscriptionTenantIsolation.
+// testIngestKeylessEventsAreAllCounted pins down that usage events with no
+// idempotency key are never treated as duplicates of one another. A store
+// backend that enforces uniqueness on the literal (possibly empty) stored
+// key value, rather than only on genuinely repeated non-empty keys, would
+// silently drop every keyless event past the first - under-billing metered
+// usage with no error raised anywhere.
+func testIngestKeylessEventsAreAllCounted(t *testing.T, s ledgerstore.Store) {
+	ctx := context.Background()
+	appID := "app-" + uniqueSuffix()
+	tenantID := "tenant-" + uniqueSuffix()
+	featureKey := "keyless-" + uniqueSuffix()
+
+	events := []*meter.UsageEvent{
+		{ID: id.NewUsageEventID(), TenantID: tenantID, AppID: appID, FeatureKey: featureKey, Quantity: 1, Timestamp: time.Now().UTC()},
+		{ID: id.NewUsageEventID(), TenantID: tenantID, AppID: appID, FeatureKey: featureKey, Quantity: 2, Timestamp: time.Now().UTC()},
+		{ID: id.NewUsageEventID(), TenantID: tenantID, AppID: appID, FeatureKey: featureKey, Quantity: 4, Timestamp: time.Now().UTC()},
+	}
+	if err := s.IngestBatch(ctx, events); err != nil {
+		t.Fatalf("IngestBatch: %v", err)
+	}
+
+	got, err := s.QueryUsage(ctx, tenantID, appID, meter.QueryOpts{FeatureKey: featureKey})
+	if err != nil {
+		t.Fatalf("QueryUsage: %v", err)
+	}
+	if len(got) != 3 {
+		t.Fatalf("QueryUsage: got %d event(s), want exactly 3 (every keyless event must be counted, not dropped as a false duplicate)", len(got))
+	}
+
+	total, err := s.Aggregate(ctx, tenantID, appID, featureKey, plan.PeriodMonthly)
+	if err != nil {
+		t.Fatalf("Aggregate: %v", err)
+	}
+	if total != 7 {
+		t.Errorf("Aggregate: got %d, want 7 (1+2+4)", total)
+	}
+}
+
+// testIngestDuplicateKeyIsCountedOnce pins down the other half of the
+// contract: a genuinely repeated non-empty idempotency key must still
+// collapse to a single counted event, exactly as it did before keyless
+// events were fixed to stop colliding with each other.
+func testIngestDuplicateKeyIsCountedOnce(t *testing.T, s ledgerstore.Store) {
+	ctx := context.Background()
+	appID := "app-" + uniqueSuffix()
+	tenantID := "tenant-" + uniqueSuffix()
+	featureKey := "dupkey-" + uniqueSuffix()
+	key := "idem-" + uniqueSuffix()
+
+	events := []*meter.UsageEvent{
+		{ID: id.NewUsageEventID(), TenantID: tenantID, AppID: appID, FeatureKey: featureKey, Quantity: 3, Timestamp: time.Now().UTC(), IdempotencyKey: key},
+		{ID: id.NewUsageEventID(), TenantID: tenantID, AppID: appID, FeatureKey: featureKey, Quantity: 3, Timestamp: time.Now().UTC(), IdempotencyKey: key},
+	}
+	if err := s.IngestBatch(ctx, events); err != nil {
+		t.Fatalf("IngestBatch: %v", err)
+	}
+
+	got, err := s.QueryUsage(ctx, tenantID, appID, meter.QueryOpts{FeatureKey: featureKey})
+	if err != nil {
+		t.Fatalf("QueryUsage: %v", err)
+	}
+	if len(got) != 1 {
+		t.Fatalf("QueryUsage: got %d event(s), want exactly 1 (a repeated idempotency key must collapse to one)", len(got))
+	}
+
+	total, err := s.Aggregate(ctx, tenantID, appID, featureKey, plan.PeriodMonthly)
+	if err != nil {
+		t.Fatalf("Aggregate: %v", err)
+	}
+	if total != 3 {
+		t.Errorf("Aggregate: got %d, want 3 (counted once, not twice)", total)
+	}
+}
+
+// testIngestKeyedAndKeylessMix combines both shapes in one batch: keyless
+// events must all survive alongside events carrying distinct real keys.
+func testIngestKeyedAndKeylessMix(t *testing.T, s ledgerstore.Store) {
+	ctx := context.Background()
+	appID := "app-" + uniqueSuffix()
+	tenantID := "tenant-" + uniqueSuffix()
+	featureKey := "mixed-" + uniqueSuffix()
+
+	events := []*meter.UsageEvent{
+		{ID: id.NewUsageEventID(), TenantID: tenantID, AppID: appID, FeatureKey: featureKey, Quantity: 1, Timestamp: time.Now().UTC()},
+		{ID: id.NewUsageEventID(), TenantID: tenantID, AppID: appID, FeatureKey: featureKey, Quantity: 1, Timestamp: time.Now().UTC()},
+		{ID: id.NewUsageEventID(), TenantID: tenantID, AppID: appID, FeatureKey: featureKey, Quantity: 1, Timestamp: time.Now().UTC(), IdempotencyKey: "mix-a-" + uniqueSuffix()},
+		{ID: id.NewUsageEventID(), TenantID: tenantID, AppID: appID, FeatureKey: featureKey, Quantity: 1, Timestamp: time.Now().UTC(), IdempotencyKey: "mix-b-" + uniqueSuffix()},
+	}
+	if err := s.IngestBatch(ctx, events); err != nil {
+		t.Fatalf("IngestBatch: %v", err)
+	}
+
+	got, err := s.QueryUsage(ctx, tenantID, appID, meter.QueryOpts{FeatureKey: featureKey})
+	if err != nil {
+		t.Fatalf("QueryUsage: %v", err)
+	}
+	if len(got) != 4 {
+		t.Fatalf("QueryUsage: got %d event(s), want exactly 4 (2 keyless + 2 distinctly keyed, all counted)", len(got))
+	}
+
+	total, err := s.Aggregate(ctx, tenantID, appID, featureKey, plan.PeriodMonthly)
+	if err != nil {
+		t.Fatalf("Aggregate: %v", err)
+	}
+	if total != 4 {
+		t.Errorf("Aggregate: got %d, want 4", total)
+	}
+}
+
 func testUsageTenantIsolation(t *testing.T, s ledgerstore.Store) {
 	ctx := context.Background()
 	appID := "app-" + uniqueSuffix()

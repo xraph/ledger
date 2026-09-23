@@ -37,6 +37,26 @@ const (
 	colFeatures           = "ledger_features"
 )
 
+// Index name constants for ledger_usage_events.idempotency_key.
+//
+// oldIdempotencyKeyIndexName is mongo's default auto-generated name for the
+// original `{idempotency_key: 1}` unique+sparse index (field name and
+// direction joined by "_"). A sparse index only skips documents missing the
+// field entirely; it still enforces uniqueness among documents that carry
+// it, even when every one of them stores an empty string (the insert path
+// this repo goes through always writes idempotency_key, never omits it) -
+// so the second keyless usage event ever ingested collides with the first
+// and is silently dropped as "already ingested". newIdempotencyKeyIndexName
+// replaces it with a PARTIAL unique index that only indexes non-empty keys,
+// matching the design sqlite and postgres already use (a partial unique
+// index filtered on a non-empty key, enforced with ON CONFLICT DO NOTHING).
+// It has a new name because mongo refuses to create an index with the same
+// keys as an existing one but different options.
+const (
+	oldIdempotencyKeyIndexName = "idempotency_key_1"
+	newIdempotencyKeyIndexName = "idempotency_key_unique_partial"
+)
+
 // compile-time interface check
 var _ ledgerstore.Store = (*Store)(nil)
 
@@ -58,7 +78,21 @@ func New(db *grove.DB) *Store {
 func (s *Store) DB() *grove.DB { return s.db }
 
 // Migrate creates indexes for all ledger collections.
+//
+// It first drops the old sparse idempotency_key index by name, tolerating
+// "index not found" so this is idempotent whether or not that index still
+// exists: a fresh database never had it, an existing one migrated before
+// this fix does, and a database this has already run against does not.
+// Mongo refuses to create an index over one with the same keys but
+// different options, so the old index must be gone before CreateMany below
+// installs the new partial one.
 func (s *Store) Migrate(ctx context.Context) error {
+	if err := s.mdb.Collection(colUsageEvents).Indexes().DropOne(ctx, oldIdempotencyKeyIndexName); err != nil {
+		if !isIndexNotFound(err) {
+			return fmt.Errorf("ledger/mongo: migrate: drop old %s index: %w", oldIdempotencyKeyIndexName, err)
+		}
+	}
+
 	indexes := migrationIndexes()
 
 	for col, models := range indexes {
@@ -1224,6 +1258,26 @@ func isDuplicateKeyError(err error) bool {
 	return mongo.IsDuplicateKeyError(err)
 }
 
+// isIndexNotFound reports whether err is mongo's "index not found" (code 27)
+// or "namespace not found" (code 26) server error. dropIndexes returns
+// IndexNotFound when the collection exists but the named index does not,
+// and NamespaceNotFound when the collection itself does not exist yet -
+// which is exactly what happens on a brand new database, since Migrate
+// drops the old idempotency_key index before CreateMany has had a chance to
+// (implicitly) create ledger_usage_events. Migrate relies on this to make
+// dropping the old index idempotent on both a fresh database and one that
+// has already been migrated under the new scheme.
+func isIndexNotFound(err error) bool {
+	if err == nil {
+		return false
+	}
+	var se mongo.ServerError
+	if errors.As(err, &se) {
+		return se.HasErrorCode(27) || se.HasErrorCode(26)
+	}
+	return false
+}
+
 // validateSubscriptionID rejects a subscription id that is nil or carries
 // the wrong prefix before any storage is touched.
 func validateSubscriptionID(subID id.SubscriptionID) error {
@@ -1253,8 +1307,17 @@ func migrationIndexes() map[string][]mongo.IndexModel {
 			{Keys: bson.D{{Key: "tenant_id", Value: 1}, {Key: "app_id", Value: 1}, {Key: "feature_key", Value: 1}, {Key: "timestamp", Value: -1}}},
 			{Keys: bson.D{{Key: "timestamp", Value: -1}}},
 			{
-				Keys:    bson.D{{Key: "idempotency_key", Value: 1}},
-				Options: options.Index().SetUnique(true).SetSparse(true),
+				Keys: bson.D{{Key: "idempotency_key", Value: 1}},
+				Options: options.Index().
+					SetName(newIdempotencyKeyIndexName).
+					SetUnique(true).
+					// $gt "" matches only non-empty strings: type bracketing
+					// in mongo's BSON comparison order excludes null and
+					// missing values from a $gt "" match, so this indexes
+					// (and enforces uniqueness over) exactly the documents
+					// with a genuine idempotency key, same as sqlite/postgres'
+					// `WHERE idempotency_key != ''` partial unique index.
+					SetPartialFilterExpression(bson.M{"idempotency_key": bson.M{"$gt": ""}}),
 			},
 		},
 		colEntitlements: {

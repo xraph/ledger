@@ -175,9 +175,19 @@ func fromPlanModel(m *planModel) (*plan.Plan, error) {
 		if priceErr != nil {
 			return nil, priceErr
 		}
-		pID, pErr := id.ParsePlanID(m.Pricing.PlanID)
-		if pErr != nil {
-			return nil, pErr
+		// PlanID is a redundant back-reference to the owning plan and is
+		// legitimately optional: a plan.Pricing is normally constructed
+		// without ever setting it (the pricing is always reached through
+		// its owning plan already). An empty stored value round-trips as
+		// id.Nil rather than failing id.ParsePlanID, which errors on an
+		// empty string.
+		pID := id.Nil
+		if m.Pricing.PlanID != "" {
+			parsed, pErr := id.ParsePlanID(m.Pricing.PlanID)
+			if pErr != nil {
+				return nil, pErr
+			}
+			pID = parsed
 		}
 
 		tiers := make([]plan.PriceTier, len(m.Pricing.Tiers))

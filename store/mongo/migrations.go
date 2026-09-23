@@ -87,12 +87,25 @@ func init() {
 					return err
 				}
 
+				// The idempotency_key index here must stay in sync with
+				// migrationIndexes() in store.go, which is what Migrate()
+				// actually builds indexes from - this migrate.Group is not
+				// currently invoked by Migrate(). It is a PARTIAL unique
+				// index (non-empty keys only, via $gt ""), not a sparse one:
+				// a sparse index still enforces uniqueness among documents
+				// that do carry the field, even with an empty string value,
+				// which silently drops the second and later keyless usage
+				// events ingested. See store.go's index name constants for
+				// the full rationale.
 				return mexec.CreateIndexes(ctx, colUsageEvents, []mongo.IndexModel{
 					{Keys: bson.D{{Key: "tenant_id", Value: 1}, {Key: "app_id", Value: 1}, {Key: "feature_key", Value: 1}, {Key: "timestamp", Value: -1}}},
 					{Keys: bson.D{{Key: "timestamp", Value: -1}}},
 					{
-						Keys:    bson.D{{Key: "idempotency_key", Value: 1}},
-						Options: options.Index().SetUnique(true).SetSparse(true),
+						Keys: bson.D{{Key: "idempotency_key", Value: 1}},
+						Options: options.Index().
+							SetName(newIdempotencyKeyIndexName).
+							SetUnique(true).
+							SetPartialFilterExpression(bson.M{"idempotency_key": bson.M{"$gt": ""}}),
 					},
 				})
 			},

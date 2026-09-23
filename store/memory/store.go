@@ -230,12 +230,20 @@ func (s *Store) IngestBatch(_ context.Context, events []*meter.UsageEvent) error
 	defer s.mu.Unlock()
 
 	for _, e := range events {
-		// Check for duplicate idempotency key
+		// Check for duplicate idempotency key. An empty key never counts as
+		// a duplicate of another empty key: only a genuinely repeated
+		// non-empty key collapses to one event, matching the partial-unique-
+		// index design sqlite, postgres and mongo all use.
 		if e.IdempotencyKey != "" {
+			duplicate := false
 			for _, existing := range s.usageEvents {
 				if existing.IdempotencyKey == e.IdempotencyKey {
-					continue // Skip duplicate
+					duplicate = true
+					break
 				}
+			}
+			if duplicate {
+				continue // Skip duplicate
 			}
 		}
 		s.usageEvents = append(s.usageEvents, *e)
