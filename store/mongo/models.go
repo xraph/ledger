@@ -276,11 +276,16 @@ type subscriptionModel struct {
 	ProviderID         string            `grove:"provider_id"          bson:"provider_id"`
 	ProviderName       string            `grove:"provider_name"        bson:"provider_name"`
 	Metadata           map[string]string `grove:"metadata"             bson:"metadata,omitempty"`
+	Quantity           map[string]int64  `grove:"quantity"             bson:"quantity,omitempty"`
 	CreatedAt          time.Time         `grove:"created_at"           bson:"created_at"`
 	UpdatedAt          time.Time         `grove:"updated_at"           bson:"updated_at"`
 }
 
 func toSubscriptionModel(s *subscription.Subscription) *subscriptionModel {
+	quantity := s.Quantity
+	if quantity == nil {
+		quantity = make(map[string]int64)
+	}
 	return &subscriptionModel{
 		ID:                 s.ID.String(),
 		TenantID:           s.TenantID,
@@ -297,6 +302,7 @@ func toSubscriptionModel(s *subscription.Subscription) *subscriptionModel {
 		ProviderID:         s.ProviderID,
 		ProviderName:       s.ProviderName,
 		Metadata:           s.Metadata,
+		Quantity:           quantity,
 		CreatedAt:          s.CreatedAt,
 		UpdatedAt:          s.UpdatedAt,
 	}
@@ -310,6 +316,11 @@ func fromSubscriptionModel(m *subscriptionModel) (*subscription.Subscription, er
 	planID, err := id.ParsePlanID(m.PlanID)
 	if err != nil {
 		return nil, err
+	}
+
+	quantity := m.Quantity
+	if quantity == nil {
+		quantity = make(map[string]int64)
 	}
 
 	return &subscription.Subscription{
@@ -332,6 +343,7 @@ func fromSubscriptionModel(m *subscriptionModel) (*subscription.Subscription, er
 		ProviderID:         m.ProviderID,
 		ProviderName:       m.ProviderName,
 		Metadata:           m.Metadata,
+		Quantity:           quantity,
 	}, nil
 }
 

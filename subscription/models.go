@@ -35,4 +35,13 @@ type Subscription struct {
 	ProviderID         string            `json:"provider_id,omitempty"`
 	ProviderName       string            `json:"provider_name,omitempty"`
 	Metadata           map[string]string `json:"metadata,omitempty"`
+
+	// Quantity holds the current count for each quantity-priced plan
+	// feature, keyed by feature key. Seats are the usual case.
+	//
+	// A seat count is a level and not a flow, so it is stored here and set
+	// when the subscription is created or changed, rather than derived
+	// from usage events. Aggregating a stream would answer "how many seats
+	// were added this month", which is a different question.
+	Quantity map[string]int64 `json:"quantity,omitempty"`
 }

@@ -126,12 +126,19 @@ type subscriptionModel struct {
 	ProviderID         string     `grove:"provider_id"`
 	ProviderName       string     `grove:"provider_name"`
 	Metadata           string     `grove:"metadata"` // JSON text
+	Quantity           string     `grove:"quantity"` // JSON text
 	CreatedAt          time.Time  `grove:"created_at"`
 	UpdatedAt          time.Time  `grove:"updated_at"`
 }
 
 func toSubscriptionModel(s *subscription.Subscription) *subscriptionModel {
 	metadata, _ := json.Marshal(s.Metadata) //nolint:errcheck // best-effort
+
+	quantity := s.Quantity
+	if quantity == nil {
+		quantity = make(map[string]int64)
+	}
+	quantityJSON, _ := json.Marshal(quantity) //nolint:errcheck // best-effort
 
 	return &subscriptionModel{
 		ID:                 s.ID.String(),
@@ -149,6 +156,7 @@ func toSubscriptionModel(s *subscription.Subscription) *subscriptionModel {
 		ProviderID:         s.ProviderID,
 		ProviderName:       s.ProviderName,
 		Metadata:           string(metadata),
+		Quantity:           string(quantityJSON),
 		CreatedAt:          s.CreatedAt,
 		UpdatedAt:          s.UpdatedAt,
 	}
@@ -167,6 +175,14 @@ func fromSubscriptionModel(m *subscriptionModel) (*subscription.Subscription, er
 	var metadata map[string]string
 	if m.Metadata != "" {
 		_ = json.Unmarshal([]byte(m.Metadata), &metadata) //nolint:errcheck // best-effort
+	}
+
+	quantity := make(map[string]int64)
+	if m.Quantity != "" && m.Quantity != "null" {
+		_ = json.Unmarshal([]byte(m.Quantity), &quantity) //nolint:errcheck // best-effort
+	}
+	if quantity == nil {
+		quantity = make(map[string]int64)
 	}
 
 	return &subscription.Subscription{
@@ -189,6 +205,7 @@ func fromSubscriptionModel(m *subscriptionModel) (*subscription.Subscription, er
 		ProviderID:         m.ProviderID,
 		ProviderName:       m.ProviderName,
 		Metadata:           metadata,
+		Quantity:           quantity,
 	}, nil
 }
 

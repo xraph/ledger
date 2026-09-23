@@ -124,6 +124,7 @@ type subscriptionModel struct {
 	ProviderID         string            `grove:"provider_id"`
 	ProviderName       string            `grove:"provider_name"`
 	Metadata           map[string]string `grove:"metadata,type:jsonb"`
+	Quantity           map[string]int64  `grove:"quantity,type:jsonb"`
 	CreatedAt          time.Time         `grove:"created_at"`
 	UpdatedAt          time.Time         `grove:"updated_at"`
 }
@@ -132,6 +133,10 @@ func toSubscriptionModel(s *subscription.Subscription) *subscriptionModel {
 	metadata := s.Metadata
 	if metadata == nil {
 		metadata = make(map[string]string)
+	}
+	quantity := s.Quantity
+	if quantity == nil {
+		quantity = make(map[string]int64)
 	}
 	return &subscriptionModel{
 		ID:                 s.ID.String(),
@@ -149,6 +154,7 @@ func toSubscriptionModel(s *subscription.Subscription) *subscriptionModel {
 		ProviderID:         s.ProviderID,
 		ProviderName:       s.ProviderName,
 		Metadata:           metadata,
+		Quantity:           quantity,
 		CreatedAt:          s.CreatedAt,
 		UpdatedAt:          s.UpdatedAt,
 	}
@@ -162,6 +168,11 @@ func fromSubscriptionModel(m *subscriptionModel) (*subscription.Subscription, er
 	planID, err := id.ParsePlanID(m.PlanID)
 	if err != nil {
 		return nil, err
+	}
+
+	quantity := m.Quantity
+	if quantity == nil {
+		quantity = make(map[string]int64)
 	}
 
 	return &subscription.Subscription{
@@ -184,6 +195,7 @@ func fromSubscriptionModel(m *subscriptionModel) (*subscription.Subscription, er
 		ProviderID:         m.ProviderID,
 		ProviderName:       m.ProviderName,
 		Metadata:           m.Metadata,
+		Quantity:           quantity,
 	}, nil
 }
 

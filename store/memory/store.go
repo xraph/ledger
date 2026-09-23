@@ -150,6 +150,33 @@ func (s *Store) ArchivePlan(_ context.Context, planID id.PlanID) error {
 	return ledger.ErrPlanNotFound
 }
 
+// copySubscriptionQuantity returns a fresh map holding the same entries as m.
+// It never returns nil, even when m is nil, so a subscription with no
+// quantity-priced features reads back an empty map rather than one a caller
+// could still be holding a reference to.
+//
+// Quantity is a map field on a struct the store otherwise hands out and takes
+// in by pointer. A shallow copy of the Subscription struct still shares the
+// map's backing storage with whatever the caller holds, so without this a
+// caller mutating sub.Quantity after Create (or after Get) would silently
+// change the stored subscription, bypassing the lock entirely.
+func copySubscriptionQuantity(m map[string]int64) map[string]int64 {
+	out := make(map[string]int64, len(m))
+	for k, v := range m {
+		out[k] = v
+	}
+	return out
+}
+
+// copySubscription returns a shallow copy of sub with its Quantity map
+// deep-copied, so neither the store nor the caller can mutate the other's
+// view of it through the shared struct.
+func copySubscription(sub *subscription.Subscription) *subscription.Subscription {
+	cp := *sub
+	cp.Quantity = copySubscriptionQuantity(sub.Quantity)
+	return &cp
+}
+
 // Subscription Store implementation
 func (s *Store) CreateSubscription(_ context.Context, sub *subscription.Subscription) error {
 	s.mu.Lock()
@@ -158,7 +185,7 @@ func (s *Store) CreateSubscription(_ context.Context, sub *subscription.Subscrip
 	if _, exists := s.subscriptions[sub.ID.String()]; exists {
 		return ledger.ErrAlreadyExists
 	}
-	s.subscriptions[sub.ID.String()] = sub
+	s.subscriptions[sub.ID.String()] = copySubscription(sub)
 	return nil
 }
 
@@ -167,7 +194,7 @@ func (s *Store) GetSubscription(_ context.Context, subID id.SubscriptionID) (*su
 	defer s.mu.RUnlock()
 
 	if sub, ok := s.subscriptions[subID.String()]; ok {
-		return sub, nil
+		return copySubscription(sub), nil
 	}
 	return nil, ledger.ErrSubscriptionNotFound
 }
@@ -179,7 +206,7 @@ func (s *Store) GetActiveSubscription(_ context.Context, tenantID, appID string)
 	for _, sub := range s.subscriptions {
 		if sub.TenantID == tenantID && sub.AppID == appID &&
 			(sub.Status == subscription.StatusActive || sub.Status == subscription.StatusTrialing) {
-			return sub, nil
+			return copySubscription(sub), nil
 		}
 	}
 	return nil, ledger.ErrNoActiveSubscription
@@ -193,7 +220,7 @@ func (s *Store) ListSubscriptions(_ context.Context, tenantID, appID string, opt
 	for _, sub := range s.subscriptions {
 		if (tenantID == "" || sub.TenantID == tenantID) && (appID == "" || sub.AppID == appID) {
 			if opts.Status == "" || sub.Status == opts.Status {
-				result = append(result, sub)
+				result = append(result, copySubscription(sub))
 			}
 		}
 	}
@@ -204,7 +231,7 @@ func (s *Store) UpdateSubscription(_ context.Context, sub *subscription.Subscrip
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	s.subscriptions[sub.ID.String()] = sub
+	s.subscriptions[sub.ID.String()] = copySubscription(sub)
 	return nil
 }
 

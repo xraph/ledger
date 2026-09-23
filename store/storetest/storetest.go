@@ -3,6 +3,7 @@ package storetest
 import (
 	"context"
 	"errors"
+	"reflect"
 	"sync"
 	"testing"
 	"time"
@@ -51,6 +52,7 @@ func Run(t *testing.T, newStore func(t *testing.T) ledgerstore.Store) {
 	t.Run("RedeemCouponRejectsBadInput", func(t *testing.T) { testRedeemCouponRejectsBadInput(t, newStore(t)) })
 	t.Run("RedeemCouponConcurrentCap", func(t *testing.T) { testRedeemCouponConcurrentCap(t, newStore(t)) })
 	t.Run("SubscriptionTenantIsolation", func(t *testing.T) { testSubscriptionTenantIsolation(t, newStore(t)) })
+	t.Run("SubscriptionQuantityRoundTrip", func(t *testing.T) { testSubscriptionQuantityRoundTrip(t, newStore(t)) })
 	t.Run("InvoiceTenantIsolation", func(t *testing.T) { testInvoiceTenantIsolation(t, newStore(t)) })
 	t.Run("UsageTenantIsolation", func(t *testing.T) { testUsageTenantIsolation(t, newStore(t)) })
 	t.Run("EmptyTenantIDBehavior", func(t *testing.T) { testEmptyTenantIDBehavior(t, newStore(t)) })
@@ -1053,6 +1055,63 @@ func testSubscriptionTenantIsolation(t *testing.T, s ledgerstore.Store) {
 	}
 	if hasSubscriptionID(got, subB.ID) {
 		t.Errorf("ListSubscriptions(tenantA) leaked tenantB's subscription %s", subB.ID)
+	}
+}
+
+// testSubscriptionQuantityRoundTrip pins down that Subscription.Quantity, the
+// per-feature seat count, survives every backend's model mapping intact. A
+// backend that maps every other field but silently drops this one would
+// still pass every other subtest in this suite; only reading it back here
+// catches that.
+//
+// It also pins the nil case: a subscription created without a Quantity must
+// read back an empty, non-nil map, never nil, so a caller can index it
+// without a guard. And it pins UpdateSubscription as a full replace: seats
+// change, projects disappears entirely, not just gets zeroed.
+func testSubscriptionQuantityRoundTrip(t *testing.T, s ledgerstore.Store) {
+	ctx := context.Background()
+	appID := "app-" + uniqueSuffix()
+	tenantID := "tenant-" + uniqueSuffix()
+
+	sub := newTestSubscription(tenantID, appID)
+	sub.Quantity = map[string]int64{"seats": 12, "projects": 3}
+	if err := s.CreateSubscription(ctx, sub); err != nil {
+		t.Fatalf("CreateSubscription: %v", err)
+	}
+
+	got, err := s.GetSubscription(ctx, sub.ID)
+	if err != nil {
+		t.Fatalf("GetSubscription: %v", err)
+	}
+	if want := (map[string]int64{"seats": 12, "projects": 3}); !reflect.DeepEqual(got.Quantity, want) {
+		t.Errorf("Quantity after create: got %v, want %v", got.Quantity, want)
+	}
+
+	noQtySub := newTestSubscription(tenantID, appID)
+	if err := s.CreateSubscription(ctx, noQtySub); err != nil {
+		t.Fatalf("CreateSubscription(nil Quantity): %v", err)
+	}
+	gotNoQty, err := s.GetSubscription(ctx, noQtySub.ID)
+	if err != nil {
+		t.Fatalf("GetSubscription(nil Quantity): %v", err)
+	}
+	if gotNoQty.Quantity == nil {
+		t.Error("Quantity for a subscription created with none came back nil, want an empty non-nil map")
+	}
+	if len(gotNoQty.Quantity) != 0 {
+		t.Errorf("Quantity for a subscription created with none: got %v, want empty", gotNoQty.Quantity)
+	}
+
+	got.Quantity = map[string]int64{"seats": 20}
+	if err := s.UpdateSubscription(ctx, got); err != nil {
+		t.Fatalf("UpdateSubscription: %v", err)
+	}
+	gotAfterUpdate, err := s.GetSubscription(ctx, sub.ID)
+	if err != nil {
+		t.Fatalf("GetSubscription after update: %v", err)
+	}
+	if want := (map[string]int64{"seats": 20}); !reflect.DeepEqual(gotAfterUpdate.Quantity, want) {
+		t.Errorf("Quantity after update: got %v, want %v", gotAfterUpdate.Quantity, want)
 	}
 }
 

@@ -293,5 +293,20 @@ CREATE INDEX IF NOT EXISTS idx_ledger_coupon_apps_sub
 				return err
 			},
 		},
+		&migrate.Migration{
+			Name:    "add_subscription_quantity",
+			Version: "20240101000010",
+			Up: func(ctx context.Context, exec migrate.Executor) error {
+				_, err := exec.Exec(ctx, `
+ALTER TABLE ledger_subscriptions ADD COLUMN quantity TEXT NOT NULL DEFAULT '{}';
+`)
+				return err
+			},
+			Down: func(_ context.Context, _ migrate.Executor) error {
+				// SQLite does not support DROP COLUMN in older versions;
+				// this column is harmless if left in place.
+				return nil
+			},
+		},
 	)
 }
