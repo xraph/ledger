@@ -813,22 +813,12 @@ func (s *Store) DeleteCoupon(ctx context.Context, couponID id.CouponID) error {
 }
 
 func (s *Store) ApplyCoupon(ctx context.Context, subID id.SubscriptionID, couponID id.CouponID) error {
-	if _, err := s.GetCouponByID(ctx, couponID); err != nil {
+	if err := validateSubscriptionID(subID); err != nil {
 		return err
 	}
 
-	var existing couponApplicationDoc
-	err := s.mdb.NewFind(&existing).
-		Filter(bson.M{
-			"coupon_id":       couponID.String(),
-			"subscription_id": subID.String(),
-		}).
-		Scan(ctx)
-	switch {
-	case err == nil:
-		return ledger.ErrCouponAlreadyApplied
-	case !isNoDocuments(err):
-		return fmt.Errorf("ledger/mongo: check existing coupon application: %w", err)
+	if _, err := s.GetCouponByID(ctx, couponID); err != nil {
+		return err
 	}
 
 	m := &couponApplicationDoc{
@@ -838,6 +828,9 @@ func (s *Store) ApplyCoupon(ctx context.Context, subID id.SubscriptionID, coupon
 		AppliedAt:      now(),
 	}
 	if _, err := s.mdb.NewInsert(m).Exec(ctx); err != nil {
+		if isDuplicateKeyError(err) {
+			return ledger.ErrCouponAlreadyApplied
+		}
 		return fmt.Errorf("ledger/mongo: apply coupon: %w", err)
 	}
 
@@ -845,10 +838,14 @@ func (s *Store) ApplyCoupon(ctx context.Context, subID id.SubscriptionID, coupon
 }
 
 func (s *Store) ListAppliedCoupons(ctx context.Context, subID id.SubscriptionID) ([]*coupon.Coupon, error) {
+	if subID.IsNil() {
+		return make([]*coupon.Coupon, 0), nil
+	}
+
 	var docs []couponApplicationDoc
 	err := s.mdb.NewFind(&docs).
 		Filter(bson.M{"subscription_id": subID.String()}).
-		Sort(bson.D{{Key: "applied_at", Value: 1}}).
+		Sort(bson.D{{Key: "applied_at", Value: 1}, {Key: "_id", Value: 1}}).
 		Scan(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("ledger/mongo: list applied coupons: %w", err)
@@ -865,9 +862,16 @@ func (s *Store) ListAppliedCoupons(ctx context.Context, subID id.SubscriptionID)
 
 		c, getErr := s.GetCouponByID(ctx, couponID)
 		if getErr != nil {
-			// A deleted coupon can leave its application behind. Skip
-			// it rather than failing the read.
-			continue
+			if errors.Is(getErr, ledger.ErrCouponNotFound) {
+				// A deleted coupon can leave its application behind.
+				// Skip it rather than failing the read.
+				continue
+			}
+			// Any other error (a dropped connection, a cancelled
+			// context) must not be treated as "this coupon is gone"
+			// - that would silently drop a discount the customer is
+			// still entitled to.
+			return nil, getErr
 		}
 		result = append(result, c)
 	}
@@ -1073,6 +1077,22 @@ func getStartOfPeriod(t time.Time, period plan.Period) time.Time {
 // isNoDocuments checks if an error wraps mongo.ErrNoDocuments.
 func isNoDocuments(err error) bool {
 	return errors.Is(err, mongo.ErrNoDocuments)
+}
+
+// isDuplicateKeyError reports whether err is a MongoDB duplicate key error
+// (E11000), detected by the official driver's typed classification rather
+// than by matching its message text.
+func isDuplicateKeyError(err error) bool {
+	return mongo.IsDuplicateKeyError(err)
+}
+
+// validateSubscriptionID rejects a subscription id that is nil or carries
+// the wrong prefix before any storage is touched.
+func validateSubscriptionID(subID id.SubscriptionID) error {
+	if subID.IsNil() || subID.Prefix() != id.PrefixSubscription {
+		return fmt.Errorf("ledger/mongo: invalid subscription id %q: %w", subID.String(), ledger.ErrInvalidInput)
+	}
+	return nil
 }
 
 // migrationIndexes returns the index definitions for all ledger collections.

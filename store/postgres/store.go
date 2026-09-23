@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/xraph/grove"
 	"github.com/xraph/grove/drivers/pgdriver"
 	"github.com/xraph/grove/migrate"
@@ -896,20 +897,12 @@ func (s *Store) DeleteCoupon(ctx context.Context, couponID id.CouponID) error {
 }
 
 func (s *Store) ApplyCoupon(ctx context.Context, subID id.SubscriptionID, couponID id.CouponID) error {
-	// Confirm the coupon exists before writing a row that references it.
-	if _, err := s.GetCouponByID(ctx, couponID); err != nil {
+	if err := validateSubscriptionID(subID); err != nil {
 		return err
 	}
 
-	existing := new(couponApplicationModel)
-	err := s.pg.NewSelect(existing).
-		Where("coupon_id = ?", couponID.String()).
-		Where("subscription_id = ?", subID.String()).
-		Scan(ctx)
-	switch {
-	case err == nil:
-		return ledger.ErrCouponAlreadyApplied
-	case !isNoRows(err):
+	// Confirm the coupon exists before writing a row that references it.
+	if _, err := s.GetCouponByID(ctx, couponID); err != nil {
 		return err
 	}
 
@@ -919,16 +912,31 @@ func (s *Store) ApplyCoupon(ctx context.Context, subID id.SubscriptionID, coupon
 		SubscriptionID: subID.String(),
 		AppliedAt:      now(),
 	}
-	_, err = s.pg.NewInsert(m).Exec(ctx)
+	if _, err := s.pg.NewInsert(m).Exec(ctx); err != nil {
+		switch {
+		case isUniqueViolation(err):
+			return ledger.ErrCouponAlreadyApplied
+		case isForeignKeyViolation(err):
+			// The coupon existed at the check above but was deleted
+			// before this insert landed.
+			return ledger.ErrCouponNotFound
+		default:
+			return err
+		}
+	}
 
-	return err
+	return nil
 }
 
 func (s *Store) ListAppliedCoupons(ctx context.Context, subID id.SubscriptionID) ([]*coupon.Coupon, error) {
+	if subID.IsNil() {
+		return make([]*coupon.Coupon, 0), nil
+	}
+
 	var models []couponApplicationModel
 	err := s.pg.NewSelect(&models).
 		Where("subscription_id = ?", subID.String()).
-		OrderExpr("applied_at ASC").
+		OrderExpr("applied_at ASC, id ASC").
 		Scan(ctx)
 	if err != nil {
 		return nil, err
@@ -945,11 +953,18 @@ func (s *Store) ListAppliedCoupons(ctx context.Context, subID id.SubscriptionID)
 
 		c, getErr := s.GetCouponByID(ctx, couponID)
 		if getErr != nil {
-			// A deleted coupon can leave its application row behind.
-			// Skip it rather than failing the whole read: the
-			// subscription is still valid and the operator needs the
-			// rest of its coupons.
-			continue
+			if errors.Is(getErr, ledger.ErrCouponNotFound) {
+				// A deleted coupon can leave its application row
+				// behind. Skip it rather than failing the whole
+				// read: the subscription is still valid and the
+				// operator needs the rest of its coupons.
+				continue
+			}
+			// Any other error (a dropped connection, a cancelled
+			// context) must not be treated as "this coupon is
+			// gone" - that would silently drop a discount the
+			// customer is still entitled to.
+			return nil, getErr
 		}
 		result = append(result, c)
 	}
@@ -1000,4 +1015,35 @@ func getStartOfPeriod(t time.Time, period plan.Period) time.Time {
 // isNoRows checks for the standard sql.ErrNoRows sentinel.
 func isNoRows(err error) bool {
 	return errors.Is(err, sql.ErrNoRows)
+}
+
+// PostgreSQL SQLSTATE error codes. See
+// https://www.postgresql.org/docs/current/errcodes-appendix.html.
+const (
+	pgUniqueViolation     = "23505"
+	pgForeignKeyViolation = "23503"
+)
+
+// isUniqueViolation reports whether err is a PostgreSQL unique constraint
+// violation, detected by the driver's typed SQLSTATE code rather than by
+// matching its message text.
+func isUniqueViolation(err error) bool {
+	var pgErr *pgconn.PgError
+	return errors.As(err, &pgErr) && pgErr.Code == pgUniqueViolation
+}
+
+// isForeignKeyViolation reports whether err is a PostgreSQL foreign key
+// violation, detected by SQLSTATE.
+func isForeignKeyViolation(err error) bool {
+	var pgErr *pgconn.PgError
+	return errors.As(err, &pgErr) && pgErr.Code == pgForeignKeyViolation
+}
+
+// validateSubscriptionID rejects a subscription id that is nil or carries
+// the wrong prefix before any storage is touched.
+func validateSubscriptionID(subID id.SubscriptionID) error {
+	if subID.IsNil() || subID.Prefix() != id.PrefixSubscription {
+		return fmt.Errorf("ledger/postgres: invalid subscription id %q: %w", subID.String(), ledger.ErrInvalidInput)
+	}
+	return nil
 }

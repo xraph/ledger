@@ -9,6 +9,7 @@ package storetest
 import (
 	"context"
 	"os"
+	"path/filepath"
 	"testing"
 
 	"github.com/xraph/grove"
@@ -37,13 +38,32 @@ func NewMemory(t *testing.T) ledgerstore.Store {
 	return memory.New()
 }
 
-// NewSQLite returns a migrated in-process SQLite store.
+// NewSQLite returns a migrated SQLite store backed by a file under the
+// test's temp directory.
+//
+// ":memory:" cannot be used here: sqlitedriver opens the database through
+// database/sql's pooled *sql.DB, and modernc.org/sqlite treats ":memory:"
+// as a fresh, independent database on every new connection the pool opens.
+// A concurrency test that expects two goroutines' connections to see each
+// other's writes (a unique-constraint race, for instance) would silently
+// pass or fail for the wrong reason against ":memory:" - the two writes
+// would land in two different databases and never conflict at all. A file
+// under t.TempDir() is shared by every connection the pool opens, and a
+// busy_timeout pragma makes a losing writer wait for the lock instead of
+// failing immediately with SQLITE_BUSY. The DSN query parameter form
+// (rather than a one-off PRAGMA exec after Open) matters too: modernc's
+// driver re-parses the DSN for every new pooled connection, so this is the
+// only way to guarantee busy_timeout is set on connections opened later in
+// the pool's life, not just the first one.
 func NewSQLite(t *testing.T) ledgerstore.Store {
 	t.Helper()
 	ctx := context.Background()
 
+	dbPath := filepath.Join(t.TempDir(), "ledger.db")
+	dsn := "file:" + dbPath + "?_pragma=busy_timeout(5000)"
+
 	sdb := sqlitedriver.New()
-	if err := sdb.Open(ctx, ":memory:"); err != nil {
+	if err := sdb.Open(ctx, dsn); err != nil {
 		t.Fatalf("storetest: open sqlite driver: %v", err)
 	}
 	t.Cleanup(func() { _ = sdb.Close() })

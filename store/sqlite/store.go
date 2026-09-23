@@ -10,6 +10,7 @@ import (
 	"github.com/xraph/grove"
 	"github.com/xraph/grove/drivers/sqlitedriver"
 	"github.com/xraph/grove/migrate"
+	modernsqlite "modernc.org/sqlite"
 
 	ledger "github.com/xraph/ledger"
 	"github.com/xraph/ledger/coupon"
@@ -861,22 +862,14 @@ func (s *Store) DeleteCoupon(ctx context.Context, couponID id.CouponID) error {
 }
 
 func (s *Store) ApplyCoupon(ctx context.Context, subID id.SubscriptionID, couponID id.CouponID) error {
+	if err := validateSubscriptionID(subID); err != nil {
+		return err
+	}
+
 	// Confirm the coupon exists before writing a row that references it.
 	// SQLite is not enforcing a foreign key here, so this is the only
 	// thing between a bad ID and an orphaned application row.
 	if _, err := s.GetCouponByID(ctx, couponID); err != nil {
-		return err
-	}
-
-	existing := new(couponApplicationModel)
-	err := s.sdb.NewSelect(existing).
-		Where("coupon_id = ?", couponID.String()).
-		Where("subscription_id = ?", subID.String()).
-		Scan(ctx)
-	switch {
-	case err == nil:
-		return ledger.ErrCouponAlreadyApplied
-	case !isNoRows(err):
 		return err
 	}
 
@@ -886,16 +879,25 @@ func (s *Store) ApplyCoupon(ctx context.Context, subID id.SubscriptionID, coupon
 		SubscriptionID: subID.String(),
 		AppliedAt:      now(),
 	}
-	_, err = s.sdb.NewInsert(m).Exec(ctx)
+	if _, err := s.sdb.NewInsert(m).Exec(ctx); err != nil {
+		if isUniqueViolation(err) {
+			return ledger.ErrCouponAlreadyApplied
+		}
+		return err
+	}
 
-	return err
+	return nil
 }
 
 func (s *Store) ListAppliedCoupons(ctx context.Context, subID id.SubscriptionID) ([]*coupon.Coupon, error) {
+	if subID.IsNil() {
+		return make([]*coupon.Coupon, 0), nil
+	}
+
 	var models []couponApplicationModel
 	err := s.sdb.NewSelect(&models).
 		Where("subscription_id = ?", subID.String()).
-		OrderExpr("applied_at ASC").
+		OrderExpr("applied_at ASC, id ASC").
 		Scan(ctx)
 	if err != nil {
 		return nil, err
@@ -912,11 +914,18 @@ func (s *Store) ListAppliedCoupons(ctx context.Context, subID id.SubscriptionID)
 
 		c, getErr := s.GetCouponByID(ctx, couponID)
 		if getErr != nil {
-			// A deleted coupon can leave its application row behind.
-			// Skip it rather than failing the whole read: the
-			// subscription is still valid and the operator needs the
-			// rest of its coupons.
-			continue
+			if errors.Is(getErr, ledger.ErrCouponNotFound) {
+				// A deleted coupon can leave its application row
+				// behind. Skip it rather than failing the whole
+				// read: the subscription is still valid and the
+				// operator needs the rest of its coupons.
+				continue
+			}
+			// Any other error (a dropped connection, a cancelled
+			// context) must not be treated as "this coupon is
+			// gone" - that would silently drop a discount the
+			// customer is still entitled to.
+			return nil, getErr
 		}
 		result = append(result, c)
 	}
@@ -967,4 +976,30 @@ func getStartOfPeriod(t time.Time, period plan.Period) time.Time {
 // isNoRows checks for the standard sql.ErrNoRows sentinel.
 func isNoRows(err error) bool {
 	return errors.Is(err, sql.ErrNoRows)
+}
+
+// sqliteConstraintUnique is SQLITE_CONSTRAINT_UNIQUE, modernc.org/sqlite's
+// extended result code for a UNIQUE index violation. This connection always
+// has extended result codes enabled (modernc.org/sqlite turns them on for
+// every connection it opens), so Code() reliably returns 2067 here rather
+// than the generic SQLITE_CONSTRAINT (19). 1555
+// (SQLITE_CONSTRAINT_PRIMARYKEY) is a different violation and must not
+// match.
+const sqliteConstraintUnique = 2067
+
+// isUniqueViolation reports whether err is a SQLite UNIQUE constraint
+// violation, detected by the driver's typed extended result code rather
+// than by matching its message text.
+func isUniqueViolation(err error) bool {
+	var sqliteErr *modernsqlite.Error
+	return errors.As(err, &sqliteErr) && sqliteErr.Code() == sqliteConstraintUnique
+}
+
+// validateSubscriptionID rejects a subscription id that is nil or carries
+// the wrong prefix before any storage is touched.
+func validateSubscriptionID(subID id.SubscriptionID) error {
+	if subID.IsNil() || subID.Prefix() != id.PrefixSubscription {
+		return fmt.Errorf("ledger/sqlite: invalid subscription id %q: %w", subID.String(), ledger.ErrInvalidInput)
+	}
+	return nil
 }

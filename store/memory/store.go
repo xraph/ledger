@@ -536,6 +536,10 @@ func (s *Store) couponApplicationsFor(subID id.SubscriptionID) []*coupon.Applica
 }
 
 func (s *Store) ApplyCoupon(_ context.Context, subID id.SubscriptionID, couponID id.CouponID) error {
+	if err := validateSubscriptionID(subID); err != nil {
+		return err
+	}
+
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
@@ -561,6 +565,10 @@ func (s *Store) ApplyCoupon(_ context.Context, subID id.SubscriptionID, couponID
 }
 
 func (s *Store) ListAppliedCoupons(_ context.Context, subID id.SubscriptionID) ([]*coupon.Coupon, error) {
+	if subID.IsNil() {
+		return make([]*coupon.Coupon, 0), nil
+	}
+
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 
@@ -728,6 +736,16 @@ func (s *Store) Close() error {
 }
 
 // Helper functions
+
+// validateSubscriptionID rejects a subscription id that is nil or carries
+// the wrong prefix before any storage is touched.
+func validateSubscriptionID(subID id.SubscriptionID) error {
+	if subID.IsNil() || subID.Prefix() != id.PrefixSubscription {
+		return fmt.Errorf("ledger/memory: invalid subscription id %q: %w", subID.String(), ledger.ErrInvalidInput)
+	}
+	return nil
+}
+
 func getStartOfPeriod(t time.Time, period plan.Period) time.Time {
 	switch period {
 	case plan.PeriodMonthly:

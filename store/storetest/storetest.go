@@ -2,9 +2,12 @@ package storetest
 
 import (
 	"context"
+	"errors"
+	"sync"
 	"testing"
 	"time"
 
+	ledger "github.com/xraph/ledger"
 	"github.com/xraph/ledger/coupon"
 	"github.com/xraph/ledger/id"
 	"github.com/xraph/ledger/invoice"
@@ -33,6 +36,12 @@ func Run(t *testing.T, newStore func(t *testing.T) ledgerstore.Store) {
 	})
 	t.Run("IncrementCouponRedemptions", func(t *testing.T) { testIncrementCouponRedemptions(t, newStore(t)) })
 	t.Run("IncrementCouponRedemptionsOnUnknownCoupon", func(t *testing.T) { testIncrementCouponRedemptionsOnUnknownCoupon(t, newStore(t)) })
+	t.Run("ApplyCouponOnUnknownCoupon", func(t *testing.T) { testApplyCouponOnUnknownCoupon(t, newStore(t)) })
+	t.Run("ApplyCouponThenDeleteCouponThenList", func(t *testing.T) { testApplyCouponThenDeleteCouponThenList(t, newStore(t)) })
+	t.Run("ListAppliedCouponsReturnsInApplyOrder", func(t *testing.T) { testListAppliedCouponsReturnsInApplyOrder(t, newStore(t)) })
+	t.Run("ApplyCouponRejectsInvalidSubscriptionID", func(t *testing.T) { testApplyCouponRejectsInvalidSubscriptionID(t, newStore(t)) })
+	t.Run("ListAppliedCouponsWithNilSubscriptionID", func(t *testing.T) { testListAppliedCouponsWithNilSubscriptionID(t, newStore(t)) })
+	t.Run("ApplyCouponConcurrentDoubleApply", func(t *testing.T) { testApplyCouponConcurrentDoubleApply(t, newStore(t)) })
 	t.Run("SubscriptionTenantIsolation", func(t *testing.T) { testSubscriptionTenantIsolation(t, newStore(t)) })
 	t.Run("InvoiceTenantIsolation", func(t *testing.T) { testInvoiceTenantIsolation(t, newStore(t)) })
 	t.Run("UsageTenantIsolation", func(t *testing.T) { testUsageTenantIsolation(t, newStore(t)) })
@@ -270,8 +279,9 @@ func testApplyCouponIsIdempotentPerSubscription(t *testing.T, s ledgerstore.Stor
 		t.Fatalf("first ApplyCoupon: %v", err)
 	}
 
-	if err := s.ApplyCoupon(ctx, subID, c.ID); err == nil {
-		t.Fatal("second ApplyCoupon: got nil error, want a rejection")
+	err := s.ApplyCoupon(ctx, subID, c.ID)
+	if !errors.Is(err, ledger.ErrCouponAlreadyApplied) {
+		t.Fatalf("second ApplyCoupon: got %v, want a wrap of ErrCouponAlreadyApplied", err)
 	}
 
 	applied, err := s.ListAppliedCoupons(ctx, subID)
@@ -318,6 +328,9 @@ func testListAppliedCouponsOnUnknownSubscriptionIsEmptyNotAnError(t *testing.T, 
 	if err != nil {
 		t.Fatalf("ListAppliedCoupons on an unknown subscription: %v", err)
 	}
+	if applied == nil {
+		t.Error("got a nil slice, want an empty one: a caller ranging over nil sees no difference, but a caller checking len(x) == 0 against a nil map entry does")
+	}
 	if len(applied) != 0 {
 		t.Errorf("got %d applied coupons, want 0", len(applied))
 	}
@@ -354,8 +367,199 @@ func testIncrementCouponRedemptions(t *testing.T, s ledgerstore.Store) {
 func testIncrementCouponRedemptionsOnUnknownCoupon(t *testing.T, s ledgerstore.Store) {
 	ctx := context.Background()
 
-	if err := s.IncrementCouponRedemptions(ctx, id.NewCouponID()); err == nil {
-		t.Fatal("got nil error for an unknown coupon, want ErrCouponNotFound")
+	err := s.IncrementCouponRedemptions(ctx, id.NewCouponID())
+	if !errors.Is(err, ledger.ErrCouponNotFound) {
+		t.Fatalf("got %v, want a wrap of ErrCouponNotFound", err)
+	}
+}
+
+// testApplyCouponOnUnknownCoupon asserts applying a coupon id that was
+// never created is rejected with ErrCouponNotFound, and leaves no
+// application row behind.
+func testApplyCouponOnUnknownCoupon(t *testing.T, s ledgerstore.Store) {
+	ctx := context.Background()
+	subID := id.NewSubscriptionID()
+	unknownCoupon := id.NewCouponID()
+
+	err := s.ApplyCoupon(ctx, subID, unknownCoupon)
+	if !errors.Is(err, ledger.ErrCouponNotFound) {
+		t.Fatalf("ApplyCoupon on an unknown coupon: got %v, want a wrap of ErrCouponNotFound", err)
+	}
+
+	applied, err := s.ListAppliedCoupons(ctx, subID)
+	if err != nil {
+		t.Fatalf("ListAppliedCoupons: %v", err)
+	}
+	if len(applied) != 0 {
+		t.Errorf("got %d applied coupons after a failed apply, want 0", len(applied))
+	}
+}
+
+// testApplyCouponThenDeleteCouponThenList asserts that deleting a coupon
+// after it was applied leaves ListAppliedCoupons returning an empty,
+// non-nil slice and no error - not a failure, and not a leaked stale
+// coupon.
+func testApplyCouponThenDeleteCouponThenList(t *testing.T, s ledgerstore.Store) {
+	ctx := context.Background()
+	appID := "app-" + uniqueSuffix()
+
+	c := newTestCoupon(appID)
+	if err := s.CreateCoupon(ctx, c); err != nil {
+		t.Fatalf("CreateCoupon: %v", err)
+	}
+
+	subID := id.NewSubscriptionID()
+	if err := s.ApplyCoupon(ctx, subID, c.ID); err != nil {
+		t.Fatalf("ApplyCoupon: %v", err)
+	}
+
+	if err := s.DeleteCoupon(ctx, c.ID); err != nil {
+		t.Fatalf("DeleteCoupon: %v", err)
+	}
+
+	applied, err := s.ListAppliedCoupons(ctx, subID)
+	if err != nil {
+		t.Fatalf("ListAppliedCoupons after the coupon was deleted: %v", err)
+	}
+	if applied == nil {
+		t.Error("got a nil slice, want an empty one")
+	}
+	if len(applied) != 0 {
+		t.Errorf("got %d applied coupons after the coupon was deleted, want 0", len(applied))
+	}
+}
+
+// testListAppliedCouponsReturnsInApplyOrder applies three distinct coupons
+// to the same subscription in sequence and asserts the list comes back in
+// that same order - the applied_at-then-id ordering the backends commit to.
+func testListAppliedCouponsReturnsInApplyOrder(t *testing.T, s ledgerstore.Store) {
+	ctx := context.Background()
+	appID := "app-" + uniqueSuffix()
+	subID := id.NewSubscriptionID()
+
+	coupons := make([]*coupon.Coupon, 3)
+	for i := range coupons {
+		c := newTestCoupon(appID)
+		if err := s.CreateCoupon(ctx, c); err != nil {
+			t.Fatalf("CreateCoupon %d: %v", i, err)
+		}
+		coupons[i] = c
+		if err := s.ApplyCoupon(ctx, subID, c.ID); err != nil {
+			t.Fatalf("ApplyCoupon %d: %v", i, err)
+		}
+	}
+
+	applied, err := s.ListAppliedCoupons(ctx, subID)
+	if err != nil {
+		t.Fatalf("ListAppliedCoupons: %v", err)
+	}
+	if len(applied) != len(coupons) {
+		t.Fatalf("got %d applied coupons, want %d", len(applied), len(coupons))
+	}
+	for i, c := range coupons {
+		if applied[i].ID.String() != c.ID.String() {
+			t.Errorf("position %d: got coupon %s, want %s (apply order)", i, applied[i].ID, c.ID)
+		}
+	}
+}
+
+// testApplyCouponRejectsInvalidSubscriptionID asserts ApplyCoupon rejects a
+// nil subscription id and a wrong-prefix id (a plan id, standing in for
+// "any id that isn't a subscription id") before touching storage.
+func testApplyCouponRejectsInvalidSubscriptionID(t *testing.T, s ledgerstore.Store) {
+	ctx := context.Background()
+	appID := "app-" + uniqueSuffix()
+
+	c := newTestCoupon(appID)
+	if err := s.CreateCoupon(ctx, c); err != nil {
+		t.Fatalf("CreateCoupon: %v", err)
+	}
+
+	if err := s.ApplyCoupon(ctx, id.Nil, c.ID); !errors.Is(err, ledger.ErrInvalidInput) {
+		t.Errorf("ApplyCoupon(id.Nil, ...): got %v, want a wrap of ErrInvalidInput", err)
+	}
+
+	wrongPrefix := id.NewPlanID()
+	if err := s.ApplyCoupon(ctx, wrongPrefix, c.ID); !errors.Is(err, ledger.ErrInvalidInput) {
+		t.Errorf("ApplyCoupon(a plan id, ...): got %v, want a wrap of ErrInvalidInput", err)
+	}
+}
+
+// testListAppliedCouponsWithNilSubscriptionID asserts ListAppliedCoupons
+// answers a nil subscription id with an empty, non-nil slice and no error,
+// without needing a query to reach storage at all.
+func testListAppliedCouponsWithNilSubscriptionID(t *testing.T, s ledgerstore.Store) {
+	ctx := context.Background()
+
+	applied, err := s.ListAppliedCoupons(ctx, id.Nil)
+	if err != nil {
+		t.Fatalf("ListAppliedCoupons(id.Nil): got error %v, want nil", err)
+	}
+	if applied == nil {
+		t.Error("got a nil slice, want an empty one")
+	}
+	if len(applied) != 0 {
+		t.Errorf("got %d applied coupons, want 0", len(applied))
+	}
+}
+
+// testApplyCouponConcurrentDoubleApply fires the same (subscription,
+// coupon) pair at ApplyCoupon from 10 goroutines at once. Exactly one must
+// win; every loser must see ErrCouponAlreadyApplied, not a raw driver
+// error, and the pair must land exactly once in storage either way.
+//
+// This test is necessarily probabilistic: whether the race is actually
+// provoked on a given run depends on scheduling and, for the SQL and mongo
+// backends, on how quickly the unique index rejects the losers. It is not
+// the thing that pins the typed-error mapping - see the deterministic
+// internal test in each backend's own package for that - but it is the
+// closest thing to a proof that the mapping also holds under real
+// concurrent access through the public interface, not just when provoked
+// directly against the builder.
+func testApplyCouponConcurrentDoubleApply(t *testing.T, s ledgerstore.Store) {
+	ctx := context.Background()
+	appID := "app-" + uniqueSuffix()
+
+	c := newTestCoupon(appID)
+	if err := s.CreateCoupon(ctx, c); err != nil {
+		t.Fatalf("CreateCoupon: %v", err)
+	}
+
+	subID := id.NewSubscriptionID()
+
+	const n = 10
+	errs := make([]error, n)
+	var wg sync.WaitGroup
+	wg.Add(n)
+	for i := range n {
+		go func(i int) {
+			defer wg.Done()
+			errs[i] = s.ApplyCoupon(ctx, subID, c.ID)
+		}(i)
+	}
+	wg.Wait()
+
+	var wins, losses int
+	for _, err := range errs {
+		switch {
+		case err == nil:
+			wins++
+		case errors.Is(err, ledger.ErrCouponAlreadyApplied):
+			losses++
+		default:
+			t.Errorf("got an error from a concurrent ApplyCoupon that is neither nil nor ErrCouponAlreadyApplied: %v", err)
+		}
+	}
+	if wins != 1 {
+		t.Errorf("got %d winning ApplyCoupon calls out of %d, want exactly 1 (losses=%d)", wins, n, losses)
+	}
+
+	applied, err := s.ListAppliedCoupons(ctx, subID)
+	if err != nil {
+		t.Fatalf("ListAppliedCoupons: %v", err)
+	}
+	if len(applied) != 1 {
+		t.Errorf("got %d applied coupons after a concurrent double apply, want exactly 1", len(applied))
 	}
 }
 
