@@ -895,6 +895,89 @@ func (s *Store) DeleteCoupon(ctx context.Context, couponID id.CouponID) error {
 	return nil
 }
 
+func (s *Store) ApplyCoupon(ctx context.Context, subID id.SubscriptionID, couponID id.CouponID) error {
+	// Confirm the coupon exists before writing a row that references it.
+	if _, err := s.GetCouponByID(ctx, couponID); err != nil {
+		return err
+	}
+
+	existing := new(couponApplicationModel)
+	err := s.pg.NewSelect(existing).
+		Where("coupon_id = ?", couponID.String()).
+		Where("subscription_id = ?", subID.String()).
+		Scan(ctx)
+	switch {
+	case err == nil:
+		return ledger.ErrCouponAlreadyApplied
+	case !isNoRows(err):
+		return err
+	}
+
+	m := &couponApplicationModel{
+		ID:             id.NewCouponApplicationID().String(),
+		CouponID:       couponID.String(),
+		SubscriptionID: subID.String(),
+		AppliedAt:      now(),
+	}
+	_, err = s.pg.NewInsert(m).Exec(ctx)
+
+	return err
+}
+
+func (s *Store) ListAppliedCoupons(ctx context.Context, subID id.SubscriptionID) ([]*coupon.Coupon, error) {
+	var models []couponApplicationModel
+	err := s.pg.NewSelect(&models).
+		Where("subscription_id = ?", subID.String()).
+		OrderExpr("applied_at ASC").
+		Scan(ctx)
+	if err != nil {
+		return nil, err
+	}
+
+	// Empty rather than nil: a subscription with no coupons is a valid
+	// answer, not a missing one.
+	result := make([]*coupon.Coupon, 0, len(models))
+	for i := range models {
+		couponID, parseErr := id.ParseCouponID(models[i].CouponID)
+		if parseErr != nil {
+			return nil, parseErr
+		}
+
+		c, getErr := s.GetCouponByID(ctx, couponID)
+		if getErr != nil {
+			// A deleted coupon can leave its application row behind.
+			// Skip it rather than failing the whole read: the
+			// subscription is still valid and the operator needs the
+			// rest of its coupons.
+			continue
+		}
+		result = append(result, c)
+	}
+
+	return result, nil
+}
+
+func (s *Store) IncrementCouponRedemptions(ctx context.Context, couponID id.CouponID) error {
+	res, err := s.pg.NewUpdate((*couponModel)(nil)).
+		Set("times_redeemed = times_redeemed + 1").
+		Set("updated_at = ?", now()).
+		Where("id = ?", couponID.String()).
+		Exec(ctx)
+	if err != nil {
+		return err
+	}
+
+	rows, err := res.RowsAffected()
+	if err != nil {
+		return err
+	}
+	if rows == 0 {
+		return ledger.ErrCouponNotFound
+	}
+
+	return nil
+}
+
 // ==================== Helpers ====================
 
 // now returns the current UTC time.

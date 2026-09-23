@@ -34,6 +34,8 @@ const (
 	PrefixLineItem     Prefix = "li"    // Invoice line item
 	PrefixCoupon       Prefix = "cpn"   // Discount coupon
 	PrefixPayment      Prefix = "pay"   // Payment record
+
+	PrefixCouponApplication Prefix = "cpna" // Coupon applied to a subscription
 )
 
 // ID is the primary identifier type for all Ledger entities.
@@ -141,6 +143,9 @@ type LineItemID = ID
 // CouponID is a type-safe identifier for coupons (prefix: "cpn").
 type CouponID = ID
 
+// CouponApplicationID identifies one coupon's application to one subscription.
+type CouponApplicationID = ID
+
 // PaymentID is a type-safe identifier for payments (prefix: "pay").
 type PaymentID = ID
 
@@ -180,6 +185,9 @@ func NewCouponID() ID { return New(PrefixCoupon) }
 
 // NewPaymentID generates a new unique payment ID.
 func NewPaymentID() ID { return New(PrefixPayment) }
+
+// NewCouponApplicationID returns a new random CouponApplicationID.
+func NewCouponApplicationID() ID { return New(PrefixCouponApplication) }
 
 // ──────────────────────────────────────────────────
 // Convenience parsers

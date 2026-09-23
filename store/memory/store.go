@@ -39,20 +39,24 @@ type Store struct {
 	// Coupon storage
 	coupons map[string]*coupon.Coupon
 
+	// Coupon application storage, keyed by subscription ID.
+	couponApplications map[string][]*coupon.Application
+
 	// Feature catalog storage
 	features map[string]*feature.Feature
 }
 
 func New() *Store {
 	return &Store{
-		plans:            make(map[string]*plan.Plan),
-		subscriptions:    make(map[string]*subscription.Subscription),
-		usageEvents:      make([]meter.UsageEvent, 0),
-		entitlementCache: make(map[string]*entitlement.Result),
-		cacheExpiry:      make(map[string]time.Time),
-		invoices:         make(map[string]*invoice.Invoice),
-		coupons:          make(map[string]*coupon.Coupon),
-		features:         make(map[string]*feature.Feature),
+		plans:              make(map[string]*plan.Plan),
+		subscriptions:      make(map[string]*subscription.Subscription),
+		usageEvents:        make([]meter.UsageEvent, 0),
+		entitlementCache:   make(map[string]*entitlement.Result),
+		cacheExpiry:        make(map[string]time.Time),
+		invoices:           make(map[string]*invoice.Invoice),
+		coupons:            make(map[string]*coupon.Coupon),
+		couponApplications: make(map[string][]*coupon.Application),
+		features:           make(map[string]*feature.Feature),
 	}
 }
 
@@ -518,6 +522,73 @@ func (s *Store) DeleteCoupon(_ context.Context, couponID id.CouponID) error {
 	defer s.mu.Unlock()
 
 	delete(s.coupons, couponID.String())
+	return nil
+}
+
+// couponApplicationsFor returns this subscription's applications. Test
+// helper and internal reader; callers outside this file use
+// ListAppliedCoupons.
+func (s *Store) couponApplicationsFor(subID id.SubscriptionID) []*coupon.Application {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	return s.couponApplications[subID.String()]
+}
+
+func (s *Store) ApplyCoupon(_ context.Context, subID id.SubscriptionID, couponID id.CouponID) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	if _, ok := s.coupons[couponID.String()]; !ok {
+		return ledger.ErrCouponNotFound
+	}
+
+	key := subID.String()
+	for _, a := range s.couponApplications[key] {
+		if a.CouponID.String() == couponID.String() {
+			return ledger.ErrCouponAlreadyApplied
+		}
+	}
+
+	s.couponApplications[key] = append(s.couponApplications[key], &coupon.Application{
+		ID:             id.NewCouponApplicationID(),
+		CouponID:       couponID,
+		SubscriptionID: subID,
+		AppliedAt:      time.Now().UTC(),
+	})
+
+	return nil
+}
+
+func (s *Store) ListAppliedCoupons(_ context.Context, subID id.SubscriptionID) ([]*coupon.Coupon, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	// Empty rather than nil: a subscription with no coupons is a valid
+	// answer and not a missing one.
+	result := make([]*coupon.Coupon, 0)
+
+	for _, a := range s.couponApplications[subID.String()] {
+		if c, ok := s.coupons[a.CouponID.String()]; ok {
+			result = append(result, c)
+		}
+	}
+
+	return result, nil
+}
+
+func (s *Store) IncrementCouponRedemptions(_ context.Context, couponID id.CouponID) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	c, ok := s.coupons[couponID.String()]
+	if !ok {
+		return ledger.ErrCouponNotFound
+	}
+
+	c.TimesRedeemed++
+	c.Touch()
+
 	return nil
 }
 

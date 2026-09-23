@@ -27,13 +27,14 @@ import (
 
 // Collection name constants.
 const (
-	colPlans         = "ledger_plans"
-	colSubscriptions = "ledger_subscriptions"
-	colUsageEvents   = "ledger_usage_events"
-	colEntitlements  = "ledger_entitlement_cache"
-	colInvoices      = "ledger_invoices"
-	colCoupons       = "ledger_coupons"
-	colFeatures      = "ledger_features"
+	colPlans              = "ledger_plans"
+	colSubscriptions      = "ledger_subscriptions"
+	colUsageEvents        = "ledger_usage_events"
+	colEntitlements       = "ledger_entitlement_cache"
+	colInvoices           = "ledger_invoices"
+	colCoupons            = "ledger_coupons"
+	colCouponApplications = "ledger_coupon_applications"
+	colFeatures           = "ledger_features"
 )
 
 // compile-time interface check
@@ -811,6 +812,87 @@ func (s *Store) DeleteCoupon(ctx context.Context, couponID id.CouponID) error {
 	return nil
 }
 
+func (s *Store) ApplyCoupon(ctx context.Context, subID id.SubscriptionID, couponID id.CouponID) error {
+	if _, err := s.GetCouponByID(ctx, couponID); err != nil {
+		return err
+	}
+
+	var existing couponApplicationDoc
+	err := s.mdb.NewFind(&existing).
+		Filter(bson.M{
+			"coupon_id":       couponID.String(),
+			"subscription_id": subID.String(),
+		}).
+		Scan(ctx)
+	switch {
+	case err == nil:
+		return ledger.ErrCouponAlreadyApplied
+	case !isNoDocuments(err):
+		return fmt.Errorf("ledger/mongo: check existing coupon application: %w", err)
+	}
+
+	m := &couponApplicationDoc{
+		ID:             id.NewCouponApplicationID().String(),
+		CouponID:       couponID.String(),
+		SubscriptionID: subID.String(),
+		AppliedAt:      now(),
+	}
+	if _, err := s.mdb.NewInsert(m).Exec(ctx); err != nil {
+		return fmt.Errorf("ledger/mongo: apply coupon: %w", err)
+	}
+
+	return nil
+}
+
+func (s *Store) ListAppliedCoupons(ctx context.Context, subID id.SubscriptionID) ([]*coupon.Coupon, error) {
+	var docs []couponApplicationDoc
+	err := s.mdb.NewFind(&docs).
+		Filter(bson.M{"subscription_id": subID.String()}).
+		Sort(bson.D{{Key: "applied_at", Value: 1}}).
+		Scan(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("ledger/mongo: list applied coupons: %w", err)
+	}
+
+	// Empty rather than nil: a subscription with no coupons is a valid
+	// answer, not a missing one.
+	result := make([]*coupon.Coupon, 0, len(docs))
+	for i := range docs {
+		couponID, parseErr := id.ParseCouponID(docs[i].CouponID)
+		if parseErr != nil {
+			return nil, parseErr
+		}
+
+		c, getErr := s.GetCouponByID(ctx, couponID)
+		if getErr != nil {
+			// A deleted coupon can leave its application behind. Skip
+			// it rather than failing the read.
+			continue
+		}
+		result = append(result, c)
+	}
+
+	return result, nil
+}
+
+func (s *Store) IncrementCouponRedemptions(ctx context.Context, couponID id.CouponID) error {
+	res, err := s.mdb.NewUpdate((*couponModel)(nil)).
+		Filter(bson.M{"_id": couponID.String()}).
+		SetUpdate(bson.M{
+			"$inc": bson.M{"times_redeemed": 1},
+			"$set": bson.M{"updated_at": now()},
+		}).
+		Exec(ctx)
+	if err != nil {
+		return fmt.Errorf("ledger/mongo: increment coupon redemptions: %w", err)
+	}
+	if res.MatchedCount() == 0 {
+		return ledger.ErrCouponNotFound
+	}
+
+	return nil
+}
+
 // ==================== Feature Catalog Store ====================
 
 func (s *Store) CreateFeature(ctx context.Context, f *feature.Feature) error {
@@ -1033,6 +1115,13 @@ func migrationIndexes() map[string][]mongo.IndexModel {
 				Options: options.Index().SetUnique(true),
 			},
 			{Keys: bson.D{{Key: "app_id", Value: 1}, {Key: "created_at", Value: -1}}},
+		},
+		colCouponApplications: {
+			{
+				Keys:    bson.D{{Key: "coupon_id", Value: 1}, {Key: "subscription_id", Value: 1}},
+				Options: options.Index().SetUnique(true),
+			},
+			{Keys: bson.D{{Key: "subscription_id", Value: 1}}},
 		},
 		colFeatures: {
 			{

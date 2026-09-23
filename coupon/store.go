@@ -13,6 +13,10 @@ type Store interface {
 	List(ctx context.Context, appID string, opts ListOpts) ([]*Coupon, error)
 	Update(ctx context.Context, c *Coupon) error
 	Delete(ctx context.Context, couponID id.CouponID) error
+
+	Apply(ctx context.Context, subID id.SubscriptionID, couponID id.CouponID) error
+	ListApplied(ctx context.Context, subID id.SubscriptionID) ([]*Coupon, error)
+	IncrementRedemptions(ctx context.Context, couponID id.CouponID) error
 }
 
 type ListOpts struct {

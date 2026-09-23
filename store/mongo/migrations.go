@@ -217,5 +217,34 @@ func init() {
 				return mexec.DropCollection(ctx, (*featureCatalogModel)(nil))
 			},
 		},
+		&migrate.Migration{
+			Name:    "create_ledger_coupon_applications",
+			Version: "20240101000008",
+			Up: func(ctx context.Context, exec migrate.Executor) error {
+				mexec, ok := exec.(*mongomigrate.Executor)
+				if !ok {
+					return fmt.Errorf("expected mongomigrate executor, got %T", exec)
+				}
+
+				if err := mexec.CreateCollection(ctx, (*couponApplicationDoc)(nil)); err != nil {
+					return err
+				}
+
+				return mexec.CreateIndexes(ctx, colCouponApplications, []mongo.IndexModel{
+					{
+						Keys:    bson.D{{Key: "coupon_id", Value: 1}, {Key: "subscription_id", Value: 1}},
+						Options: options.Index().SetUnique(true),
+					},
+					{Keys: bson.D{{Key: "subscription_id", Value: 1}}},
+				})
+			},
+			Down: func(ctx context.Context, exec migrate.Executor) error {
+				mexec, ok := exec.(*mongomigrate.Executor)
+				if !ok {
+					return fmt.Errorf("expected mongomigrate executor, got %T", exec)
+				}
+				return mexec.DropCollection(ctx, (*couponApplicationDoc)(nil))
+			},
+		},
 	)
 }

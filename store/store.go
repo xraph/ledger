@@ -75,6 +75,9 @@ type Store interface {
 	ListCoupons(ctx context.Context, appID string, opts coupon.ListOpts) ([]*coupon.Coupon, error)
 	UpdateCoupon(ctx context.Context, c *coupon.Coupon) error
 	DeleteCoupon(ctx context.Context, couponID id.CouponID) error
+	ApplyCoupon(ctx context.Context, subID id.SubscriptionID, couponID id.CouponID) error
+	ListAppliedCoupons(ctx context.Context, subID id.SubscriptionID) ([]*coupon.Coupon, error)
+	IncrementCouponRedemptions(ctx context.Context, couponID id.CouponID) error
 
 	// Core methods
 	Migrate(ctx context.Context) error

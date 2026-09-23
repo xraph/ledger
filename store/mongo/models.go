@@ -632,6 +632,17 @@ func fromCouponModel(m *couponModel) (*coupon.Coupon, error) {
 	}, nil
 }
 
+// ==================== Coupon application models ====================
+
+type couponApplicationDoc struct {
+	grove.BaseModel `grove:"table:ledger_coupon_applications"`
+
+	ID             string    `grove:"id,pk"           bson:"_id"`
+	CouponID       string    `grove:"coupon_id"       bson:"coupon_id"`
+	SubscriptionID string    `grove:"subscription_id" bson:"subscription_id"`
+	AppliedAt      time.Time `grove:"applied_at"      bson:"applied_at"`
+}
+
 // ==================== Feature Catalog models ====================
 
 type featureCatalogModel struct {

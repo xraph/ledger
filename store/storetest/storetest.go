@@ -25,6 +25,14 @@ func Run(t *testing.T, newStore func(t *testing.T) ledgerstore.Store) {
 	t.Run("GetCouponByIDUnknown", func(t *testing.T) { testGetCouponByIDUnknown(t, newStore(t)) })
 	t.Run("PlanAppIsolation", func(t *testing.T) { testPlanAppIsolation(t, newStore(t)) })
 	t.Run("CouponAppIsolation", func(t *testing.T) { testCouponAppIsolation(t, newStore(t)) })
+	t.Run("ApplyCouponRecordsTheRedemption", func(t *testing.T) { testApplyCouponRecordsTheRedemption(t, newStore(t)) })
+	t.Run("ApplyCouponIsIdempotentPerSubscription", func(t *testing.T) { testApplyCouponIsIdempotentPerSubscription(t, newStore(t)) })
+	t.Run("ListAppliedCouponsIsScopedToOneSubscription", func(t *testing.T) { testListAppliedCouponsIsScopedToOneSubscription(t, newStore(t)) })
+	t.Run("ListAppliedCouponsOnUnknownSubscriptionIsEmptyNotAnError", func(t *testing.T) {
+		testListAppliedCouponsOnUnknownSubscriptionIsEmptyNotAnError(t, newStore(t))
+	})
+	t.Run("IncrementCouponRedemptions", func(t *testing.T) { testIncrementCouponRedemptions(t, newStore(t)) })
+	t.Run("IncrementCouponRedemptionsOnUnknownCoupon", func(t *testing.T) { testIncrementCouponRedemptionsOnUnknownCoupon(t, newStore(t)) })
 	t.Run("SubscriptionTenantIsolation", func(t *testing.T) { testSubscriptionTenantIsolation(t, newStore(t)) })
 	t.Run("InvoiceTenantIsolation", func(t *testing.T) { testInvoiceTenantIsolation(t, newStore(t)) })
 	t.Run("UsageTenantIsolation", func(t *testing.T) { testUsageTenantIsolation(t, newStore(t)) })
@@ -201,6 +209,153 @@ func testCouponAppIsolation(t *testing.T, s ledgerstore.Store) {
 		if g.ID.String() == cB.ID.String() {
 			t.Errorf("ListCoupons(appA) leaked appB's coupon %s", cB.ID)
 		}
+	}
+}
+
+// newTestCoupon builds a coupon fixture whose code carries a unique suffix,
+// so a UNIQUE(code, app_id) index doesn't reject a second run against a
+// persistent database (Postgres run twice in a row against the same DSN).
+func newTestCoupon(appID string) *coupon.Coupon {
+	code := "LAUNCH10-" + uniqueSuffix()
+	return &coupon.Coupon{
+		Entity: types.NewEntity(), ID: id.NewCouponID(),
+		Code: code, Name: code,
+		Type: coupon.CouponTypePercentage, Percentage: 10,
+		Currency: "usd", AppID: appID,
+	}
+}
+
+// testApplyCouponRecordsTheRedemption applies a coupon to a subscription and
+// asserts the coupon shows up in that subscription's applied list.
+func testApplyCouponRecordsTheRedemption(t *testing.T, s ledgerstore.Store) {
+	ctx := context.Background()
+	appID := "app-" + uniqueSuffix()
+
+	c := newTestCoupon(appID)
+	if err := s.CreateCoupon(ctx, c); err != nil {
+		t.Fatalf("CreateCoupon: %v", err)
+	}
+
+	subID := id.NewSubscriptionID()
+	if err := s.ApplyCoupon(ctx, subID, c.ID); err != nil {
+		t.Fatalf("ApplyCoupon: %v", err)
+	}
+
+	applied, err := s.ListAppliedCoupons(ctx, subID)
+	if err != nil {
+		t.Fatalf("ListAppliedCoupons: %v", err)
+	}
+	if len(applied) != 1 {
+		t.Fatalf("got %d applied coupons, want 1", len(applied))
+	}
+	if applied[0].ID.String() != c.ID.String() {
+		t.Errorf("got coupon id %s, want %s", applied[0].ID, c.ID)
+	}
+}
+
+// testApplyCouponIsIdempotentPerSubscription asserts a second Apply of the
+// same coupon to the same subscription is rejected and does not duplicate
+// the application row.
+func testApplyCouponIsIdempotentPerSubscription(t *testing.T, s ledgerstore.Store) {
+	ctx := context.Background()
+	appID := "app-" + uniqueSuffix()
+
+	c := newTestCoupon(appID)
+	if err := s.CreateCoupon(ctx, c); err != nil {
+		t.Fatalf("CreateCoupon: %v", err)
+	}
+
+	subID := id.NewSubscriptionID()
+	if err := s.ApplyCoupon(ctx, subID, c.ID); err != nil {
+		t.Fatalf("first ApplyCoupon: %v", err)
+	}
+
+	if err := s.ApplyCoupon(ctx, subID, c.ID); err == nil {
+		t.Fatal("second ApplyCoupon: got nil error, want a rejection")
+	}
+
+	applied, err := s.ListAppliedCoupons(ctx, subID)
+	if err != nil {
+		t.Fatalf("ListAppliedCoupons: %v", err)
+	}
+	if len(applied) != 1 {
+		t.Errorf("got %d applied coupons after a duplicate apply, want 1", len(applied))
+	}
+}
+
+// testListAppliedCouponsIsScopedToOneSubscription asserts a coupon applied
+// to one subscription does not show up when listing another subscription's
+// applied coupons.
+func testListAppliedCouponsIsScopedToOneSubscription(t *testing.T, s ledgerstore.Store) {
+	ctx := context.Background()
+	appID := "app-" + uniqueSuffix()
+
+	c := newTestCoupon(appID)
+	if err := s.CreateCoupon(ctx, c); err != nil {
+		t.Fatalf("CreateCoupon: %v", err)
+	}
+
+	mine, theirs := id.NewSubscriptionID(), id.NewSubscriptionID()
+	if err := s.ApplyCoupon(ctx, mine, c.ID); err != nil {
+		t.Fatalf("ApplyCoupon: %v", err)
+	}
+
+	applied, err := s.ListAppliedCoupons(ctx, theirs)
+	if err != nil {
+		t.Fatalf("ListAppliedCoupons: %v", err)
+	}
+	if len(applied) != 0 {
+		t.Errorf("got %d applied coupons on an untouched subscription, want 0", len(applied))
+	}
+}
+
+// testListAppliedCouponsOnUnknownSubscriptionIsEmptyNotAnError asserts an
+// unknown subscription id is a valid, empty answer rather than an error.
+func testListAppliedCouponsOnUnknownSubscriptionIsEmptyNotAnError(t *testing.T, s ledgerstore.Store) {
+	ctx := context.Background()
+
+	applied, err := s.ListAppliedCoupons(ctx, id.NewSubscriptionID())
+	if err != nil {
+		t.Fatalf("ListAppliedCoupons on an unknown subscription: %v", err)
+	}
+	if len(applied) != 0 {
+		t.Errorf("got %d applied coupons, want 0", len(applied))
+	}
+}
+
+// testIncrementCouponRedemptions increments a coupon's redemption count
+// three times and asserts each increment is reflected on read-back.
+func testIncrementCouponRedemptions(t *testing.T, s ledgerstore.Store) {
+	ctx := context.Background()
+	appID := "app-" + uniqueSuffix()
+
+	c := newTestCoupon(appID)
+	if err := s.CreateCoupon(ctx, c); err != nil {
+		t.Fatalf("CreateCoupon: %v", err)
+	}
+
+	for i := 1; i <= 3; i++ {
+		if err := s.IncrementCouponRedemptions(ctx, c.ID); err != nil {
+			t.Fatalf("IncrementCouponRedemptions call %d: %v", i, err)
+		}
+
+		got, err := s.GetCouponByID(ctx, c.ID)
+		if err != nil {
+			t.Fatalf("GetCouponByID: %v", err)
+		}
+		if got.TimesRedeemed != i {
+			t.Errorf("after %d increments: got TimesRedeemed %d, want %d", i, got.TimesRedeemed, i)
+		}
+	}
+}
+
+// testIncrementCouponRedemptionsOnUnknownCoupon asserts incrementing an
+// unknown coupon's redemptions is rejected rather than silently no-op'd.
+func testIncrementCouponRedemptionsOnUnknownCoupon(t *testing.T, s ledgerstore.Store) {
+	ctx := context.Background()
+
+	if err := s.IncrementCouponRedemptions(ctx, id.NewCouponID()); err == nil {
+		t.Fatal("got nil error for an unknown coupon, want ErrCouponNotFound")
 	}
 }
 

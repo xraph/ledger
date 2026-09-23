@@ -274,5 +274,29 @@ ALTER TABLE ledger_invoices DROP COLUMN IF EXISTS provider_name;
 				return err
 			},
 		},
+		&migrate.Migration{
+			Name:    "create_ledger_coupon_applications",
+			Version: "20240101000009",
+			Up: func(ctx context.Context, exec migrate.Executor) error {
+				_, err := exec.Exec(ctx, `
+CREATE TABLE IF NOT EXISTS ledger_coupon_applications (
+    id              TEXT PRIMARY KEY,
+    coupon_id       TEXT NOT NULL REFERENCES ledger_coupons(id) ON DELETE CASCADE,
+    subscription_id TEXT NOT NULL DEFAULT '',
+    applied_at      TIMESTAMPTZ NOT NULL
+);
+
+CREATE UNIQUE INDEX IF NOT EXISTS idx_ledger_coupon_apps_pair
+    ON ledger_coupon_applications (coupon_id, subscription_id);
+CREATE INDEX IF NOT EXISTS idx_ledger_coupon_apps_sub
+    ON ledger_coupon_applications (subscription_id);
+`)
+				return err
+			},
+			Down: func(ctx context.Context, exec migrate.Executor) error {
+				_, err := exec.Exec(ctx, `DROP TABLE IF EXISTS ledger_coupon_applications`)
+				return err
+			},
+		},
 	)
 }

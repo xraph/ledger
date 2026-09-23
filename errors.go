@@ -55,11 +55,12 @@ var (
 	ErrInvalidDiscount   = errors.New("ledger: invalid discount")
 
 	// Coupon errors
-	ErrCouponNotFound   = errors.New("ledger: coupon not found")
-	ErrCouponExpired    = errors.New("ledger: coupon expired")
-	ErrCouponInvalid    = errors.New("ledger: coupon invalid")
-	ErrCouponExhausted  = errors.New("ledger: coupon redemptions exhausted")
-	ErrCouponNotStarted = errors.New("ledger: coupon not yet valid")
+	ErrCouponNotFound       = errors.New("ledger: coupon not found")
+	ErrCouponExpired        = errors.New("ledger: coupon expired")
+	ErrCouponInvalid        = errors.New("ledger: coupon invalid")
+	ErrCouponExhausted      = errors.New("ledger: coupon redemptions exhausted")
+	ErrCouponNotStarted     = errors.New("ledger: coupon not yet valid")
+	ErrCouponAlreadyApplied = errors.New("ledger: coupon already applied to this subscription")
 
 	// Provider errors
 	ErrProviderNotFound      = errors.New("ledger: provider not found")
