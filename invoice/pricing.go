@@ -81,3 +81,79 @@ func computeGraduated(tiers []plan.PriceTier, qty int64, currency string) types.
 
 	return total
 }
+
+// computeVolume applies the rate of the tier covering the total quantity to
+// every unit. 3000 units against a tier covering up to 5000 pays 3000 times
+// that tier's rate, not a blend.
+//
+// tiers must already be sorted by SortTiers.
+func computeVolume(tiers []plan.PriceTier, qty int64, currency string) types.Money {
+	total := types.Zero(currency)
+	if qty <= 0 {
+		return total
+	}
+
+	for _, t := range tiers {
+		if t.UpTo == 0 || qty <= t.UpTo {
+			return types.Money{Amount: t.UnitAmount.Amount * qty, Currency: currency}
+		}
+	}
+
+	return total
+}
+
+// computeFlat charges the flat fee attached to the tier the quantity reaches.
+// It is a fee for being in a band, not a per-unit rate, so the quantity
+// selects a tier and is then discarded.
+//
+// tiers must already be sorted by SortTiers.
+func computeFlat(tiers []plan.PriceTier, qty int64, currency string) types.Money {
+	total := types.Zero(currency)
+	if qty <= 0 {
+		return total
+	}
+
+	for _, t := range tiers {
+		if t.UpTo == 0 || qty <= t.UpTo {
+			return types.Money{Amount: t.FlatAmount.Amount, Currency: currency}
+		}
+	}
+
+	return total
+}
+
+// ComputeOverage prices the billable excess of usage over an included
+// allowance, using whichever tier model the plan declares.
+//
+// All arithmetic is integer. UnitAmount and FlatAmount are whole minor
+// units, so a rate below one cent per unit cannot be expressed. Plans that
+// need sub-cent unit pricing need a scaled money type, which is a change to
+// types.Money and out of scope here.
+//
+// An empty tier slice prices at zero. A metered feature whose plan declares
+// no tiers is a gap in the catalogue, and failing invoice generation over it
+// would block billing for every other feature on the plan.
+func ComputeOverage(tiers []plan.PriceTier, usage, included int64, currency string) types.Money {
+	if len(tiers) == 0 {
+		return types.Zero(currency)
+	}
+
+	billable := usage - included
+	if billable <= 0 {
+		return types.Zero(currency)
+	}
+
+	sorted := SortTiers(tiers)
+
+	switch sorted[0].Type {
+	case plan.TierVolume:
+		return computeVolume(sorted, billable, currency)
+	case plan.TierFlat:
+		return computeFlat(sorted, billable, currency)
+	case plan.TierGraduated:
+		return computeGraduated(sorted, billable, currency)
+	default:
+		// An unrecognised tier type prices at zero rather than guessing.
+		return types.Zero(currency)
+	}
+}
