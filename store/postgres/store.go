@@ -1010,6 +1010,24 @@ func (s *Store) IncrementCouponRedemptions(ctx context.Context, couponID id.Coup
 // UPDATE to reach the row and blocks the second until it commits, at which
 // point the second's WHERE re-evaluates against the already-incremented
 // count under read-committed semantics.
+//
+// The INSERT of the application row is the FIRST statement in the
+// transaction, matching sqlite's RedeemCoupon (the two are kept
+// structurally identical on purpose). Postgres itself has no equivalent to
+// sqlite's lock-upgrade BUSY, but opening with a read here would still mean
+// two different statement shapes to reason about across backends for no
+// benefit, and the FK on ledger_coupon_applications.coupon_id already gives
+// this insert a cheap, correct way to catch an unknown coupon without a
+// SELECT: it fails with a 23503 foreign-key violation, mapped below to
+// ErrCouponNotFound.
+//
+// Unknown coupon and exhausted cap share one signal - the conditional
+// UPDATE affects zero rows - and are told apart only if that happens: on
+// postgres this is normally unreachable for an unknown coupon (the FK
+// above already refused the insert), so the existence check here is a
+// defensive fallback for the case where the coupon was deleted between
+// this transaction's insert and its update, not the primary way unknown
+// coupons are caught.
 func (s *Store) RedeemCoupon(ctx context.Context, subID id.SubscriptionID, couponID id.CouponID) error {
 	if err := validateSubscriptionID(subID); err != nil {
 		return err
@@ -1019,22 +1037,14 @@ func (s *Store) RedeemCoupon(ctx context.Context, subID id.SubscriptionID, coupo
 	if err != nil {
 		return err
 	}
-	// Rollback is documented as safe to call after a successful Commit, so
-	// this unconditional defer is a no-op on the success path and the
-	// cleanup for every other one - including a failure inside Commit
-	// itself, which can leave the transaction still open.
+	// Rollback after a successful Commit does not undo it - there is
+	// nothing left to roll back - but it is not a silent no-op either: the
+	// underlying pgx transaction returns pgx.ErrTxClosed, which this
+	// unconditional defer discards with `_ =`. That discard is deliberate
+	// on every path, not just the success one: Commit itself can fail
+	// partway through, leaving the transaction open, and the same
+	// Rollback call is what cleans that up.
 	defer func() { _ = tx.Rollback() }()
-
-	// Confirm the coupon exists before the application row references it,
-	// so a zero-rows result from the conditional increment below can only
-	// mean the cap was reached, never that the coupon was never there.
-	probe := new(couponModel)
-	if err := tx.NewSelect(probe).Where("id = ?", couponID.String()).Scan(ctx); err != nil {
-		if isNoRows(err) {
-			return ledger.ErrCouponNotFound
-		}
-		return err
-	}
 
 	appModel := &couponApplicationModel{
 		ID:             id.NewCouponApplicationID().String(),
@@ -1047,8 +1057,7 @@ func (s *Store) RedeemCoupon(ctx context.Context, subID id.SubscriptionID, coupo
 		case isUniqueViolation(err):
 			return ledger.ErrCouponAlreadyApplied
 		case isForeignKeyViolation(err):
-			// The coupon existed at the SELECT above but was deleted
-			// before this insert landed.
+			// No coupon with this id exists.
 			return ledger.ErrCouponNotFound
 		default:
 			return err
@@ -1070,9 +1079,17 @@ func (s *Store) RedeemCoupon(ctx context.Context, subID id.SubscriptionID, coupo
 		return err
 	}
 	if rows == 0 {
-		// The coupon exists (confirmed above), so zero rows here means the
-		// conditional increment's WHERE clause rejected it: the cap was
-		// reached. The deferred rollback undoes the application insert.
+		// The FK above already refused an unknown coupon's insert, so this
+		// is normally reachable only when the cap was hit. The existence
+		// check here only matters for the rare case of a concurrent delete
+		// landing between this transaction's insert and this update.
+		probe := new(couponModel)
+		if selErr := tx.NewSelect(probe).Where("id = ?", couponID.String()).Scan(ctx); selErr != nil {
+			if isNoRows(selErr) {
+				return ledger.ErrCouponNotFound
+			}
+			return selErr
+		}
 		return ledger.ErrCouponExhausted
 	}
 

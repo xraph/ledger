@@ -56,23 +56,25 @@ func NewMemory(t *testing.T) ledgerstore.Store {
 // only way to guarantee busy_timeout is set on connections opened later in
 // the pool's life, not just the first one.
 //
-// _txlock=immediate makes every transaction acquire its write lock at BEGIN
-// rather than deferring it to the first statement that needs one. Without
-// it, a transaction that reads before it writes (RedeemCoupon selects the
-// coupon before inserting the application row) only holds a SHARED lock
-// going in; two such transactions racing the same coupon both hold SHARED
-// and then both try to upgrade to RESERVED at their write, which SQLite
-// resolves as SQLITE_BUSY immediately rather than queuing the upgrade
-// behind busy_timeout, since queuing it could deadlock two connections each
-// waiting on the other's SHARED lock. BEGIN IMMEDIATE sidesteps that by
-// taking the RESERVED lock up front, so the loser waits out busy_timeout
-// like any other lock wait instead of failing outright.
+// This deliberately does NOT set _txlock=immediate. An earlier version of
+// RedeemCoupon opened its transaction with a SELECT before writing, which
+// only takes a SHARED lock going in; two such transactions racing the same
+// coupon could both hold SHARED and then both try to upgrade to RESERVED at
+// their first write, which SQLite resolves as SQLITE_BUSY immediately
+// rather than queuing the upgrade behind busy_timeout. That version relied
+// on _txlock=immediate here to mask the problem - but the documented
+// production DSN (docs/content/docs/stores/sqlite.mdx) does not set it, so
+// the tests were passing against a configuration production does not run.
+// RedeemCoupon's transactions now open with a write (the application
+// INSERT) as their first statement instead, which takes the RESERVED lock
+// up front with no later upgrade to fail, so this harness runs the same
+// DSN shape production does and still exercises the real lock behavior.
 func NewSQLite(t *testing.T) ledgerstore.Store {
 	t.Helper()
 	ctx := context.Background()
 
 	dbPath := filepath.Join(t.TempDir(), "ledger.db")
-	dsn := "file:" + dbPath + "?_pragma=busy_timeout(5000)&_txlock=immediate"
+	dsn := "file:" + dbPath + "?_pragma=busy_timeout(5000)"
 
 	sdb := sqlitedriver.New()
 	if err := sdb.Open(ctx, dsn); err != nil {

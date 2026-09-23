@@ -475,15 +475,23 @@ func TestApplyCouponCannotExceedTheCapConcurrently(t *testing.T) {
 		subIDs[i] = sub.ID
 	}
 
+	// Every goroutine blocks on start until all n are launched, then start
+	// is closed and they all proceed at once. Without this, goroutines
+	// trickle in one at a time as the scheduler gets to them, which can let
+	// the store serialize calls that were never actually racing - masking
+	// exactly the defect this test exists to catch.
+	start := make(chan struct{})
 	errs := make([]error, n)
 	var wg sync.WaitGroup
 	wg.Add(n)
 	for i := range n {
 		go func(i int) {
 			defer wg.Done()
+			<-start
 			_, errs[i] = l.ApplyCoupon(ctx, subIDs[i], "LAUNCH10")
 		}(i)
 	}
+	close(start)
 	wg.Wait()
 
 	var wins, exhausted int

@@ -919,13 +919,31 @@ func (s *Store) IncrementCouponRedemptions(ctx context.Context, couponID id.Coup
 // against that one document. A document update in MongoDB is always atomic
 // per document, so the increment step alone is race-free the same way the
 // SQL backends' conditional UPDATE is; what is not race-free is the gap
-// between the two writes, during which another process could observe the
-// application row before the count catches up. Given no replica set to
-// transact against, this is the closest available approximation, and it is
-// unverified against a live MongoDB in this environment - no
-// LEDGER_TEST_MONGO_URI was available when this was written, so only the
-// SQL backends' conformance runs and this method's logic have been
-// checked.
+// between the two writes.
+//
+// That gap has real, observable consequences, not just a theoretical one:
+//   - ListAppliedCoupons can return the application row before the count
+//     is incremented, or after it was inserted but before a failed
+//     increment's compensating delete has run.
+//   - An invoice generated for this subscription inside that window
+//     receives the coupon's discount even though the redemption was never
+//     counted against the cap.
+//   - A process crash inside the window (after the insert, before the
+//     increment or its compensating delete) leaves the application row
+//     permanently attached with no matching count, and nothing in this
+//     store detects or repairs that on its own.
+//   - An error from the increment step is itself ambiguous: MongoDB may
+//     have applied it server-side and failed to report success back (a
+//     dropped connection after the write, for instance), in which case the
+//     compensating delete below runs against a coupon whose count already
+//     moved, and this method still reports failure.
+//
+// Given no replica set to transact against, this is the closest available
+// approximation, and it is unverified against a live MongoDB server that
+// also runs the rest of this store's conformance suite concurrently - the
+// RedeemCoupon subtests have been run once against a real mongod in a
+// scratch database (see the task report), but not under sustained
+// concurrent load the way sqlite and postgres have via -race.
 func (s *Store) RedeemCoupon(ctx context.Context, subID id.SubscriptionID, couponID id.CouponID) error {
 	if err := validateSubscriptionID(subID); err != nil {
 		return err
@@ -962,32 +980,58 @@ func (s *Store) RedeemCoupon(ctx context.Context, subID id.SubscriptionID, coupo
 		}).
 		Exec(ctx)
 	if err != nil {
-		if delErr := s.deleteCouponApplication(ctx, appDoc.ID); delErr != nil {
-			return fmt.Errorf("ledger/mongo: redeem coupon: increment failed (%v) and the compensating delete of the application row also failed: %w", err, delErr)
-		}
-		return fmt.Errorf("ledger/mongo: redeem coupon: increment: %w", err)
+		return s.compensate(ctx, appDoc.ID, fmt.Errorf("ledger/mongo: redeem coupon: increment: %w", err))
 	}
 	if res.MatchedCount() == 0 {
-		// The coupon exists (confirmed above), so no match here means the
-		// filter's cap clause rejected it: the cap was reached. Delete the
-		// application row inserted above so no discount is left attached
-		// to a redemption that was never counted.
-		if delErr := s.deleteCouponApplication(ctx, appDoc.ID); delErr != nil {
-			return fmt.Errorf("ledger/mongo: redeem coupon: coupon exhausted, and the compensating delete of the application row also failed: %w", delErr)
+		// Ambiguous, the same way the SQL backends' zero-rows result is:
+		// either the cap was reached, or the coupon was deleted between
+		// the existence check at the top of this method and this update -
+		// there is no transaction here to prevent that. Re-check before
+		// deciding which error to return.
+		if _, getErr := s.GetCouponByID(ctx, couponID); getErr != nil {
+			if errors.Is(getErr, ledger.ErrCouponNotFound) {
+				return s.compensate(ctx, appDoc.ID, ledger.ErrCouponNotFound)
+			}
+			return s.compensate(ctx, appDoc.ID, getErr)
 		}
-		return ledger.ErrCouponExhausted
+		return s.compensate(ctx, appDoc.ID, ledger.ErrCouponExhausted)
 	}
 
 	return nil
 }
 
+// compensate deletes the application row RedeemCoupon inserted earlier in
+// the same call and returns primary - unless the delete itself fails, in
+// which case it returns an error that wraps both primary and the delete
+// failure, so a caller checking errors.Is(err, ledger.ErrCouponExhausted)
+// (or ErrCouponNotFound) still gets true even though the compensating
+// delete also failed and left the application row behind.
+func (s *Store) compensate(ctx context.Context, applicationID string, primary error) error {
+	if delErr := s.deleteCouponApplication(ctx, applicationID); delErr != nil {
+		return fmt.Errorf("ledger/mongo: redeem coupon: %w, and the compensating delete of the application row also failed: %w", primary, delErr)
+	}
+	return primary
+}
+
 // deleteCouponApplication removes a single coupon application row by its
 // own id. It backs RedeemCoupon's compensating delete after an increment
 // that failed or hit the cap.
+//
+// It runs with a context detached from the caller's (context.WithoutCancel)
+// and a fresh 5-second timeout, not ctx itself. The most likely reason the
+// increment above failed is that ctx was already cancelled or had timed
+// out - in which case running the compensating delete on that same ctx
+// would fail immediately too, leaving the application row permanently
+// attached with no matching count: exactly the defect RedeemCoupon exists
+// to prevent. The cleanup this method performs matters more than honoring
+// a cancellation that has already doomed the request it was serving.
 func (s *Store) deleteCouponApplication(ctx context.Context, applicationID string) error {
+	cctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
+	defer cancel()
+
 	_, err := s.mdb.NewDelete((*couponApplicationDoc)(nil)).
 		Filter(bson.M{"_id": applicationID}).
-		Exec(ctx)
+		Exec(cctx)
 	return err
 }
 

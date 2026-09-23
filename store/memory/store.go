@@ -457,11 +457,27 @@ func (s *Store) MarkInvoiceVoided(_ context.Context, invID id.InvoiceID, reason 
 }
 
 // Coupon Store implementation
+//
+// Every method below that crosses this store's boundary - in either
+// direction - copies the coupon.Coupon value rather than sharing a
+// pointer. CreateCoupon and UpdateCoupon copy the caller's coupon before
+// storing it, and GetCoupon, GetCouponByID, ListCoupons and
+// ListAppliedCoupons copy the stored coupon before handing it back. Once a
+// *coupon.Coupon crosses in or out, this store never touches the fields of
+// that specific object again - it only ever mutates its own internal
+// copies, under s.mu. This is what makes it safe for a caller to read
+// fields off a coupon obtained from Get without holding any lock, even
+// while RedeemCoupon or IncrementCouponRedemptions is concurrently
+// updating the same coupon on another goroutine: Ledger.ApplyCoupon's
+// fast-path exhaustion check does exactly this, and a -race run over
+// concurrent ApplyCoupon calls caught it as a real data race before these
+// methods copied on every crossing.
 func (s *Store) CreateCoupon(_ context.Context, c *coupon.Coupon) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	s.coupons[c.ID.String()] = c
+	stored := *c
+	s.coupons[c.ID.String()] = &stored
 	return nil
 }
 
@@ -471,7 +487,8 @@ func (s *Store) GetCoupon(_ context.Context, code, appID string) (*coupon.Coupon
 
 	for _, c := range s.coupons {
 		if c.Code == code && c.AppID == appID {
-			return c, nil
+			cp := *c
+			return &cp, nil
 		}
 	}
 	return nil, ledger.ErrCouponNotFound
@@ -482,7 +499,8 @@ func (s *Store) GetCouponByID(_ context.Context, couponID id.CouponID) (*coupon.
 	defer s.mu.RUnlock()
 
 	if c, ok := s.coupons[couponID.String()]; ok {
-		return c, nil
+		cp := *c
+		return &cp, nil
 	}
 	return nil, ledger.ErrCouponNotFound
 }
@@ -499,10 +517,12 @@ func (s *Store) ListCoupons(_ context.Context, appID string, opts coupon.ListOpt
 			if opts.Active {
 				if (c.ValidFrom == nil || now.After(*c.ValidFrom)) &&
 					(c.ValidUntil == nil || now.Before(*c.ValidUntil)) {
-					result = append(result, c)
+					cp := *c
+					result = append(result, &cp)
 				}
 			} else {
-				result = append(result, c)
+				cp := *c
+				result = append(result, &cp)
 			}
 		}
 	}
@@ -513,7 +533,8 @@ func (s *Store) UpdateCoupon(_ context.Context, c *coupon.Coupon) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	s.coupons[c.ID.String()] = c
+	stored := *c
+	s.coupons[c.ID.String()] = &stored
 	return nil
 }
 
@@ -581,7 +602,8 @@ func (s *Store) ListAppliedCoupons(_ context.Context, subID id.SubscriptionID) (
 
 	for _, a := range s.couponApplications[subID.String()] {
 		if c, ok := s.coupons[a.CouponID.String()]; ok {
-			result = append(result, c)
+			cp := *c
+			result = append(result, &cp)
 		}
 	}
 
@@ -593,14 +615,13 @@ func (s *Store) ListAppliedCoupons(_ context.Context, subID id.SubscriptionID) (
 // which increments the count and records the application as one unit.
 //
 // This replaces the map's entry with an updated copy rather than mutating
-// the existing *coupon.Coupon in place. GetCoupon and GetCouponByID hand
-// out the pointer this store holds internally rather than a copy, so a
-// caller can be sitting on that pointer - reading, say, TimesRedeemed for
-// Ledger.ApplyCoupon's fast-path exhaustion check - at the exact moment
-// another goroutine redeems the same coupon. Mutating fields on the shared
-// object in place would race with that read; swapping in a fresh copy
-// under the lock does not, because the object an earlier caller is holding
-// is never written to again once published.
+// the existing *coupon.Coupon in place, consistent with every other coupon
+// method on this store copying on every crossing (see the comment above
+// CreateCoupon). Mutating the stored object's fields in place, even under
+// s.mu, would still be visible through any *coupon.Coupon a caller
+// obtained from an earlier Get and is holding without a lock - and Get
+// already handed that caller its own copy, so there is nothing of this
+// store's for that mutation to reach.
 func (s *Store) IncrementCouponRedemptions(_ context.Context, couponID id.CouponID) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -628,10 +649,9 @@ func (s *Store) IncrementCouponRedemptions(_ context.Context, couponID id.Coupon
 // could also pass the cap check.
 //
 // Like IncrementCouponRedemptions, this swaps in an updated copy of the
-// coupon rather than mutating the stored pointer in place, so a caller
-// holding a pointer obtained from an earlier Get never observes a
-// concurrent redemption's write - see that method's comment for why that
-// matters for this store specifically.
+// coupon rather than mutating the stored pointer in place - see that
+// method's comment for why, and CreateCoupon's for the copy-on-every-
+// crossing rule this store follows throughout.
 func (s *Store) RedeemCoupon(_ context.Context, subID id.SubscriptionID, couponID id.CouponID) error {
 	if err := validateSubscriptionID(subID); err != nil {
 		return err

@@ -100,15 +100,18 @@ func (l *Ledger) ApplyCoupon(ctx context.Context, subID id.SubscriptionID, code 
 		return nil, err
 	}
 
-	// Re-read rather than incrementing c.TimesRedeemed locally: some store
-	// implementations hand back the same pointer they hold internally, so a
-	// local increment on top of the store's own would double-count.
+	// Re-read rather than incrementing c.TimesRedeemed locally: c was read
+	// before RedeemCoupon ran, so its TimesRedeemed is now stale by exactly
+	// the one redemption that just landed. Re-reading gets the count the
+	// store actually recorded rather than assuming a local increment
+	// matches it.
 	updated, err := l.store.GetCouponByID(ctx, c.ID)
 	if err != nil {
 		// The write above already succeeded; a failure to re-read the coupon
 		// back is not a failure to apply it. Return the coupon as resolved
-		// before the increment rather than mutating c, which may be the
-		// same pointer the store holds internally.
+		// before the increment - every field but TimesRedeemed is already
+		// correct - rather than guessing at a count this call never
+		// confirmed.
 		return c, nil
 	}
 

@@ -967,13 +967,32 @@ func (s *Store) IncrementCouponRedemptions(ctx context.Context, couponID id.Coup
 // (max_redemptions = 0 OR times_redeemed < max_redemptions)` - rather than
 // a read of TimesRedeemed followed by a separate write, so two concurrent
 // transactions racing the same coupon toward its cap cannot both read the
-// count before either writes it: Postgres and SQLite both take a row lock
-// on the first UPDATE to reach the row and block the second until it
-// commits, at which point the second's WHERE re-evaluates against the
-// already-incremented count.
+// count before either writes it: the second transaction's UPDATE blocks
+// until the first commits or rolls back, and its WHERE then re-evaluates
+// against whatever count the first one left behind. SQLite has no row-level
+// locking - a writing transaction holds a database-wide RESERVED/EXCLUSIVE
+// lock, not a lock on this one row - but the effect on this method is the
+// same: the second UPDATE waits rather than racing the first's read.
 //
-// The transaction opens with a SELECT, which SQLite must not treat as a
-// deferred read: see the _txlock=immediate comment on storetest.NewSQLite.
+// The INSERT of the application row is deliberately the FIRST statement in
+// the transaction, not a SELECT. A transaction that opens with a read
+// starts deferred and only holds a SHARED lock; if it later needs to write,
+// SQLite must upgrade that SHARED lock to RESERVED, and two transactions
+// racing the same coupon can both be sitting on SHARED when they attempt
+// that upgrade at the same time. SQLite treats that as an unresolvable
+// mutual wait and fails it immediately with SQLITE_BUSY rather than queuing
+// it behind busy_timeout - regardless of how long busy_timeout is set to,
+// and regardless of DSN flags. Opening with a write instead means the
+// RESERVED lock is acquired up front, with no later upgrade to fail. This
+// is why the coupon's existence is no longer confirmed with a SELECT before
+// the INSERT: that SELECT was the read this method used to open with.
+//
+// Unknown coupon and exhausted cap now share one signal - the conditional
+// UPDATE affects zero rows - and are told apart only after the fact: zero
+// rows means either the coupon was never there or its cap was reached, and
+// an existence check run at that point (with the write lock already held
+// by the INSERT above, so it cannot itself trigger a lock-upgrade BUSY)
+// decides which.
 func (s *Store) RedeemCoupon(ctx context.Context, subID id.SubscriptionID, couponID id.CouponID) error {
 	if err := validateSubscriptionID(subID); err != nil {
 		return err
@@ -983,22 +1002,15 @@ func (s *Store) RedeemCoupon(ctx context.Context, subID id.SubscriptionID, coupo
 	if err != nil {
 		return err
 	}
-	// Rollback is documented as safe to call after a successful Commit, so
-	// this unconditional defer is a no-op on the success path and the
-	// cleanup for every other one - including a failure inside Commit
-	// itself, which can leave the transaction still open.
+	// Rollback after a successful Commit does not undo it - there is
+	// nothing left to roll back - but it is not a silent no-op either: on
+	// sqlite the underlying *sql.Tx returns sql.ErrTxDone, which this
+	// unconditional defer discards with `_ =`. That discard is deliberate
+	// on every path, not just the success one: Commit itself can fail
+	// partway through (for instance if the connection drops after this
+	// method's own UPDATE but before the commit lands), leaving the
+	// transaction open, and the same Rollback call is what cleans that up.
 	defer func() { _ = tx.Rollback() }()
-
-	// Confirm the coupon exists before the application row references it,
-	// so a zero-rows result from the conditional increment below can only
-	// mean the cap was reached, never that the coupon was never there.
-	probe := new(couponModel)
-	if err := tx.NewSelect(probe).Where("id = ?", couponID.String()).Scan(ctx); err != nil {
-		if isNoRows(err) {
-			return ledger.ErrCouponNotFound
-		}
-		return err
-	}
 
 	appModel := &couponApplicationModel{
 		ID:             id.NewCouponApplicationID().String(),
@@ -1028,9 +1040,20 @@ func (s *Store) RedeemCoupon(ctx context.Context, subID id.SubscriptionID, coupo
 		return err
 	}
 	if rows == 0 {
-		// The coupon exists (confirmed above), so zero rows here means the
-		// conditional increment's WHERE clause rejected it: the cap was
-		// reached. The deferred rollback undoes the application insert.
+		// Zero rows is ambiguous by itself: either no coupon with this id
+		// exists (sqlite enforces no foreign key from the application row,
+		// so the insert above did not catch that), or one does and its cap
+		// was reached. This SELECT runs inside the same transaction, after
+		// the INSERT above has already taken the database's write lock, so
+		// it is an ordinary read under a lock this transaction already
+		// holds - not a second statement racing anyone for it.
+		probe := new(couponModel)
+		if selErr := tx.NewSelect(probe).Where("id = ?", couponID.String()).Scan(ctx); selErr != nil {
+			if isNoRows(selErr) {
+				return ledger.ErrCouponNotFound
+			}
+			return selErr
+		}
 		return ledger.ErrCouponExhausted
 	}
 
