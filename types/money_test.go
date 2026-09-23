@@ -297,3 +297,30 @@ func BenchmarkMoneyJSON(b *testing.B) {
 		_, _ = json.Marshal(m)
 	}
 }
+
+func TestMoneyPercent(t *testing.T) {
+	tests := []struct {
+		name string
+		base Money
+		pct  int
+		want Money
+	}{
+		{"ten percent of $49.00", USD(4900), 10, USD(490)},
+		{"twenty-five percent of $49.00", USD(4900), 25, USD(1225)},
+		{"zero percent", USD(4900), 0, USD(0)},
+		{"one hundred percent", USD(4900), 100, USD(4900)},
+		{"over one hundred percent", USD(4900), 150, USD(7350)},
+		{"truncates rather than rounds", USD(101), 10, USD(10)},
+		{"negative percent negates", USD(4900), -10, USD(-490)},
+		{"preserves currency", EUR(19900), 50, EUR(9950)},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := tt.base.Percent(tt.pct)
+			if !got.Equal(tt.want) {
+				t.Errorf("Percent(%d): got %v, want %v", tt.pct, got, tt.want)
+			}
+		})
+	}
+}
