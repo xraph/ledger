@@ -506,6 +506,17 @@ func (r *Registry) GetTaxCalculators() []TaxCalculator {
 	return result
 }
 
+// GetCouponValidators returns every registered coupon validator.
+func (r *Registry) GetCouponValidators() []CouponValidator {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+
+	out := make([]CouponValidator, len(r.couponValidators))
+	copy(out, r.couponValidators)
+
+	return out
+}
+
 // GetPaymentProvider returns a payment provider plugin by provider name.
 func (r *Registry) GetPaymentProvider(name string) PaymentProviderPlugin {
 	r.mu.RLock()
