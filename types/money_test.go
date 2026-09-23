@@ -312,6 +312,8 @@ func TestMoneyPercent(t *testing.T) {
 		{"over one hundred percent", USD(4900), 150, USD(7350)},
 		{"truncates rather than rounds", USD(101), 10, USD(10)},
 		{"negative percent negates", USD(4900), -10, USD(-490)},
+		{"negative percent truncates toward zero", USD(101), -10, USD(-10)},
+		{"negative amount truncates toward zero", USD(-101), 10, USD(-10)},
 		{"preserves currency", EUR(19900), 50, EUR(9950)},
 	}
 

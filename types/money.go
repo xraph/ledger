@@ -69,11 +69,11 @@ func (m Money) Divide(divisor int64) Money {
 	return Money{Amount: m.Amount / divisor, Currency: m.Currency}
 }
 
-// Percent returns pct percent of the Money value, truncating toward zero.
+// Percent returns pct percent of the Money value.
 //
-// Integer-only: 10% of 101 cents is 10 cents, not 10.1. The truncation is
-// deliberate and always favours the payer. Callers that need the remainder
-// must compute it themselves.
+// Integer-only, truncating toward zero: 10% of 101 cents is 10 cents, and
+// 10% of -101 cents is -10 cents, not -11. Magnitude is never rounded up,
+// whatever the sign. Callers needing the remainder must compute it.
 func (m Money) Percent(pct int) Money {
 	return Money{Amount: m.Amount * int64(pct) / 100, Currency: m.Currency}
 }
