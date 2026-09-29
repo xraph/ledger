@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"reflect"
+	"sort"
 	"sync"
 	"time"
 
@@ -487,6 +488,27 @@ func (r *Registry) GetPaymentProviders() []PaymentProviderPlugin {
 	result := make([]PaymentProviderPlugin, len(r.paymentProviders))
 	copy(result, r.paymentProviders)
 	return result
+}
+
+// GetInvoiceFormatter returns the formatter registered for format, or nil.
+func (r *Registry) GetInvoiceFormatter(format string) InvoiceFormatter {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+
+	return r.invoiceFormatters[format]
+}
+
+// InvoiceFormats returns every registered formatter's format, sorted.
+func (r *Registry) InvoiceFormats() []string {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+
+	out := make([]string, 0, len(r.invoiceFormatters))
+	for format := range r.invoiceFormatters {
+		out = append(out, format)
+	}
+	sort.Strings(out)
+	return out
 }
 
 // GetPricingStrategy returns a pricing strategy by name.

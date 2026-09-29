@@ -453,6 +453,38 @@ func (l *Ledger) Entitled(ctx context.Context, featureKey string) (*entitlement.
 		return cached, nil
 	}
 
+	result, kind, err := l.computeEntitlement(ctx, tenantID, appID, featureKey)
+	if err != nil {
+		return nil, err
+	}
+
+	switch kind {
+	case entitlementBoolean:
+		_ = l.store.SetCached(ctx, tenantID, appID, featureKey, result, l.entitlementCacheTTL) //nolint:errcheck // best-effort cache set
+	case entitlementMetered:
+		if result.Reason == "quota exceeded" {
+			l.plugins.EmitQuotaExceeded(ctx, tenantID, featureKey, result.Used, result.Limit)
+		}
+		_ = l.store.SetCached(ctx, tenantID, appID, featureKey, result, l.entitlementCacheTTL) //nolint:errcheck // best-effort cache set
+		l.plugins.EmitEntitlementChecked(ctx, result)
+	case entitlementNoAccess:
+		// Nothing is cached and no event fires when there is no access to report.
+	}
+
+	return result, nil
+}
+
+type entitlementKind int
+
+const (
+	entitlementNoAccess entitlementKind = iota // no subscription, no plan, or feature not in plan
+	entitlementBoolean
+	entitlementMetered
+)
+
+// computeEntitlement answers an entitlement question from the store alone. It
+// reads no cache, writes no cache and fires no plugin events; callers decide.
+func (l *Ledger) computeEntitlement(ctx context.Context, tenantID, appID, featureKey string) (*entitlement.Result, entitlementKind, error) {
 	// Get active subscription
 	sub, err := l.store.GetActiveSubscription(ctx, tenantID, appID)
 	if err != nil {
@@ -460,7 +492,7 @@ func (l *Ledger) Entitled(ctx context.Context, featureKey string) (*entitlement.
 			Allowed: false,
 			Feature: featureKey,
 			Reason:  "no active subscription",
-		}, nil
+		}, entitlementNoAccess, nil
 	}
 
 	// Get plan
@@ -470,7 +502,7 @@ func (l *Ledger) Entitled(ctx context.Context, featureKey string) (*entitlement.
 			Allowed: false,
 			Feature: featureKey,
 			Reason:  "plan not found",
-		}, nil
+		}, entitlementNoAccess, nil
 	}
 
 	// Find feature in plan
@@ -480,7 +512,7 @@ func (l *Ledger) Entitled(ctx context.Context, featureKey string) (*entitlement.
 			Allowed: false,
 			Feature: featureKey,
 			Reason:  "feature not in plan",
-		}, nil
+		}, entitlementNoAccess, nil
 	}
 
 	// Boolean feature
@@ -490,14 +522,13 @@ func (l *Ledger) Entitled(ctx context.Context, featureKey string) (*entitlement.
 			Feature: featureKey,
 			Limit:   feat.Limit,
 		}
-		_ = l.store.SetCached(ctx, tenantID, appID, featureKey, result, l.entitlementCacheTTL) //nolint:errcheck // best-effort cache set
-		return result, nil
+		return result, entitlementBoolean, nil
 	}
 
 	// Metered/seat feature
 	used, err := l.store.Aggregate(ctx, tenantID, appID, featureKey, feat.Period)
 	if err != nil {
-		return nil, err
+		return nil, entitlementMetered, err
 	}
 
 	result := &entitlement.Result{
@@ -520,13 +551,9 @@ func (l *Ledger) Entitled(ctx context.Context, featureKey string) (*entitlement.
 	default:
 		result.Allowed = false
 		result.Reason = "quota exceeded"
-		l.plugins.EmitQuotaExceeded(ctx, tenantID, featureKey, used, feat.Limit)
 	}
 
-	_ = l.store.SetCached(ctx, tenantID, appID, featureKey, result, l.entitlementCacheTTL) //nolint:errcheck // best-effort cache set
-	l.plugins.EmitEntitlementChecked(ctx, result)
-
-	return result, nil
+	return result, entitlementMetered, nil
 }
 
 // Remaining returns the remaining quota for a feature.
