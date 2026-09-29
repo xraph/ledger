@@ -8,30 +8,60 @@ The whole templ dashboard is wired in at one place: `Extension.DashboardContribu
 
 ## Status per surface
 
-One row per templ page or widget. A surface is migrated when a contract-backed page replaces it, dropped when we decide nobody needs it, and blocked until then. At the end of Phase A nothing has a contract, so every row is blocked. Fill the rows in as Phases B and C land.
+One row per templ page or widget. A surface is migrated when a contract-backed page replaces it, dropped when we decide nobody needs it, and blocked until it has a contract. Phase B gave every page a contract, so no row is blocked any more. "Contract ready, React page pending" means the intents below answer everything the templ page showed and more, and nobody has built the React page yet. The templ page stays in place until they do.
 
 | Surface | Route or ID | Status |
 |---|---|---|
-| Overview | `/` | blocked: no contract yet |
-| Plans list | `/plans` | blocked: no contract yet |
-| Plan detail and provider sync | `/plans/detail`, `/plans/sync` | blocked: no contract yet |
-| Plan form | `/plans/new`, `/plans/edit` | blocked: no contract yet |
-| Subscriptions list | `/subscriptions` | blocked: no contract yet |
-| Subscription detail and provider sync | `/subscriptions/detail`, `/subscriptions/sync` | blocked: no contract yet |
-| Subscription form | `/subscriptions/new` | blocked: no contract yet |
-| Invoices list | `/invoices` | blocked: no contract yet |
-| Invoice detail and provider sync | `/invoices/detail`, `/invoices/sync` | blocked: no contract yet |
-| Coupons list | `/coupons` | blocked: no contract yet |
-| Coupon detail | `/coupons/detail` | blocked: no contract yet |
-| Coupon form | `/coupons/new`, `/coupons/edit` | blocked: no contract yet |
-| Features list | `/features` | blocked: no contract yet |
-| Feature detail and provider sync | `/features/detail`, `/features/sync` | blocked: no contract yet |
-| Feature form | `/features/new`, `/features/edit` | blocked: no contract yet |
-| Usage events | `/usage` | blocked: no contract yet |
-| Payment methods | `/payment-methods` | blocked: no contract yet |
-| Settings page and settings panel | `/settings`, settings ID `ledger-config` | blocked: no contract yet |
-| Billing Stats widget | widget ID `ledger-stats` | blocked: no contract yet |
-| Recent Invoices widget | widget ID `ledger-recent-invoices` | blocked: no contract yet |
+| Overview | `/` | contract ready, React page pending: `overview.stats`, `overview.recentInvoices` |
+| Plans list | `/plans` | contract ready, React page pending: `plans.list` |
+| Plan detail and provider sync | `/plans/detail`, `/plans/sync` | contract ready, React page pending: `plans.detail`, `plans.syncToProvider`, `plans.activate`, `plans.archive`, `plans.delete` |
+| Plan form | `/plans/new`, `/plans/edit` | contract ready, React page pending: `plans.create`, `plans.update` |
+| Subscriptions list | `/subscriptions` | contract ready, React page pending: `subscriptions.list` |
+| Subscription detail and provider sync | `/subscriptions/detail`, `/subscriptions/sync` | contract ready, React page pending: `subscriptions.detail`, `subscriptions.usage`, `subscriptions.syncToProvider`, `subscriptions.changePlan`, `subscriptions.pause`, `subscriptions.resume`, `subscriptions.cancel` |
+| Subscription form | `/subscriptions/new` | contract ready, React page pending: `subscriptions.create` |
+| Invoices list | `/invoices` | contract ready, React page pending: `invoices.list`, `invoices.pending` |
+| Invoice detail and provider sync | `/invoices/detail`, `/invoices/sync` | contract ready, React page pending: `invoices.detail`, `invoices.export`, `invoices.syncToProvider`, `invoices.generate`, `invoices.finalize`, `invoices.markPaid`, `invoices.void` |
+| Coupons list | `/coupons` | contract ready, React page pending: `coupons.list` |
+| Coupon detail | `/coupons/detail` | contract ready, React page pending: `coupons.detail`, `coupons.apply`, `coupons.delete` |
+| Coupon form | `/coupons/new`, `/coupons/edit` | contract ready, React page pending: `coupons.create`, `coupons.update` |
+| Features list | `/features` | contract ready, React page pending: `features.list` |
+| Feature detail and provider sync | `/features/detail`, `/features/sync` | contract ready, React page pending: `features.detail`, `features.syncToProvider`, `features.archive`, `features.delete` |
+| Feature form | `/features/new`, `/features/edit` | contract ready, React page pending: `features.create`, `features.update` |
+| Usage events | `/usage` | contract ready, React page pending: `usage.events`, `usage.aggregate`, `entitlements.check`, `entitlements.invalidate` |
+| Payment methods | `/payment-methods` | contract ready, React page pending: `paymentMethods.list` |
+| Settings page and settings panel | `/settings`, settings ID `ledger-config` | contract ready, React page pending: `settings.detail` |
+| Billing Stats widget | widget ID `ledger-stats` | contract ready, React page pending: `overview.stats` |
+| Recent Invoices widget | widget ID `ledger-recent-invoices` | contract ready, React page pending: `overview.recentInvoices` |
+
+## The dashboard contract
+
+The `ledger` contributor lives in `extension/contract/`. It declares 47 intents in `manifest.yaml` and binds a typed handler to each. They cover plans, features, subscriptions, invoices, coupons, usage, entitlements, payment methods, the overview and settings. The React plugin in forge-dashboard reads these intents. The templ contributor in `dashboard/` is a separate thing and keeps working until it's deleted.
+
+`extension/contract/completeness_test.go` fails if the manifest and the registrations disagree, so the number 47 is checked on every test run and not just written here.
+
+How a request is scoped, since this is the part you'll trip over in a real deployment:
+
+- The app is the security boundary. It comes from the principal's `app_id` claim, and failing that from the extension's configured `app_id`. No request can carry an app id of its own. The tenant is an optional filter and never a boundary, because an operator sees every customer in their app.
+- Set `RequireAppClaim` in a multi-app deployment. With it on, a principal without the claim is refused with `PERMISSION_DENIED` even when `app_id` is configured, so nobody falls through to a default app by accident.
+- A request with no app at all (no claim, no configured `app_id`, `RequireAppClaim` off) can reach only the global feature catalog and `settings.detail`. Every other intent answers `PERMISSION_DENIED` with "no app selected". The stores read an empty app id as "every app", which is why the refusal sits in one place in front of every handler. If you run one app and never set `app_id`, set it now.
+- Every intent that takes an id loads the row first and answers `NOT_FOUND` when it belongs to another app. Catalog features with no app are global: any app can read them, and only the platform can write them.
+
+What comes back over the wire:
+
+- Handlers return the domain structs as they are, so field names are the Go structs' JSON tags in snake_case. Money is `{"amount", "currency", "display"}`.
+- Lists page by offset. You send `{limit, offset}` and get `{items, limit, offset, has_more}`. The default limit is 50 and the maximum is 200. A negative offset counts as 0, an offset past the end returns empty `items` with `has_more: false`, and `items` is never `null`.
+- Plans and catalog features list oldest first. Subscriptions, invoices, coupons and usage list newest first. Every list breaks ties by id, so a page boundary doesn't shuffle rows between requests.
+- Every command declares `invalidates`, naming each query whose answer it can change, so a page refetches what a write touched.
+- `*.syncToProvider` answers a provider's refusal as a normal result with `success: false` and the provider's message in `error`. It returns an error code only when there's nothing to sync (an unknown id) or no provider is configured (`UNAVAILABLE`).
+- `overview.stats` has no count method to call, because the stores don't have one. It scans up to 5000 rows for each of plans, subscriptions, pending invoices and coupons, and sets `capped: true` when any scan hit the bound. When `capped` is true the counts are lower bounds, and the page has to say so.
+- `paymentMethods.list` asks the payment provider about a tenant, and a provider's tenant namespace is shared across apps. Two apps that use the same tenant id see the same customer at the provider. If you bill several apps through one provider account, give each app its own tenant ids.
+- `settings.detail` reports the batch size, flush interval and cache TTL the extension is actually running with, plus the registered providers and invoice formats. It replaces the three literals the templ page showed.
+
+### Intents we chose not to offer
+
+- `plans.importFromProvider`, `features.importFromProvider`, `subscriptions.importFromProvider` and `invoices.importFromProvider`. The provider interface has no per-app scoping, so an import would pull in rows for every app that shares the provider account and file them under whichever app asked.
+- `usage.purge`. It deletes usage for every app at once.
+- `providers.list`. `settings.detail` already returns the provider names.
 
 ## The templ dashboard, as it was
 
@@ -424,6 +454,22 @@ If you set up plans for merchants, these are the rules `GenerateInvoice` follows
 - A negative usage total for a period fails generation too, with an error naming the feature. You can still meter a negative quantity; it's the period's total that can't go below zero.
 - A coupon's `MaxRedemptions` of zero or less means unlimited, on every backend.
 
+## What the contract phase changed in the engine
+
+An SDK caller will notice these, because the contract needed the engine to refuse things it used to accept.
+
+- `CreatePlan` validates the plan and refuses a slug that's already taken in the app. Tier ladders are checked when you save, not at the next billing run. `UpdatePlan` keeps the app and currency fixed once a plan exists, and `DeletePlan` refuses a plan that subscriptions still use.
+- `CreateSubscription` requires an active plan in the same app, and sets the status and trial itself. Seat quantities must be non-negative and can only name the plan's seat features.
+- `ChangePlan`, `PauseSubscription` and `ResumeSubscription` are new. A plan change takes effect from the next invoice. Nothing is prorated.
+- `GenerateInvoice` refuses a second invoice for a period until the first one is voided. It returns an error wrapping `ErrAlreadyExists`.
+- `CreateCoupon` and `UpdateCoupon` validate the coupon the same way `ApplyCoupon` does. A coupon's code, type, value, currency and app are fixed once it exists, because applied coupons are priced from them on every later invoice. `UpdateCoupon` never writes the redemption count, on any backend, which closes the rollback race that used to be known constraint 6.
+- `ExportInvoice` and `InvoiceFormats` give invoice formatters their first caller, and `ProviderNames` lists the registered payment providers. Entitlements can be inspected without touching the cache or firing plugin events.
+
+Two engine bugs got fixed along the way.
+
+- An immediate cancel didn't always end the subscription. A time-boundary check decided whether it took effect, and that check was wrong in all four stores.
+- After a void and a regenerate, a third invoice could be issued for the same period. The period check looked at a single invoice row, and once two rows shared a period it could hand back the voided one. It now lists the period and looks for any invoice that isn't voided.
+
 ## Bugs the conformance suite found in the existing backends
 
 Running the same suite against all four backends turned up these. All are fixed in Phase A unless the entry says otherwise.
@@ -445,17 +491,17 @@ None of these are fixed. Read them before you assume Ledger handles the case for
 2. Sub-cent unit prices can't be represented. `types.Money` holds integer minor units. A plan that needs a fraction of a cent per unit needs a scaled money type, which touches every price in the system and wants its own spec.
 3. `store.Aggregate` sums usage from the start of the current calendar period (worked out from the time of the call), not from the subscription's `CurrentPeriodStart`. A plugin `UsageAggregator` is given the subscription's own `CurrentPeriodStart` and `CurrentPeriodEnd`. The two agree only for calendar-aligned subscriptions. `Entitled()` also uses `store.Aggregate`, so a feature with a custom aggregator is counted one way for quota enforcement and another way for billing. This behaviour predates Phase A on all four backends and Phase A didn't change it.
 4. An applied coupon applies to every invoice for that subscription, indefinitely. There's no once or repeating duration. There's also no API to detach an applied coupon, so a coupon that later becomes invalid (after the plan's currency changes, for example) blocks that subscription's billing until the coupon is edited or deleted, and that edit or delete hits every subscriber who has it.
-5. `GenerateInvoice` has no per-period idempotency. Call it twice for the same period and you get two invoices.
-6. `UpdateCoupon` writes every column, `times_redeemed` included. An edit that races a redemption can roll the count back and let the cap be exceeded.
+5. `GenerateInvoice` refuses a second invoice for a period until the first is voided (see the contract phase above). It doesn't make the call idempotent: the second call is an error, and it returns no invoice.
+6. Fixed in the contract phase. `UpdateCoupon` no longer writes `times_redeemed` on any backend, so an edit that races a redemption can't roll the count back and let the cap be exceeded.
 7. The mongo store doesn't persist `plan.Feature.CatalogID`. Its `featureModel` in `store/mongo/models.go` has no field for it, so on mongo the link from a plan feature to its catalog feature is lost on write. Memory, sqlite and postgres keep it: memory holds the struct as it is, and sqlite and postgres store plan features as a JSON column where the `catalog_id` tag round-trips. The templ plan edit form drops it on every backend (see the plan form above).
 8. `provider.Provider.HandleWebhook(ctx, payload)` takes no signature parameter, and `Ledger.HandleWebhook` passes the payload to the named provider without verifying anything. Nothing in Ledger signs or hashes today, so there's no bug to fix yet, and the cost lands on whoever writes the first real payment provider. Interfaces shaped like this tend to stay that way: the first implementer verifies inside its own `HandleWebhook` instead of changing a method every other provider already implements, and the second one forgets to.
 9. Sqlite needs a busy timeout in its DSN, or concurrent coupon redemptions return a raw `database is locked` error instead of `ErrCouponExhausted`. The documented DSN in `docs/content/docs/stores/sqlite.mdx` now carries `?_pragma=busy_timeout(5000)`. If you copied the old one, add it.
 10. Mongo coupon redemption is compensating, not transactional, because Ledger doesn't assume a replica set. Between the application insert and a compensating delete, a concurrent invoice can see the application. A crash inside that window leaves it there. The increment can also land on the server and still come back as a failure (a connection dropped after the write, say). The application row is then deleted as compensation, and the coupon's count ends one higher than its application rows.
 11. Rolling deploys on mongo: if an old binary runs its `Migrate` after a new one has, it recreates the old sparse index beside the new partial one, and keyless events start dropping again until a new binary migrates. Finish the rollout before you trust keyless ingestion.
 12. Store coverage is real but uneven. Memory and sqlite run the conformance suite on every `go test ./...`. Postgres runs it only when `LEDGER_TEST_POSTGRES_DSN` names a server, and mongo only when `LEDGER_TEST_MONGO_URI` does. Otherwise they skip. During Phase A both were exercised live against real servers. A skipped suite looks exactly like a passing one in `go test` output, so run with `-v` and look for `SKIP` before you believe a green run covered postgres or mongo.
-13. `InvoiceFormatter` is still registered and never called. It gets a caller in the dashboard contract phase.
+13. `InvoiceFormatter` now has a caller: `Ledger.ExportInvoice`, behind `invoices.export`. Ledger doesn't register a formatter itself, so `InvoiceFormats` returns an empty list until a plugin adds one.
 14. `ListInvoices` filters by containment on every backend: the invoice's period must lie inside `[Start, End]`. That deliberately differs from `QueryUsage`'s half-open `[Start, End)`, because an invoice period is a range and a usage event is an instant.
-15. The memory store ignores `Limit` and `Offset` on `ListInvoices`. It's a test double, not a production backend.
+15. Fixed. The memory store now honours `Limit` and `Offset` on `ListInvoices`, in the same newest-first order as the other backends.
 16. Deleting a coupon leaves its application rows behind on sqlite, mongo and memory. Postgres deletes them with it, because the foreign key is `ON DELETE CASCADE`. You can't see the difference through Ledger today, since `ListAppliedCoupons` skips a coupon that no longer exists, but a query over the applications themselves, or a data audit, will find the backends disagree.
 17. On postgres, `ApplyCoupon` and `RedeemCoupon` catch a duplicate through the unique index. If you call either inside your own transaction, a duplicate aborts that whole transaction unless you wrap the call in a savepoint.
 18. On mongo, invoice line items must carry ids. An imported provider invoice whose line items have none can't be read back.

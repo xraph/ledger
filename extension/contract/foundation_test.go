@@ -247,14 +247,14 @@ func TestRunRefusesTheEmptyScopeUnlessThePlatformOptsIn(t *testing.T) {
 	}
 }
 
-func TestPlatformIntentsAreExactlyTheFeatureCatalog(t *testing.T) {
+func TestPlatformIntentsAreExactlyTheFeatureCatalogAndSettings(t *testing.T) {
 	b := newBinder(dispatcher.New(nil), Deps{})
 	registerAll(b)
 	if b.err != nil {
 		t.Fatalf("register: %v", b.err)
 	}
 	for name := range b.kinds {
-		wantPlatform := strings.HasPrefix(name, "features.")
+		wantPlatform := strings.HasPrefix(name, "features.") || name == "settings.detail"
 		if b.platform[name] != wantPlatform {
 			t.Errorf("%s: accepts the empty scope = %v, want %v", name, b.platform[name], wantPlatform)
 		}

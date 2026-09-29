@@ -64,3 +64,8 @@ intents:
   - { name: entitlements.check,      kind: query,   version: 1, capability: read }
   - { name: entitlements.invalidate, kind: command, version: 1, capability: write, invalidates: [entitlements.check, subscriptions.usage] }
   - { name: paymentMethods.list,     kind: query,   version: 1, capability: read }
+
+  # Overview and settings
+  - { name: overview.stats,          kind: query, version: 1, capability: read }
+  - { name: overview.recentInvoices, kind: query, version: 1, capability: read }
+  - { name: settings.detail,         kind: query, version: 1, capability: read }
