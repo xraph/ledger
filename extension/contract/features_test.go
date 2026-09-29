@@ -71,7 +71,7 @@ func TestFeaturesCreateAndScope(t *testing.T) {
 
 func TestGlobalFeaturesAreReadableButNotWritableFromAnApp(t *testing.T) {
 	h := newHarness(t)
-	global := mustCall(h, "", featuresCreate, newFeatureInput("sso"))
+	global := mustCallPlatform(h, "", featuresCreate, newFeatureInput("sso"))
 	if global.AppID != "" {
 		t.Fatalf("a feature created from an empty scope must be global, got app %q", global.AppID)
 	}
@@ -96,6 +96,32 @@ func TestGlobalFeaturesAreReadableButNotWritableFromAnApp(t *testing.T) {
 	}
 	if stored, _ := h.eng.GetFeature(ctxBackground(), global.ID); stored == nil || stored.Name != "sso" || stored.Status != feature.StatusActive {
 		t.Errorf("a refused write changed the global feature: %+v", stored)
+	}
+}
+
+func TestEmptyScopeSeesAndWritesOnlyTheGlobalCatalog(t *testing.T) {
+	h := newHarness(t)
+	owned := mustCall(h, "app_a", featuresCreate, newFeatureInput("owned"))
+	global := mustCallPlatform(h, "", featuresCreate, newFeatureInput("shared"))
+
+	for _, in := range []FeaturesListInput{{}, {Global: false}, {Global: true}} {
+		listed := mustCallPlatform(h, "", featuresList, in)
+		if len(listed.Items) != 1 || listed.Items[0].ID.String() != global.ID.String() {
+			t.Errorf("empty scope list %+v: got %d rows, want only the global feature", in, len(listed.Items))
+		}
+	}
+
+	if _, err := callPlatform(h, "", featuresDetail, IDInput{ID: owned.ID.String()}); codeOf(err) != dash.CodeNotFound {
+		t.Errorf("an app's feature from the empty scope: got %v, want NOT_FOUND", err)
+	}
+	name := "Renamed"
+	if _, err := callPlatform(h, "", featuresUpdate, FeatureUpdateInput{ID: owned.ID.String(), Name: &name}); codeOf(err) != dash.CodeNotFound {
+		t.Errorf("updating an app's feature from the empty scope: got %v, want NOT_FOUND", err)
+	}
+
+	got := mustCallPlatform(h, "", featuresUpdate, FeatureUpdateInput{ID: global.ID.String(), Name: &name})
+	if got.Name != "Renamed" || got.AppID != "" {
+		t.Errorf("updating a global feature from the empty scope: got %+v", got)
 	}
 }
 
@@ -153,7 +179,7 @@ func TestFeaturesList(t *testing.T) {
 		mustCall(h, "app_a", featuresCreate, newFeatureInput(key))
 	}
 	mustCall(h, "app_b", featuresCreate, newFeatureInput("other"))
-	mustCall(h, "", featuresCreate, newFeatureInput("shared"))
+	mustCallPlatform(h, "", featuresCreate, newFeatureInput("shared"))
 
 	all := mustCall(h, "app_a", featuresList, FeaturesListInput{})
 	if len(all.Items) != 3 {

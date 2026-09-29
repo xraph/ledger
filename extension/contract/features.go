@@ -11,14 +11,16 @@ import (
 	"github.com/xraph/ledger/provider"
 )
 
+// registerFeatures binds the catalog through the platform helpers: a global
+// feature belongs to no app, so the empty scope is a legitimate caller here.
 func registerFeatures(b *binder) {
-	query(b, "features.list", featuresList)
-	query(b, "features.detail", featuresDetail)
-	command(b, "features.create", featuresCreate)
-	command(b, "features.update", featuresUpdate)
-	command(b, "features.archive", featuresArchive)
-	command(b, "features.delete", featuresDelete)
-	command(b, "features.syncToProvider", featuresSync)
+	platformQuery(b, "features.list", featuresList)
+	platformQuery(b, "features.detail", featuresDetail)
+	platformCommand(b, "features.create", featuresCreate)
+	platformCommand(b, "features.update", featuresUpdate)
+	platformCommand(b, "features.archive", featuresArchive)
+	platformCommand(b, "features.delete", featuresDelete)
+	platformCommand(b, "features.syncToProvider", featuresSync)
 }
 
 type FeaturesListInput struct {
@@ -38,9 +40,13 @@ func featuresList(ctx context.Context, eng *ledger.Ledger, sc scope, in Features
 	limit, offset := in.window()
 	opts := feature.ListOpts{Status: feature.Status(in.Status), Limit: limit + 1, Offset: offset}
 
+	// The empty scope has no app of its own, and every store reads an empty app
+	// id as "all apps", so it lists the global catalog and nothing else.
+	global := in.Global || sc.AppID == ""
+
 	var rows []*feature.Feature
 	var err error
-	if in.Global {
+	if global {
 		rows, err = eng.ListGlobalFeatures(ctx, opts)
 	} else {
 		rows, err = eng.ListFeatures(ctx, sc.AppID, opts)

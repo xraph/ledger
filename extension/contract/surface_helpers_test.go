@@ -32,9 +32,24 @@ func call[I, O any](h *harness, app string, fn handlerFn[I, O], in I) (O, error)
 	return run(h.deps, fn)(context.Background(), in, principal(app))
 }
 
+// callPlatform is call for an intent registered with platformQuery or
+// platformCommand: app "" is the empty (platform) scope and reaches the handler.
+func callPlatform[I, O any](h *harness, app string, fn handlerFn[I, O], in I) (O, error) {
+	return runPlatform(h.deps, fn)(context.Background(), in, principal(app))
+}
+
 func mustCall[I, O any](h *harness, app string, fn handlerFn[I, O], in I) O {
 	h.t.Helper()
 	out, err := call(h, app, fn, in)
+	if err != nil {
+		h.t.Fatalf("call: %v", err)
+	}
+	return out
+}
+
+func mustCallPlatform[I, O any](h *harness, app string, fn handlerFn[I, O], in I) O {
+	h.t.Helper()
+	out, err := callPlatform(h, app, fn, in)
 	if err != nil {
 		h.t.Fatalf("call: %v", err)
 	}

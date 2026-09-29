@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strings"
 	"testing"
 
 	dash "github.com/xraph/forge/extensions/dashboard/contract"
@@ -216,6 +217,47 @@ func TestRunRefusesAMissingRequiredClaim(t *testing.T) {
 	})
 	if _, err := h(context.Background(), echoIn{}, principal("")); codeOf(err) != dash.CodePermissionDenied {
 		t.Errorf("got %v, want PERMISSION_DENIED", err)
+	}
+}
+
+func TestRunRefusesTheEmptyScopeUnlessThePlatformOptsIn(t *testing.T) {
+	eng := ledger.New(memory.New())
+	deps := Deps{Engine: func() *ledger.Ledger { return eng }}
+
+	entered := false
+	body := func(_ context.Context, _ *ledger.Ledger, sc scope, _ echoIn) (Ack, error) {
+		entered = true
+		if sc.AppID != "" {
+			t.Errorf("scope app = %q, want the empty platform scope", sc.AppID)
+		}
+		return Ack{OK: true}, nil
+	}
+
+	_, err := run(deps, body)(context.Background(), echoIn{}, principal(""))
+	if codeOf(err) != dash.CodePermissionDenied {
+		t.Errorf("default policy from the empty scope: got %v, want PERMISSION_DENIED", err)
+	}
+	if entered {
+		t.Fatal("the handler body must not run for the empty scope under the default policy")
+	}
+
+	got, err := runPlatform(deps, body)(context.Background(), echoIn{}, principal(""))
+	if err != nil || !got.OK || !entered {
+		t.Errorf("platform policy from the empty scope: got %+v, %v, entered %v; want the handler to run", got, err, entered)
+	}
+}
+
+func TestPlatformIntentsAreExactlyTheFeatureCatalog(t *testing.T) {
+	b := newBinder(dispatcher.New(nil), Deps{})
+	registerAll(b)
+	if b.err != nil {
+		t.Fatalf("register: %v", b.err)
+	}
+	for name := range b.kinds {
+		wantPlatform := strings.HasPrefix(name, "features.")
+		if b.platform[name] != wantPlatform {
+			t.Errorf("%s: accepts the empty scope = %v, want %v", name, b.platform[name], wantPlatform)
+		}
 	}
 }
 

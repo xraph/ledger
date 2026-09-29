@@ -246,3 +246,11 @@ func TestPlansSyncToProvider(t *testing.T) {
 		}
 	})
 }
+
+func TestPlansRefuseTheEmptyScope(t *testing.T) {
+	h := newHarness(t)
+	h.activePlan("app_a", "visible")
+	if _, err := call(h, "", plansList, PlansListInput{}); codeOf(err) != dash.CodePermissionDenied {
+		t.Errorf("plans.list from an empty scope: got %v, want PERMISSION_DENIED (never every app's plans)", err)
+	}
+}
