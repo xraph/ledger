@@ -38,3 +38,14 @@ intents:
   - { name: subscriptions.resume,         kind: command, version: 1, capability: write, invalidates: [subscriptions.list, subscriptions.detail, overview.stats] }
   - { name: subscriptions.cancel,         kind: command, version: 1, capability: write, invalidates: [subscriptions.list, subscriptions.detail, overview.stats, entitlements.check] }
   - { name: subscriptions.syncToProvider, kind: command, version: 1, capability: write, invalidates: [subscriptions.detail] }
+
+  # Invoices
+  - { name: invoices.list,           kind: query,   version: 1, capability: read }
+  - { name: invoices.detail,         kind: query,   version: 1, capability: read }
+  - { name: invoices.pending,        kind: query,   version: 1, capability: read }
+  - { name: invoices.export,         kind: query,   version: 1, capability: read }
+  - { name: invoices.generate,       kind: command, version: 1, capability: write, invalidates: [invoices.list, invoices.pending, subscriptions.detail, overview.stats, overview.recentInvoices] }
+  - { name: invoices.finalize,       kind: command, version: 1, capability: write, invalidates: [invoices.list, invoices.detail, invoices.pending, overview.stats, overview.recentInvoices] }
+  - { name: invoices.markPaid,       kind: command, version: 1, capability: write, invalidates: [invoices.list, invoices.detail, invoices.pending, overview.stats, overview.recentInvoices] }
+  - { name: invoices.void,           kind: command, version: 1, capability: write, invalidates: [invoices.list, invoices.detail, invoices.pending, overview.stats, overview.recentInvoices] }
+  - { name: invoices.syncToProvider, kind: command, version: 1, capability: write, invalidates: [invoices.detail] }
