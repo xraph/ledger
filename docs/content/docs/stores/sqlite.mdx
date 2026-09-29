@@ -15,7 +15,13 @@ import (
     "github.com/xraph/ledger/store/sqlite"
 )
 
-db, err := grove.Open(sqlitedriver.Open("file:ledger.db?_pragma=busy_timeout(5000)"))
+sdb := sqlitedriver.New()
+if err := sdb.Open(ctx, "file:ledger.db?_pragma=busy_timeout(5000)"); err != nil {
+    log.Fatal(err)
+}
+defer sdb.Close()
+
+db, err := grove.Open(sdb)
 if err != nil {
     log.Fatal(err)
 }
@@ -35,11 +41,13 @@ defer engine.Stop()
 
 Keep the `busy_timeout` pragma in your DSN: without it, concurrent coupon redemptions fail with a raw `database is locked (SQLITE_BUSY)` error instead of waiting their turn and returning `ErrCouponExhausted` when the cap is reached.
 
-Pass `":memory:"` for a fully in-process, zero-persistence store useful in tests:
+For tests, point the same DSN at a file in the test's temp directory:
 
 ```go
-db, err := grove.Open(sqlitedriver.Open(":memory:"))
+dsn := "file:" + filepath.Join(t.TempDir(), "ledger.db") + "?_pragma=busy_timeout(5000)"
 ```
+
+Don't use `":memory:"`. The driver opens the database through a connection pool, and every pooled connection to `":memory:"` gets its own empty database, so a write on one connection is invisible to the next. `store/storetest/harness.go` opens its test stores exactly this way and explains why in `NewSQLite`.
 
 ## Migrations
 
@@ -68,7 +76,7 @@ var _ store.Store = (*Store)(nil)
 | Migrations | grove orchestrator with programmatic migrations |
 | Transactions | SQLite-level transactions |
 | Concurrency | Multiple readers, single writer (WAL mode) |
-| Persistence | File-based or in-process (`":memory:"`) |
+| Persistence | File-based |
 
 ## When to use
 

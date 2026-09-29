@@ -406,12 +406,13 @@ Each line names the commits, oldest first, from `git log --oneline 7fe72a3..HEAD
 - Task 10, `UsageAggregator` and `PricingStrategy` called during billing, chosen by the `aggregator` key in a feature's metadata and by `pricing_strategy` in the feature's metadata, falling back to the plan's (`9cb30a4`, `a0525b4`).
 - Task 14, overflow-checked money arithmetic and half-open usage windows (`edbb399`).
 - Task 15, times normalised to UTC on write in every backend (`edc6224`, `4addffe`).
+- The final review's fixes: `GenerateInvoice` and `CreateSubscription` refuse an empty tenant, every backend reads a redemption cap of zero or less as unlimited, and a negative usage total or base price fails generation (`ab26b6f`).
 
 ### Pricing semantics you need to know
 
 If you set up plans for merchants, these are the rules `GenerateInvoice` follows now.
 
-- A tier's `UpTo` counts total usage for the period, not units past the allowance. An `UpTo` of `-1` or `0` means unbounded.
+- A tier's `UpTo` counts total usage for the period, not units past the allowance. An `UpTo` of zero or less means unbounded.
 - A metered feature's included allowance (its `Limit`) is honoured once, and seat features have no allowance. Graduated pricing charges the price of total usage minus the price of the allowance. Volume takes its rate from the tier that total usage reaches and applies it to the units past the allowance.
 - A ladder with no unbounded tier extends its last tier to any usage above its highest `UpTo`.
 - Flat overage is the band fee at total usage minus the band fee at the allowance, never below zero.
@@ -419,6 +420,9 @@ If you set up plans for merchants, these are the rules `GenerateInvoice` follows
 - Amount coupons subtract their flat amount.
 - The discount line records the full discount even when it exceeds the subtotal, and the net amount clamps at zero.
 - Tax is charged on the net amount, after discounts.
+- A negative base price fails generation with `ErrInvalidPricing`. It used to be skipped, which billed the plan as if it had no base fee.
+- A negative usage total for a period fails generation too, with an error naming the feature. You can still meter a negative quantity; it's the period's total that can't go below zero.
+- A coupon's `MaxRedemptions` of zero or less means unlimited, on every backend.
 
 ## Bugs the conformance suite found in the existing backends
 
@@ -436,6 +440,8 @@ Running the same suite against all four backends turned up these. All are fixed 
 None of these are fixed. Read them before you assume Ledger handles the case for you.
 
 1. An empty tenant id on `ListSubscriptions`, `ListInvoices` or `QueryUsage` matches every tenant's rows for the app, on all four backends. The conformance suite pins this (`EmptyTenantIDBehavior` in `store/storetest/storetest.go`), so it can't change silently. Any caller that fails to resolve a tenant and passes `""` through leaks every tenant's data. If the app id is empty too, the stores skip the app filter as well, and the extension's `Config.AppID` defaults to empty, so a deployment with no app id leaks every row of every app. The templ dashboard relies on it (see above). The dashboard contract layer must refuse an unresolvable tenant, because the stores won't.
+
+   The engine now refuses one in two places. `GenerateInvoice` and `CreateSubscription` return an error wrapping `ErrInvalidInput` for a subscription with an empty tenant id, and nothing is stored. Before this, a subscription with no tenant whose feature named a plugin aggregator was billed for every tenant's usage in its app: the aggregator reads events through `QueryUsage`, and the final review billed 10 calls from one tenant plus 20 from another as 30 on a third invoice. The aggregator path also refuses an empty app id, since `QueryUsage` drops the app filter the same way. Nothing else does. `store.Aggregate` matches the app id exactly, and a deployment that never set an app id still invoices its base fee. The stores haven't changed, so everything above still holds for any other caller.
 2. Sub-cent unit prices can't be represented. `types.Money` holds integer minor units. A plan that needs a fraction of a cent per unit needs a scaled money type, which touches every price in the system and wants its own spec.
 3. `store.Aggregate` sums usage from the start of the current calendar period (worked out from the time of the call), not from the subscription's `CurrentPeriodStart`. A plugin `UsageAggregator` is given the subscription's own `CurrentPeriodStart` and `CurrentPeriodEnd`. The two agree only for calendar-aligned subscriptions. `Entitled()` also uses `store.Aggregate`, so a feature with a custom aggregator is counted one way for quota enforcement and another way for billing. This behaviour predates Phase A on all four backends and Phase A didn't change it.
 4. An applied coupon applies to every invoice for that subscription, indefinitely. There's no once or repeating duration. There's also no API to detach an applied coupon, so a coupon that later becomes invalid (after the plan's currency changes, for example) blocks that subscription's billing until the coupon is edited or deleted, and that edit or delete hits every subscriber who has it.
@@ -444,9 +450,12 @@ None of these are fixed. Read them before you assume Ledger handles the case for
 7. The mongo store doesn't persist `plan.Feature.CatalogID`. Its `featureModel` in `store/mongo/models.go` has no field for it, so on mongo the link from a plan feature to its catalog feature is lost on write. Memory, sqlite and postgres keep it: memory holds the struct as it is, and sqlite and postgres store plan features as a JSON column where the `catalog_id` tag round-trips. The templ plan edit form drops it on every backend (see the plan form above).
 8. `provider.Provider.HandleWebhook(ctx, payload)` takes no signature parameter, and `Ledger.HandleWebhook` passes the payload to the named provider without verifying anything. Nothing in Ledger signs or hashes today, so there's no bug to fix yet, and the cost lands on whoever writes the first real payment provider. Interfaces shaped like this tend to stay that way: the first implementer verifies inside its own `HandleWebhook` instead of changing a method every other provider already implements, and the second one forgets to.
 9. Sqlite needs a busy timeout in its DSN, or concurrent coupon redemptions return a raw `database is locked` error instead of `ErrCouponExhausted`. The documented DSN in `docs/content/docs/stores/sqlite.mdx` now carries `?_pragma=busy_timeout(5000)`. If you copied the old one, add it.
-10. Mongo coupon redemption is compensating, not transactional, because Ledger doesn't assume a replica set. Between the application insert and a compensating delete, a concurrent invoice can see the application. A crash inside that window leaves it there.
+10. Mongo coupon redemption is compensating, not transactional, because Ledger doesn't assume a replica set. Between the application insert and a compensating delete, a concurrent invoice can see the application. A crash inside that window leaves it there. The increment can also land on the server and still come back as a failure (a connection dropped after the write, say). The application row is then deleted as compensation, and the coupon's count ends one higher than its application rows.
 11. Rolling deploys on mongo: if an old binary runs its `Migrate` after a new one has, it recreates the old sparse index beside the new partial one, and keyless events start dropping again until a new binary migrates. Finish the rollout before you trust keyless ingestion.
 12. Store coverage is real but uneven. Memory and sqlite run the conformance suite on every `go test ./...`. Postgres runs it only when `LEDGER_TEST_POSTGRES_DSN` names a server, and mongo only when `LEDGER_TEST_MONGO_URI` does. Otherwise they skip. During Phase A both were exercised live against real servers. A skipped suite looks exactly like a passing one in `go test` output, so run with `-v` and look for `SKIP` before you believe a green run covered postgres or mongo.
 13. `InvoiceFormatter` is still registered and never called. It gets a caller in the dashboard contract phase.
 14. `ListInvoices` filters by containment on every backend: the invoice's period must lie inside `[Start, End]`. That deliberately differs from `QueryUsage`'s half-open `[Start, End)`, because an invoice period is a range and a usage event is an instant.
 15. The memory store ignores `Limit` and `Offset` on `ListInvoices`. It's a test double, not a production backend.
+16. Deleting a coupon leaves its application rows behind on sqlite, mongo and memory. Postgres deletes them with it, because the foreign key is `ON DELETE CASCADE`. You can't see the difference through Ledger today, since `ListAppliedCoupons` skips a coupon that no longer exists, but a query over the applications themselves, or a data audit, will find the backends disagree.
+17. On postgres, `ApplyCoupon` and `RedeemCoupon` catch a duplicate through the unique index. If you call either inside your own transaction, a duplicate aborts that whole transaction unless you wrap the call in a savepoint.
+18. On mongo, invoice line items must carry ids. An imported provider invoice whose line items have none can't be read back.
