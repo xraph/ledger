@@ -15,12 +15,15 @@ import (
 
 	"github.com/xraph/forge"
 	dashboard "github.com/xraph/forge/extensions/dashboard"
+	"github.com/xraph/forge/extensions/dashboard/contract"
+	"github.com/xraph/forge/extensions/dashboard/contract/dispatcher"
 	"github.com/xraph/forge/extensions/dashboard/contributor"
 	"github.com/xraph/grove"
 	"github.com/xraph/vessel"
 
 	ledger "github.com/xraph/ledger"
 	ledgerdash "github.com/xraph/ledger/dashboard"
+	ledgercontract "github.com/xraph/ledger/extension/contract"
 	"github.com/xraph/ledger/plugin"
 	"github.com/xraph/ledger/store"
 	"github.com/xraph/ledger/store/memory"
@@ -38,10 +41,12 @@ const ExtensionDescription = "Composable usage-based billing engine"
 // ExtensionVersion is the semantic version.
 const ExtensionVersion = "0.1.0"
 
-// Ensure Extension implements forge.Extension and dashboard.DashboardAware at compile time.
+// Ensure Extension implements forge.Extension, dashboard.DashboardAware and
+// dashboard.ContractContributorAware at compile time.
 var (
-	_ forge.Extension          = (*Extension)(nil)
-	_ dashboard.DashboardAware = (*Extension)(nil)
+	_ forge.Extension                    = (*Extension)(nil)
+	_ dashboard.DashboardAware           = (*Extension)(nil)
+	_ dashboard.ContractContributorAware = (*Extension)(nil)
 )
 
 // Extension adapts Ledger as a Forge extension.
@@ -287,6 +292,9 @@ func (e *Extension) mergeConfigurations(yamlConfig, programmaticConfig Config) C
 	if programmaticConfig.DisableMigrate {
 		yamlConfig.DisableMigrate = true
 	}
+	if programmaticConfig.RequireAppClaim {
+		yamlConfig.RequireAppClaim = true
+	}
 
 	// String fields: YAML takes precedence.
 	if yamlConfig.BasePath == "" && programmaticConfig.BasePath != "" {
@@ -358,4 +366,25 @@ func (e *Extension) buildStoreFromGroveDB(db *grove.DB) (store.Store, error) {
 	default:
 		return nil, fmt.Errorf("ledger: unsupported grove driver %q", driverName)
 	}
+}
+
+// RegisterContractContributor registers Ledger's contract contributor with the
+// dashboard. The dashboard calls it during its own Start.
+func (e *Extension) RegisterContractContributor(
+	disp *dispatcher.Dispatcher,
+	reg contract.Registry,
+	wreg contract.WardenRegistry,
+) error {
+	return ledgercontract.Register(disp, reg, wreg, ledgercontract.Deps{
+		Engine:          func() *ledger.Ledger { return e.engine },
+		AppID:           e.config.AppID,
+		RequireAppClaim: e.config.RequireAppClaim,
+		Settings: func() ledgercontract.SettingsView {
+			return ledgercontract.SettingsView{
+				MeterBatchSize:      e.config.MeterBatchSize,
+				MeterFlushInterval:  e.config.MeterFlushInterval.String(),
+				EntitlementCacheTTL: e.config.EntitlementCacheTTL.String(),
+			}
+		},
+	})
 }

@@ -37,6 +37,11 @@ type Config struct {
 	// Used by the dashboard contributor to filter data by app.
 	AppID string `json:"app_id" mapstructure:"app_id" yaml:"app_id"`
 
+	// RequireAppClaim refuses dashboard contract requests whose principal
+	// carries no app_id claim, even when AppID is set. Turn it on in a
+	// multi-app deployment.
+	RequireAppClaim bool `json:"require_app_claim" mapstructure:"require_app_claim" yaml:"require_app_claim"`
+
 	// RequireConfig requires config to be present in YAML files.
 	// If true and no config is found, Register returns an error.
 	RequireConfig bool `json:"-" yaml:"-"`

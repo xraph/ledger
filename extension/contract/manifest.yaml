@@ -1,0 +1,11 @@
+schemaVersion: 1
+contributor:
+  name: ledger
+  envelope:
+    supports: [v1]
+    preferred: v1
+  capabilities: [ledger.read, ledger.write]
+
+# Each surface's task appends its intents below. Queries are capability read,
+# commands capability write, and every command lists what it invalidates.
+intents: []
