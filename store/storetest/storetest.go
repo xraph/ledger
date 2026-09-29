@@ -69,6 +69,7 @@ func Run(t *testing.T, newStore func(t *testing.T) ledgerstore.Store) {
 		testSubscriptionPeriodsRoundTripFromTimeNow(t, newStore(t))
 	})
 	t.Run("UsageEventRoundTripsFromTimeNow", func(t *testing.T) { testUsageEventRoundTripsFromTimeNow(t, newStore(t)) })
+	t.Run("CancelSubscriptionAtNowEndsIt", func(t *testing.T) { testCancelSubscriptionAtNowEndsIt(t, newStore(t)) })
 	t.Run("ListInvoicesBoundsAreInstants", func(t *testing.T) { testListInvoicesBoundsAreInstants(t, newStore(t)) })
 	t.Run("UsageEventNearABoundaryInALocalZone", func(t *testing.T) { testUsageEventNearABoundaryInALocalZone(t, newStore(t)) })
 	t.Run("ListsPageInAStableOrder", func(t *testing.T) { testListsPageInAStableOrder(t, newStore(t)) })
@@ -2004,5 +2005,56 @@ func testSharedListPages(t *testing.T, list func(limit, offset int) ([]string, e
 	}
 	if len(past) != 0 {
 		t.Errorf("page past the end: got %d rows, want 0", len(past))
+	}
+}
+
+// testCancelSubscriptionAtNowEndsIt pins the boundary of an immediate cancel.
+// Ledger.CancelSubscription passes cancelAt = time.Now() for one, and a store
+// must treat an instant that has already been reached as reached: the
+// subscription is canceled at once, not left active until some later read.
+// Every backend once asked time.Now().After(cancelAt), which is false when
+// both readings land on the same instant.
+func testCancelSubscriptionAtNowEndsIt(t *testing.T, s ledgerstore.Store) {
+	ctx := context.Background()
+	appID := "app-" + uniqueSuffix()
+	tenantID := "tenant-" + uniqueSuffix()
+
+	sub := newTestSubscription(tenantID, appID)
+	if err := s.CreateSubscription(ctx, sub); err != nil {
+		t.Fatalf("CreateSubscription: %v", err)
+	}
+	if err := s.CancelSubscription(ctx, sub.ID, time.Now()); err != nil {
+		t.Fatalf("CancelSubscription: %v", err)
+	}
+
+	got, err := s.GetSubscription(ctx, sub.ID)
+	if err != nil {
+		t.Fatalf("GetSubscription: %v", err)
+	}
+	if got.Status != subscription.StatusCanceled {
+		t.Errorf("status after a cancel at now: got %q, want %q", got.Status, subscription.StatusCanceled)
+	}
+	if got.CancelAt == nil {
+		t.Error("cancel_at was not stored")
+	}
+	if got.CanceledAt == nil {
+		t.Error("canceled_at was not stored")
+	}
+
+	// A cancel dated in the future only schedules the end: the subscription
+	// stays active until then.
+	later := newTestSubscription(tenantID, appID)
+	if err = s.CreateSubscription(ctx, later); err != nil {
+		t.Fatalf("CreateSubscription: %v", err)
+	}
+	if err = s.CancelSubscription(ctx, later.ID, time.Now().Add(24*time.Hour)); err != nil {
+		t.Fatalf("CancelSubscription (future): %v", err)
+	}
+	gotLater, err := s.GetSubscription(ctx, later.ID)
+	if err != nil {
+		t.Fatalf("GetSubscription (future): %v", err)
+	}
+	if gotLater.Status != subscription.StatusActive || gotLater.CancelAt == nil {
+		t.Errorf("a future cancel: status %q cancel_at %v, want active with cancel_at set", gotLater.Status, gotLater.CancelAt)
 	}
 }

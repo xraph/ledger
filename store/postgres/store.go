@@ -447,16 +447,20 @@ func (s *Store) UpdateSubscription(ctx context.Context, sub *subscription.Subscr
 }
 
 func (s *Store) CancelSubscription(ctx context.Context, subID id.SubscriptionID, cancelAt time.Time) error {
+	// "?" placeholders, not literal $n: the builder numbers them in the order
+	// it writes the SQL, every SET before the WHERE. With literal $n the two
+	// conditional SETs below were bound to the WHERE's argument, and every
+	// immediate cancel failed with a timestamp parse error.
 	t := now()
 	updates := s.pg.NewUpdate((*subscriptionModel)(nil)).
-		Set("cancel_at = $1", cancelAt).
-		Set("updated_at = $2", t).
-		Where("id = $3", subID.String())
+		Set("cancel_at = ?", cancelAt).
+		Set("updated_at = ?", t).
+		Where("id = ?", subID.String())
 
 	if !cancelAt.After(time.Now()) {
 		updates = updates.
-			Set("status = $4", string(subscription.StatusCanceled)).
-			Set("canceled_at = $5", t)
+			Set("status = ?", string(subscription.StatusCanceled)).
+			Set("canceled_at = ?", t)
 	}
 
 	res, err := updates.Exec(ctx)
