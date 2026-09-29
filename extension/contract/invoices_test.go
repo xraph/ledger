@@ -3,13 +3,16 @@ package contract
 import (
 	"context"
 	"errors"
+	"strings"
 	"testing"
 
 	dash "github.com/xraph/forge/extensions/dashboard/contract"
 
 	ledger "github.com/xraph/ledger"
+	"github.com/xraph/ledger/id"
 	"github.com/xraph/ledger/invoice"
 	"github.com/xraph/ledger/provider"
+	"github.com/xraph/ledger/types"
 )
 
 func TestInvoicesManifest(t *testing.T) {
@@ -217,4 +220,30 @@ func TestInvoicesSyncToProvider(t *testing.T) {
 			t.Errorf("got %v, want NOT_FOUND", err)
 		}
 	})
+}
+
+// An invoice's line items arrive as [] and never as null, even for a row a
+// store hands back with a nil list.
+func TestAnInvoiceWithNoLineItemsSendsAnEmptyList(t *testing.T) {
+	h := newHarness(t)
+	sub := h.subscribe("app_a", "acme", h.activePlan("app_a", "bare-invoice"))
+	inv := &invoice.Invoice{
+		Entity: types.NewEntity(), ID: id.NewInvoiceID(), TenantID: "acme", SubscriptionID: sub.ID,
+		Status: invoice.StatusDraft, Currency: "usd",
+		Subtotal: types.USD(0), TaxAmount: types.USD(0), DiscountAmount: types.USD(0), Total: types.USD(0),
+		PeriodStart: sub.CurrentPeriodStart, PeriodEnd: sub.CurrentPeriodEnd, AppID: "app_a",
+	}
+	if err := h.store.CreateInvoice(context.Background(), inv); err != nil {
+		t.Fatalf("CreateInvoice: %v", err)
+	}
+
+	check := func(intent, wire string) {
+		t.Helper()
+		if strings.Contains(wire, `"line_items":null`) || !strings.Contains(wire, `"line_items":[]`) {
+			t.Errorf("%s: want \"line_items\":[] on the wire, got %s", intent, wire)
+		}
+	}
+	check("invoices.detail", wireJSON(t, mustCall(h, "app_a", invoicesDetail, IDInput{ID: inv.ID.String()})))
+	check("invoices.list", wireJSON(t, mustCall(h, "app_a", invoicesList, InvoicesListInput{})))
+	check("invoices.finalize", wireJSON(t, mustCall(h, "app_a", invoicesFinalize, IDInput{ID: inv.ID.String()})))
 }

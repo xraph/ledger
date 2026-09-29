@@ -22,6 +22,11 @@ func normalisePlan(p *plan.Plan) {
 	if p.Status == "" {
 		p.Status = plan.StatusDraft
 	}
+	// A plan with no features is valid. Store an empty list, not nil, so it
+	// reads back the same way and marshals as [] rather than null.
+	if p.Features == nil {
+		p.Features = []plan.Feature{}
+	}
 	for i := range p.Features {
 		if p.Features[i].ID.IsNil() {
 			p.Features[i].ID = id.NewFeatureID()

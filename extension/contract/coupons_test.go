@@ -21,7 +21,7 @@ func TestCouponsManifest(t *testing.T) {
 	})
 	assertInvalidates(t, map[string][]string{
 		"coupons.create": {"coupons.list", "overview.stats"},
-		"coupons.update": {"coupons.list", "coupons.detail"},
+		"coupons.update": {"coupons.list", "coupons.detail", "subscriptions.detail"},
 		"coupons.delete": {"coupons.list", "subscriptions.detail", "overview.stats"},
 		"coupons.apply":  {"coupons.list", "coupons.detail", "subscriptions.detail"},
 	})

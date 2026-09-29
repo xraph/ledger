@@ -93,7 +93,7 @@ func subscriptionsDetail(ctx context.Context, eng *ledger.Ledger, sc scope, in I
 	if coupons == nil {
 		coupons = []*coupon.Coupon{}
 	}
-	return SubscriptionDetail{Subscription: sub, Plan: p, AppliedCoupons: coupons}, nil
+	return SubscriptionDetail{Subscription: sub, Plan: withFeatures(p), AppliedCoupons: coupons}, nil
 }
 
 type FeatureUsage struct {

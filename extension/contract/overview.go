@@ -113,6 +113,9 @@ func overviewRecentInvoices(ctx context.Context, eng *ledger.Ledger, sc scope, i
 	if rows == nil {
 		rows = []*invoice.Invoice{}
 	}
+	for _, inv := range rows {
+		withLineItems(inv)
+	}
 	return rows, nil
 }
 

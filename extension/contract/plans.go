@@ -42,7 +42,21 @@ func plansList(ctx context.Context, eng *ledger.Ledger, sc scope, in PlansListIn
 	if err != nil {
 		return Page[*plan.Plan]{}, err
 	}
+	for _, p := range rows {
+		withFeatures(p)
+	}
 	return pageFrom(rows, limit, offset), nil
+}
+
+// withFeatures replaces a nil feature list with an empty one, so a plan
+// always reaches the wire with "features": [] and never null. A store can
+// hand back nil for a plan with no features, including one written before
+// CreatePlan started storing an empty list.
+func withFeatures(p *plan.Plan) *plan.Plan {
+	if p != nil && p.Features == nil {
+		p.Features = []plan.Feature{}
+	}
+	return p
 }
 
 // loadPlan parses an id and loads the plan it names, refusing with NOT_FOUND
@@ -59,7 +73,7 @@ func loadPlan(ctx context.Context, eng *ledger.Ledger, sc scope, field, raw stri
 	if !sc.owns(p.AppID) {
 		return nil, notFound("plan")
 	}
-	return p, nil
+	return withFeatures(p), nil
 }
 
 func plansDetail(ctx context.Context, eng *ledger.Ledger, sc scope, in IDInput) (*plan.Plan, error) {

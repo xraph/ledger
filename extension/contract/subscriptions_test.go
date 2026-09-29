@@ -22,10 +22,10 @@ func TestSubscriptionsManifest(t *testing.T) {
 		"subscriptions.resume": "command", "subscriptions.cancel": "command", "subscriptions.syncToProvider": "command",
 	})
 	assertInvalidates(t, map[string][]string{
-		"subscriptions.create":         {"subscriptions.list", "overview.stats"},
+		"subscriptions.create":         {"subscriptions.list", "overview.stats", "entitlements.check", "paymentMethods.list"},
 		"subscriptions.changePlan":     {"subscriptions.list", "subscriptions.detail", "subscriptions.usage", "entitlements.check"},
-		"subscriptions.pause":          {"subscriptions.list", "subscriptions.detail", "overview.stats"},
-		"subscriptions.resume":         {"subscriptions.list", "subscriptions.detail", "overview.stats"},
+		"subscriptions.pause":          {"subscriptions.list", "subscriptions.detail", "overview.stats", "entitlements.check"},
+		"subscriptions.resume":         {"subscriptions.list", "subscriptions.detail", "overview.stats", "entitlements.check"},
 		"subscriptions.cancel":         {"subscriptions.list", "subscriptions.detail", "overview.stats", "entitlements.check"},
 		"subscriptions.syncToProvider": {"subscriptions.detail"},
 	})
@@ -152,9 +152,28 @@ func TestSubscriptionsChangePlanPauseResumeCancel(t *testing.T) {
 	if got := mustCall(h, "app_a", subscriptionsResume, IDInput{ID: sub.ID.String()}); got.Status != subscription.StatusActive {
 		t.Errorf("resume: %q", got.Status)
 	}
+	// cancel_at is set by every cancel, immediate or not, so only the status
+	// shows that an immediate cancel took effect now rather than at the
+	// period end.
 	got := mustCall(h, "app_a", subscriptionsCancel, SubscriptionCancelInput{ID: sub.ID.String(), Immediately: true})
-	if got.CancelAt == nil && got.CanceledAt == nil {
-		t.Errorf("cancel: neither cancel_at nor canceled_at set: %+v", got)
+	if got.Status != subscription.StatusCanceled {
+		t.Errorf("immediate cancel: status %q, want %q", got.Status, subscription.StatusCanceled)
+	}
+	if got.CanceledAt == nil {
+		t.Errorf("immediate cancel: canceled_at not set: %+v", got)
+	}
+}
+
+func TestSubscriptionsCancelOnACanceledSubscriptionIsConflict(t *testing.T) {
+	h := newHarness(t)
+	sub := h.subscribe("app_a", "acme", h.activePlan("app_a", "twice"))
+	mustCall(h, "app_a", subscriptionsCancel, SubscriptionCancelInput{ID: sub.ID.String(), Immediately: true})
+
+	for _, immediately := range []bool{false, true} {
+		_, err := call(h, "app_a", subscriptionsCancel, SubscriptionCancelInput{ID: sub.ID.String(), Immediately: immediately})
+		if codeOf(err) != dash.CodeConflict {
+			t.Errorf("cancel again (immediately=%v): got %v, want CONFLICT", immediately, err)
+		}
 	}
 }
 

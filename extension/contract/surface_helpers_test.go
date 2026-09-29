@@ -76,6 +76,16 @@ func wireKeys(t *testing.T, v any) map[string]bool {
 	return keys
 }
 
+// wireJSON returns what v marshals to, for asserting on the exact wire form.
+func wireJSON(t *testing.T, v any) string {
+	t.Helper()
+	raw, err := json.Marshal(v)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	return string(raw)
+}
+
 func assertIntents(t *testing.T, want map[string]string) {
 	t.Helper()
 	m, err := loadManifest()

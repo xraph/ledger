@@ -36,7 +36,25 @@ func loadInvoice(ctx context.Context, eng *ledger.Ledger, sc scope, raw string) 
 	if !sc.owns(inv.AppID) {
 		return nil, notFound("invoice")
 	}
-	return inv, nil
+	return withLineItems(inv), nil
+}
+
+// withLineItems replaces a nil line item list with an empty one, so an
+// invoice always reaches the wire with "line_items": [] and never null.
+func withLineItems(inv *invoice.Invoice) *invoice.Invoice {
+	if inv != nil && inv.LineItems == nil {
+		inv.LineItems = []invoice.LineItem{}
+	}
+	return inv
+}
+
+// reloadInvoice reads an invoice back after a command changed it.
+func reloadInvoice(ctx context.Context, eng *ledger.Ledger, invID id.InvoiceID) (*invoice.Invoice, error) {
+	inv, err := eng.Store().GetInvoice(ctx, invID)
+	if err != nil {
+		return nil, err
+	}
+	return withLineItems(inv), nil
 }
 
 type InvoicesListInput struct {
@@ -64,6 +82,9 @@ func invoicesList(ctx context.Context, eng *ledger.Ledger, sc scope, in Invoices
 	rows, err := eng.Store().ListInvoices(ctx, strings.TrimSpace(in.TenantID), sc.AppID, opts)
 	if err != nil {
 		return Page[*invoice.Invoice]{}, err
+	}
+	for _, inv := range rows {
+		withLineItems(inv)
 	}
 	return pageFrom(rows, limit, offset), nil
 }
@@ -93,6 +114,9 @@ func invoicesPending(ctx context.Context, eng *ledger.Ledger, sc scope, _ struct
 	}
 	if rows == nil {
 		rows = []*invoice.Invoice{}
+	}
+	for _, inv := range rows {
+		withLineItems(inv)
 	}
 	return rows, nil
 }
@@ -129,7 +153,11 @@ func invoicesGenerate(ctx context.Context, eng *ledger.Ledger, sc scope, in Invo
 	if err != nil {
 		return nil, err
 	}
-	return eng.GenerateInvoice(ctx, sub.ID)
+	inv, err := eng.GenerateInvoice(ctx, sub.ID)
+	if err != nil {
+		return nil, err
+	}
+	return withLineItems(inv), nil
 }
 
 func invoicesFinalize(ctx context.Context, eng *ledger.Ledger, sc scope, in IDInput) (*invoice.Invoice, error) {
@@ -140,7 +168,7 @@ func invoicesFinalize(ctx context.Context, eng *ledger.Ledger, sc scope, in IDIn
 	if err := eng.FinalizeInvoice(ctx, inv.ID); err != nil {
 		return nil, err
 	}
-	return eng.Store().GetInvoice(ctx, inv.ID)
+	return reloadInvoice(ctx, eng, inv.ID)
 }
 
 type InvoiceMarkPaidInput struct {
@@ -161,7 +189,7 @@ func invoicesMarkPaid(ctx context.Context, eng *ledger.Ledger, sc scope, in Invo
 	if err := eng.MarkInvoicePaid(ctx, inv.ID, paidAt, strings.TrimSpace(in.PaymentRef)); err != nil {
 		return nil, err
 	}
-	return eng.Store().GetInvoice(ctx, inv.ID)
+	return reloadInvoice(ctx, eng, inv.ID)
 }
 
 type InvoiceVoidInput struct {
@@ -181,7 +209,7 @@ func invoicesVoid(ctx context.Context, eng *ledger.Ledger, sc scope, in InvoiceV
 	if err := eng.MarkInvoiceVoided(ctx, inv.ID, reason); err != nil {
 		return nil, err
 	}
-	return eng.Store().GetInvoice(ctx, inv.ID)
+	return reloadInvoice(ctx, eng, inv.ID)
 }
 
 func invoicesSync(ctx context.Context, eng *ledger.Ledger, sc scope, in IDInput) (*provider.SyncResult, error) {

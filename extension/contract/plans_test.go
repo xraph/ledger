@@ -3,6 +3,7 @@ package contract
 import (
 	"context"
 	"errors"
+	"strings"
 	"testing"
 
 	dash "github.com/xraph/forge/extensions/dashboard/contract"
@@ -11,6 +12,7 @@ import (
 	"github.com/xraph/ledger/id"
 	"github.com/xraph/ledger/plan"
 	"github.com/xraph/ledger/provider"
+	"github.com/xraph/ledger/subscription"
 	"github.com/xraph/ledger/types"
 )
 
@@ -22,9 +24,9 @@ func TestPlansManifest(t *testing.T) {
 	})
 	assertInvalidates(t, map[string][]string{
 		"plans.create":         {"plans.list", "overview.stats"},
-		"plans.update":         {"plans.list", "plans.detail", "subscriptions.detail", "subscriptions.usage"},
-		"plans.archive":        {"plans.list", "plans.detail", "overview.stats"},
-		"plans.activate":       {"plans.list", "plans.detail", "overview.stats"},
+		"plans.update":         {"plans.list", "plans.detail", "subscriptions.detail", "subscriptions.usage", "entitlements.check"},
+		"plans.archive":        {"plans.list", "plans.detail", "overview.stats", "subscriptions.detail"},
+		"plans.activate":       {"plans.list", "plans.detail", "overview.stats", "subscriptions.detail"},
 		"plans.delete":         {"plans.list", "overview.stats"},
 		"plans.syncToProvider": {"plans.detail"},
 	})
@@ -252,5 +254,42 @@ func TestPlansRefuseTheEmptyScope(t *testing.T) {
 	h.activePlan("app_a", "visible")
 	if _, err := call(h, "", plansList, PlansListInput{}); codeOf(err) != dash.CodePermissionDenied {
 		t.Errorf("plans.list from an empty scope: got %v, want PERMISSION_DENIED (never every app's plans)", err)
+	}
+}
+
+// A plan with no features is valid, and the page reads `features` as a list,
+// so it must arrive as [] and never as null: from plans.create, and from every
+// read, including a row a store hands back with a nil list.
+func TestAFeaturelessPlanSendsAnEmptyFeatureList(t *testing.T) {
+	h := newHarness(t)
+	ctx := context.Background()
+
+	created := mustCall(h, "app_a", plansCreate, PlanCreateInput{Name: "Bare", Slug: "bare", Currency: "usd"})
+	assertEmptyFeatures(t, "plans.create", wireJSON(t, created))
+
+	p := &plan.Plan{
+		Entity: types.NewEntity(), ID: id.NewPlanID(), Name: "Stored", Slug: "stored",
+		Currency: "usd", Status: plan.StatusActive, AppID: "app_a",
+	}
+	if err := h.store.CreatePlan(ctx, p); err != nil {
+		t.Fatalf("CreatePlan: %v", err)
+	}
+	sub := &subscription.Subscription{
+		Entity: types.NewEntity(), ID: id.NewSubscriptionID(), TenantID: "acme",
+		PlanID: p.ID, AppID: "app_a", Status: subscription.StatusActive,
+	}
+	if err := h.store.CreateSubscription(ctx, sub); err != nil {
+		t.Fatalf("CreateSubscription: %v", err)
+	}
+
+	assertEmptyFeatures(t, "plans.detail", wireJSON(t, mustCall(h, "app_a", plansDetail, IDInput{ID: p.ID.String()})))
+	assertEmptyFeatures(t, "subscriptions.detail", wireJSON(t, mustCall(h, "app_a", subscriptionsDetail, IDInput{ID: sub.ID.String()})))
+	assertEmptyFeatures(t, "plans.list", wireJSON(t, mustCall(h, "app_a", plansList, PlansListInput{})))
+}
+
+func assertEmptyFeatures(t *testing.T, intent, wire string) {
+	t.Helper()
+	if strings.Contains(wire, `"features":null`) || !strings.Contains(wire, `"features":[]`) {
+		t.Errorf("%s: want \"features\":[] on the wire, got %s", intent, wire)
 	}
 }
