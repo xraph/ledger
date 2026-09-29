@@ -57,3 +57,10 @@ intents:
   - { name: coupons.update, kind: command, version: 1, capability: write, invalidates: [coupons.list, coupons.detail] }
   - { name: coupons.delete, kind: command, version: 1, capability: write, invalidates: [coupons.list, subscriptions.detail, overview.stats] }
   - { name: coupons.apply,  kind: command, version: 1, capability: write, invalidates: [coupons.list, coupons.detail, subscriptions.detail] }
+
+  # Usage, entitlements and payment methods
+  - { name: usage.events,            kind: query,   version: 1, capability: read }
+  - { name: usage.aggregate,         kind: query,   version: 1, capability: read }
+  - { name: entitlements.check,      kind: query,   version: 1, capability: read }
+  - { name: entitlements.invalidate, kind: command, version: 1, capability: write, invalidates: [entitlements.check, subscriptions.usage] }
+  - { name: paymentMethods.list,     kind: query,   version: 1, capability: read }
