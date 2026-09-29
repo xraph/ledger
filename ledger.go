@@ -268,6 +268,14 @@ func (l *Ledger) CreateSubscription(ctx context.Context, sub *subscription.Subsc
 		return fmt.Errorf("%w: subscription has no tenant id", ErrInvalidInput)
 	}
 
+	p, err := l.subscribablePlan(ctx, sub.PlanID, sub.AppID)
+	if err != nil {
+		return err
+	}
+	if err := validateQuantity(p, sub.Quantity); err != nil {
+		return err
+	}
+
 	if sub.ID == (id.SubscriptionID{}) {
 		sub.ID = id.NewSubscriptionID()
 	}
@@ -281,6 +289,18 @@ func (l *Ledger) CreateSubscription(ctx context.Context, sub *subscription.Subsc
 		now := time.Now().UTC()
 		sub.CurrentPeriodStart = now
 		sub.CurrentPeriodEnd = now.AddDate(0, 1, 0) // Monthly by default
+	}
+
+	if sub.Status == "" {
+		if p.TrialDays > 0 {
+			trialStart := sub.CurrentPeriodStart
+			trialEnd := trialStart.AddDate(0, 0, p.TrialDays)
+			sub.Status = subscription.StatusTrialing
+			sub.TrialStart = &trialStart
+			sub.TrialEnd = &trialEnd
+		} else {
+			sub.Status = subscription.StatusActive
+		}
 	}
 
 	if err := l.store.CreateSubscription(ctx, sub); err != nil {
@@ -710,6 +730,14 @@ func (l *Ledger) GenerateInvoice(ctx context.Context, subID id.SubscriptionID) (
 	p, err := l.store.GetPlan(ctx, sub.PlanID)
 	if err != nil {
 		return nil, err
+	}
+
+	existing, err := l.liveInvoiceForPeriod(ctx, sub)
+	if err != nil {
+		return nil, err
+	}
+	if existing != nil {
+		return nil, fmt.Errorf("%w: invoice %s already covers this billing period", ErrAlreadyExists, existing.ID)
 	}
 
 	currency := strings.ToLower(p.Currency)

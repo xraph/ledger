@@ -309,7 +309,7 @@ func (s *Store) CancelSubscription(_ context.Context, subID id.SubscriptionID, c
 
 	if sub, exists := s.subscriptions[subID.String()]; exists {
 		sub.CancelAt = &cancelAt
-		if time.Now().After(cancelAt) {
+		if !cancelAt.After(time.Now()) {
 			sub.Status = subscription.StatusCanceled
 			now := time.Now().UTC()
 			sub.CanceledAt = &now

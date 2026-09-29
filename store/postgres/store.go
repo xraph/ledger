@@ -453,7 +453,7 @@ func (s *Store) CancelSubscription(ctx context.Context, subID id.SubscriptionID,
 		Set("updated_at = $2", t).
 		Where("id = $3", subID.String())
 
-	if time.Now().After(cancelAt) {
+	if !cancelAt.After(time.Now()) {
 		updates = updates.
 			Set("status = $4", string(subscription.StatusCanceled)).
 			Set("canceled_at = $5", t)

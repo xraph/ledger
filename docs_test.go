@@ -41,6 +41,7 @@ func TestDocumentationExamples(t *testing.T) {
 			Name:     "Pro Plan",
 			Slug:     "pro",
 			Currency: "usd",
+			AppID:    "app_456",
 			Status:   plan.StatusActive,
 			Features: []plan.Feature{
 				{
