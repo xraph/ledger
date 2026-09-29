@@ -236,7 +236,7 @@ func (s *Store) ListPlans(ctx context.Context, appID string, opts plan.ListOpts)
 
 	q := s.mdb.NewFind(&models).
 		Filter(filter).
-		Sort(bson.D{{Key: "created_at", Value: 1}})
+		Sort(bson.D{{Key: "created_at", Value: 1}, {Key: "_id", Value: 1}})
 
 	if opts.Limit > 0 {
 		q = q.Limit(int64(opts.Limit))
@@ -338,7 +338,7 @@ func (s *Store) GetActiveSubscription(ctx context.Context, tenantID, appID strin
 			"app_id":    appID,
 			"status":    bson.M{"$in": []string{string(subscription.StatusActive), string(subscription.StatusTrialing)}},
 		}).
-		Sort(bson.D{{Key: "created_at", Value: -1}}).
+		Sort(bson.D{{Key: "created_at", Value: -1}, {Key: "_id", Value: -1}}).
 		Limit(1).
 		Scan(ctx)
 	if err != nil {
@@ -366,7 +366,7 @@ func (s *Store) ListSubscriptions(ctx context.Context, tenantID, appID string, o
 
 	q := s.mdb.NewFind(&models).
 		Filter(filter).
-		Sort(bson.D{{Key: "created_at", Value: -1}})
+		Sort(bson.D{{Key: "created_at", Value: -1}, {Key: "_id", Value: -1}})
 
 	if opts.Limit > 0 {
 		q = q.Limit(int64(opts.Limit))
@@ -536,7 +536,7 @@ func (s *Store) QueryUsage(ctx context.Context, tenantID, appID string, opts met
 
 	q := s.mdb.NewFind(&models).
 		Filter(filter).
-		Sort(bson.D{{Key: "timestamp", Value: -1}})
+		Sort(bson.D{{Key: "timestamp", Value: -1}, {Key: "_id", Value: -1}})
 
 	if opts.Limit > 0 {
 		q = q.Limit(int64(opts.Limit))
@@ -687,7 +687,7 @@ func (s *Store) ListInvoices(ctx context.Context, tenantID, appID string, opts i
 
 	q := s.mdb.NewFind(&models).
 		Filter(filter).
-		Sort(bson.D{{Key: "created_at", Value: -1}})
+		Sort(bson.D{{Key: "created_at", Value: -1}, {Key: "_id", Value: -1}})
 
 	if opts.Limit > 0 {
 		q = q.Limit(int64(opts.Limit))
@@ -753,7 +753,7 @@ func (s *Store) ListPendingInvoices(ctx context.Context, appID string) ([]*invoi
 
 	err := s.mdb.NewFind(&models).
 		Filter(filter).
-		Sort(bson.D{{Key: "created_at", Value: -1}}).
+		Sort(bson.D{{Key: "created_at", Value: -1}, {Key: "_id", Value: -1}}).
 		Scan(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("ledger/mongo: list pending invoices: %w", err)
@@ -870,7 +870,7 @@ func (s *Store) ListCoupons(ctx context.Context, appID string, opts coupon.ListO
 
 	q := s.mdb.NewFind(&models).
 		Filter(filter).
-		Sort(bson.D{{Key: "created_at", Value: -1}})
+		Sort(bson.D{{Key: "created_at", Value: -1}, {Key: "_id", Value: -1}})
 
 	if opts.Limit > 0 {
 		q = q.Limit(int64(opts.Limit))
@@ -1218,7 +1218,7 @@ func (s *Store) ListFeatures(ctx context.Context, appID string, opts feature.Lis
 
 	q := s.mdb.NewFind(&models).
 		Filter(filter).
-		Sort(bson.D{{Key: "created_at", Value: 1}})
+		Sort(bson.D{{Key: "created_at", Value: 1}, {Key: "_id", Value: 1}})
 
 	if opts.Limit > 0 {
 		q = q.Limit(int64(opts.Limit))
@@ -1252,7 +1252,7 @@ func (s *Store) ListGlobalFeatures(ctx context.Context, opts feature.ListOpts) (
 
 	q := s.mdb.NewFind(&models).
 		Filter(filter).
-		Sort(bson.D{{Key: "created_at", Value: 1}})
+		Sort(bson.D{{Key: "created_at", Value: 1}, {Key: "_id", Value: 1}})
 
 	if opts.Limit > 0 {
 		q = q.Limit(int64(opts.Limit))

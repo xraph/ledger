@@ -581,6 +581,7 @@ func (s *Store) ListPendingInvoices(_ context.Context, appID string) ([]*invoice
 			result = append(result, inv)
 		}
 	}
+	sortNewestFirst(result, func(inv *invoice.Invoice) time.Time { return inv.CreatedAt }, func(inv *invoice.Invoice) string { return inv.ID.String() })
 	return result, nil
 }
 

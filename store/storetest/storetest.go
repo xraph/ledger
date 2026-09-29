@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"reflect"
+	"sort"
 	"strings"
 	"sync"
 	"testing"
@@ -71,6 +72,7 @@ func Run(t *testing.T, newStore func(t *testing.T) ledgerstore.Store) {
 	t.Run("ListInvoicesBoundsAreInstants", func(t *testing.T) { testListInvoicesBoundsAreInstants(t, newStore(t)) })
 	t.Run("UsageEventNearABoundaryInALocalZone", func(t *testing.T) { testUsageEventNearABoundaryInALocalZone(t, newStore(t)) })
 	t.Run("ListsPageInAStableOrder", func(t *testing.T) { testListsPageInAStableOrder(t, newStore(t)) })
+	t.Run("ListsPageStablyOnEqualTimestamps", func(t *testing.T) { testListsPageStablyOnEqualTimestamps(t, newStore(t)) })
 }
 
 // uniqueSuffix returns a value that differs on every call, including across
@@ -1747,11 +1749,28 @@ func testListInvoicesBoundsAreInstants(t *testing.T, s ledgerstore.Store) {
 // Rows are stamped a second apart so no two share a created_at, which keeps
 // the assertion about paging rather than about tie-breaking.
 func testListsPageInAStableOrder(t *testing.T, s ledgerstore.Store) {
+	base := time.Now().UTC().Truncate(time.Second).Add(-time.Hour)
+	testListsPage(t, s, func(i int) time.Time { return base.Add(time.Duration(i) * time.Second) }, false)
+}
+
+// testListsPageStablyOnEqualTimestamps stamps every row with one instant, as
+// a batch ingest does, so the sort key alone cannot order them. A list that
+// sorts by the timestamp only leaves the database free to return tied rows in
+// a different order on each query, and a row then repeats on one page or
+// vanishes between two. The id is the tie-break that keeps them in place.
+func testListsPageStablyOnEqualTimestamps(t *testing.T, s ledgerstore.Store) {
+	instant := time.Now().UTC().Truncate(time.Second).Add(-time.Hour)
+	testListsPage(t, s, func(int) time.Time { return instant }, true)
+}
+
+// testListsPage seeds five rows into every paged list, stamping row i with
+// at(i), then pages each list two rows at a time. tied says every row shares
+// one timestamp, in which case the rows come back in id order, not creation
+// order.
+func testListsPage(t *testing.T, s ledgerstore.Store, at func(i int) time.Time, tied bool) {
 	ctx := context.Background()
 	appID := "app-" + uniqueSuffix()
 	tenantID := "tenant-" + uniqueSuffix()
-	base := time.Now().UTC().Truncate(time.Second).Add(-time.Hour)
-	at := func(i int) time.Time { return base.Add(time.Duration(i) * time.Second) }
 
 	const rows = 5
 	var globalIDs []string
@@ -1871,7 +1890,13 @@ func testListsPageInAStableOrder(t *testing.T, s ledgerstore.Store) {
 
 	for _, l := range lists {
 		if l.shared {
-			t.Run(l.name, func(t *testing.T) { testSharedListPages(t, l.list, globalIDs) })
+			t.Run(l.name, func(t *testing.T) {
+				if tied {
+					// Oldest first with ties broken by id, ascending.
+					sort.Strings(globalIDs)
+				}
+				testSharedListPages(t, l.list, globalIDs)
+			})
 			continue
 		}
 		t.Run(l.name, func(t *testing.T) {

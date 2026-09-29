@@ -126,7 +126,7 @@ func (s *Store) ListPlans(ctx context.Context, appID string, opts plan.ListOpts)
 	if opts.Offset > 0 {
 		q = q.Offset(opts.Offset)
 	}
-	q = q.OrderExpr("created_at ASC")
+	q = q.OrderExpr("created_at ASC, id ASC")
 
 	if err := q.Scan(ctx); err != nil {
 		return nil, err
@@ -256,7 +256,7 @@ func (s *Store) ListFeatures(ctx context.Context, appID string, opts feature.Lis
 	if opts.Offset > 0 {
 		q = q.Offset(opts.Offset)
 	}
-	q = q.OrderExpr("created_at ASC")
+	q = q.OrderExpr("created_at ASC, id ASC")
 
 	if err := q.Scan(ctx); err != nil {
 		return nil, err
@@ -288,7 +288,7 @@ func (s *Store) ListGlobalFeatures(ctx context.Context, opts feature.ListOpts) (
 	if opts.Offset > 0 {
 		q = q.Offset(opts.Offset)
 	}
-	q = q.OrderExpr("created_at ASC")
+	q = q.OrderExpr("created_at ASC, id ASC")
 
 	if err := q.Scan(ctx); err != nil {
 		return nil, err
@@ -387,7 +387,7 @@ func (s *Store) GetActiveSubscription(ctx context.Context, tenantID, appID strin
 		Where("tenant_id = $1", tenantID).
 		Where("app_id = $2", appID).
 		Where("status IN ($3, $4)", string(subscription.StatusActive), string(subscription.StatusTrialing)).
-		OrderExpr("created_at DESC").
+		OrderExpr("created_at DESC, id DESC").
 		Limit(1).
 		Scan(ctx)
 	if err != nil {
@@ -422,7 +422,7 @@ func (s *Store) ListSubscriptions(ctx context.Context, tenantID, appID string, o
 	if opts.Offset > 0 {
 		q = q.Offset(opts.Offset)
 	}
-	q = q.OrderExpr("created_at DESC")
+	q = q.OrderExpr("created_at DESC, id DESC")
 
 	if err := q.Scan(ctx); err != nil {
 		return nil, err
@@ -553,7 +553,7 @@ func (s *Store) QueryUsage(ctx context.Context, tenantID, appID string, opts met
 	if opts.Offset > 0 {
 		q = q.Offset(opts.Offset)
 	}
-	q = q.OrderExpr("timestamp DESC")
+	q = q.OrderExpr("timestamp DESC, id DESC")
 
 	if err := q.Scan(ctx); err != nil {
 		return nil, err
@@ -689,7 +689,7 @@ func (s *Store) ListInvoices(ctx context.Context, tenantID, appID string, opts i
 	if opts.Offset > 0 {
 		q = q.Offset(opts.Offset)
 	}
-	q = q.OrderExpr("created_at DESC")
+	q = q.OrderExpr("created_at DESC, id DESC")
 
 	if err := q.Scan(ctx); err != nil {
 		return nil, err
@@ -742,7 +742,7 @@ func (s *Store) ListPendingInvoices(ctx context.Context, appID string) ([]*invoi
 	argIdx++
 	q = q.Where(fmt.Sprintf("status = $%d", argIdx), string(invoice.StatusPending))
 
-	err := q.OrderExpr("created_at DESC").
+	err := q.OrderExpr("created_at DESC, id DESC").
 		Scan(ctx)
 	if err != nil {
 		return nil, err
@@ -862,7 +862,7 @@ func (s *Store) ListCoupons(ctx context.Context, appID string, opts coupon.ListO
 	if opts.Offset > 0 {
 		q = q.Offset(opts.Offset)
 	}
-	q = q.OrderExpr("created_at DESC")
+	q = q.OrderExpr("created_at DESC, id DESC")
 
 	if err := q.Scan(ctx); err != nil {
 		return nil, err
