@@ -140,10 +140,23 @@ func (l *Ledger) Stop() error {
 // Plan Management
 // ──────────────────────────────────────────────────
 
-// CreatePlan creates a new billing plan.
+// CreatePlan validates and stores a new billing plan. It normalises the plan
+// first (see normalisePlan), and refuses a slug the app already uses with
+// ErrAlreadyExists.
 func (l *Ledger) CreatePlan(ctx context.Context, p *plan.Plan) error {
 	if p.ID == (id.PlanID{}) {
 		p.ID = id.NewPlanID()
+	}
+	normalisePlan(p)
+	if err := validatePlan(p); err != nil {
+		return err
+	}
+	taken, err := l.slugTaken(ctx, p.Slug, p.AppID, p.ID)
+	if err != nil {
+		return err
+	}
+	if taken {
+		return fmt.Errorf("%w: slug %q is already used in this app", ErrAlreadyExists, p.Slug)
 	}
 	p.Entity = types.NewEntity()
 

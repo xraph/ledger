@@ -60,6 +60,74 @@ func New() *Store {
 	}
 }
 
+// copyStringMap returns a fresh map with the same entries as m, or nil when m
+// is nil.
+func copyStringMap(m map[string]string) map[string]string {
+	if m == nil {
+		return nil
+	}
+	cp := make(map[string]string, len(m))
+	for k, v := range m {
+		cp[k] = v
+	}
+	return cp
+}
+
+// copyPlan returns a deep copy of p: its own Features slice (and each
+// feature's Metadata), its own Pricing and Tiers, and its own Metadata. The
+// store copies on every crossing, in and out, so a caller that edits a loaded
+// plan and is then refused has not changed the stored one.
+func copyPlan(p *plan.Plan) *plan.Plan {
+	if p == nil {
+		return nil
+	}
+	cp := *p
+	cp.Metadata = copyStringMap(p.Metadata)
+	if p.Features != nil {
+		cp.Features = make([]plan.Feature, len(p.Features))
+		for i, f := range p.Features {
+			cp.Features[i] = f
+			cp.Features[i].Metadata = copyStringMap(f.Metadata)
+		}
+	}
+	if p.Pricing != nil {
+		pricing := *p.Pricing
+		if p.Pricing.Tiers != nil {
+			pricing.Tiers = make([]plan.PriceTier, len(p.Pricing.Tiers))
+			copy(pricing.Tiers, p.Pricing.Tiers)
+		}
+		cp.Pricing = &pricing
+	}
+	return &cp
+}
+
+// copyFeature returns a deep copy of f, with its own Metadata.
+func copyFeature(f *feature.Feature) *feature.Feature {
+	if f == nil {
+		return nil
+	}
+	cp := *f
+	cp.Metadata = copyStringMap(f.Metadata)
+	return &cp
+}
+
+// copyPlans and copyFeatures copy a page of results into a fresh slice.
+func copyPlans(in []*plan.Plan) []*plan.Plan {
+	out := make([]*plan.Plan, len(in))
+	for i, p := range in {
+		out[i] = copyPlan(p)
+	}
+	return out
+}
+
+func copyFeatures(in []*feature.Feature) []*feature.Feature {
+	out := make([]*feature.Feature, len(in))
+	for i, f := range in {
+		out[i] = copyFeature(f)
+	}
+	return out
+}
+
 // Plan Store implementation
 func (s *Store) CreatePlan(_ context.Context, p *plan.Plan) error {
 	s.mu.Lock()
@@ -68,7 +136,7 @@ func (s *Store) CreatePlan(_ context.Context, p *plan.Plan) error {
 	if _, exists := s.plans[p.ID.String()]; exists {
 		return ledger.ErrAlreadyExists
 	}
-	s.plans[p.ID.String()] = p
+	s.plans[p.ID.String()] = copyPlan(p)
 	return nil
 }
 
@@ -77,7 +145,7 @@ func (s *Store) GetPlan(_ context.Context, planID id.PlanID) (*plan.Plan, error)
 	defer s.mu.RUnlock()
 
 	if p, ok := s.plans[planID.String()]; ok {
-		return p, nil
+		return copyPlan(p), nil
 	}
 	return nil, ledger.ErrPlanNotFound
 }
@@ -88,7 +156,7 @@ func (s *Store) GetPlanBySlug(_ context.Context, slug, appID string) (*plan.Plan
 
 	for _, p := range s.plans {
 		if p.Slug == slug && p.AppID == appID {
-			return p, nil
+			return copyPlan(p), nil
 		}
 	}
 	return nil, ledger.ErrPlanNotFound
@@ -117,7 +185,7 @@ func (s *Store) ListPlans(_ context.Context, appID string, opts plan.ListOpts) (
 		end = len(result)
 	}
 
-	return result[start:end], nil
+	return copyPlans(result[start:end]), nil
 }
 
 func (s *Store) UpdatePlan(_ context.Context, p *plan.Plan) error {
@@ -127,7 +195,7 @@ func (s *Store) UpdatePlan(_ context.Context, p *plan.Plan) error {
 	if _, exists := s.plans[p.ID.String()]; !exists {
 		return ledger.ErrPlanNotFound
 	}
-	s.plans[p.ID.String()] = p
+	s.plans[p.ID.String()] = copyPlan(p)
 	return nil
 }
 
@@ -763,7 +831,7 @@ func (s *Store) CreateFeature(_ context.Context, f *feature.Feature) error {
 			return ledger.ErrDuplicateFeature
 		}
 	}
-	s.features[f.ID.String()] = f
+	s.features[f.ID.String()] = copyFeature(f)
 	return nil
 }
 
@@ -772,7 +840,7 @@ func (s *Store) GetFeature(_ context.Context, featureID id.FeatureID) (*feature.
 	defer s.mu.RUnlock()
 
 	if f, ok := s.features[featureID.String()]; ok {
-		return f, nil
+		return copyFeature(f), nil
 	}
 	return nil, ledger.ErrFeatureNotFound
 }
@@ -783,7 +851,7 @@ func (s *Store) GetFeatureByKey(_ context.Context, key, appID string) (*feature.
 
 	for _, f := range s.features {
 		if f.Key == key && f.AppID == appID {
-			return f, nil
+			return copyFeature(f), nil
 		}
 	}
 	return nil, ledger.ErrFeatureNotFound
@@ -812,7 +880,7 @@ func (s *Store) ListFeatures(_ context.Context, appID string, opts feature.ListO
 		end = len(result)
 	}
 
-	return result[start:end], nil
+	return copyFeatures(result[start:end]), nil
 }
 
 func (s *Store) ListGlobalFeatures(_ context.Context, opts feature.ListOpts) ([]*feature.Feature, error) {
@@ -838,7 +906,7 @@ func (s *Store) ListGlobalFeatures(_ context.Context, opts feature.ListOpts) ([]
 		end = len(result)
 	}
 
-	return result[start:end], nil
+	return copyFeatures(result[start:end]), nil
 }
 
 func (s *Store) UpdateFeature(_ context.Context, f *feature.Feature) error {
@@ -848,7 +916,7 @@ func (s *Store) UpdateFeature(_ context.Context, f *feature.Feature) error {
 	if _, exists := s.features[f.ID.String()]; !exists {
 		return ledger.ErrFeatureNotFound
 	}
-	s.features[f.ID.String()] = f
+	s.features[f.ID.String()] = copyFeature(f)
 	return nil
 }
 
