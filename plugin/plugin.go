@@ -206,7 +206,24 @@ type OnWebhookReceived interface {
 // Pricing strategies
 // ──────────────────────────────────────────────────
 
-// PricingStrategy provides custom pricing calculation.
+// PricingStrategy provides custom pricing calculation. A feature (or, failing
+// that, its plan) selects a strategy by StrategyName under the metadata key
+// "pricing_strategy". A name that is not registered falls back to the
+// built-in tier pricing.
+//
+// Compute is called only for usage above the feature's included allowance,
+// and for any positive seat count, where the allowance is zero. It is never
+// called for usage the allowance covers.
+//
+// Each element of tiers is a plan.PriceTier (a value, not a pointer). The
+// slice holds only the tiers belonging to the feature being priced, sorted
+// into ladder order. usage is the total quantity for the period and included
+// is the allowance. currency is the plan's currency, lowercased.
+//
+// Compute must return a non-negative types.Money in that currency (compared
+// case-insensitively). A zero Money is the legal "free" answer. Returning
+// nil, any other type, another currency or a negative amount fails invoice
+// generation with an error naming the strategy.
 type PricingStrategy interface {
 	Plugin
 	StrategyName() string
@@ -217,7 +234,24 @@ type PricingStrategy interface {
 // Usage aggregators
 // ──────────────────────────────────────────────────
 
-// UsageAggregator provides custom usage aggregation logic.
+// UsageAggregator provides custom usage aggregation logic. A metered feature
+// selects an aggregator by AggregatorName under the metadata key
+// "aggregator". A name that is not registered falls back to the store's own
+// aggregation.
+//
+// Aggregate is called once per selected metered feature per invoice, with the
+// usage events for that tenant, app and feature that fall within the
+// subscription's billing period, CurrentPeriodStart to CurrentPeriodEnd.
+//
+// Each element of events is a *meter.UsageEvent. It is a pointer: asserting
+// the value type meter.UsageEvent fails, and an aggregator that ignores
+// elements it cannot assert will total zero usage, so nothing is billed and
+// nothing reports an error. Assert the pointer type and return an error for
+// anything else.
+//
+// The return value is the total usage quantity for the period, and it must
+// be non-negative. An error or a negative total fails invoice generation
+// with an error naming the aggregator.
 type UsageAggregator interface {
 	Plugin
 	AggregatorName() string

@@ -4,8 +4,11 @@ import (
 	"context"
 	"errors"
 	"strings"
+	"sync"
 	"testing"
 	"time"
+
+	log "github.com/xraph/go-utils/log"
 
 	"github.com/xraph/ledger"
 	"github.com/xraph/ledger/coupon"
@@ -977,6 +980,7 @@ func TestGenerateInvoiceSkipsValidationForAnUnlimitedMeteredFeature(t *testing.T
 // countingAggregator returns a fixed total and records how many events it saw.
 type countingAggregator struct {
 	total int64
+	err   error
 	seen  int
 }
 
@@ -984,20 +988,71 @@ func (a *countingAggregator) Name() string           { return "stub-agg" }
 func (a *countingAggregator) AggregatorName() string { return "stub-agg" }
 func (a *countingAggregator) Aggregate(_ context.Context, events []interface{}) (int64, error) {
 	a.seen = len(events)
-	return a.total, nil
+	return a.total, a.err
 }
 
 // fixedStrategy returns a fixed result and counts how often it is asked.
 type fixedStrategy struct {
 	result interface{}
 	calls  int
+
+	// What the last call was handed.
+	tiers    []interface{}
+	usage    int64
+	included int64
+	currency string
 }
 
 func (s *fixedStrategy) Name() string         { return "stub-pricing" }
 func (s *fixedStrategy) StrategyName() string { return "stub-pricing" }
-func (s *fixedStrategy) Compute(_ []interface{}, _, _ int64, _ string) interface{} {
+func (s *fixedStrategy) Compute(tiers []interface{}, usage, included int64, currency string) interface{} {
 	s.calls++
+	s.tiers, s.usage, s.included, s.currency = tiers, usage, included, currency
 	return s.result
+}
+
+// namedStrategy is a fixedStrategy registered under its own name, so a test
+// can register two strategies at once.
+type namedStrategy struct {
+	fixedStrategy
+	name string
+}
+
+func (s *namedStrategy) Name() string         { return s.name }
+func (s *namedStrategy) StrategyName() string { return s.name }
+
+// warnRecord is one captured Warn call.
+type warnRecord struct {
+	msg    string
+	fields map[string]any
+}
+
+// captureLogger records Warn calls and discards everything else.
+type captureLogger struct {
+	log.Logger
+	mu    sync.Mutex
+	warns []warnRecord
+}
+
+func newCaptureLogger() *captureLogger {
+	return &captureLogger{Logger: log.NewNoopLogger()}
+}
+
+func (c *captureLogger) Warn(msg string, fields ...log.Field) {
+	rec := warnRecord{msg: msg, fields: map[string]any{}}
+	for _, f := range fields {
+		rec.fields[f.Key()] = f.Value()
+	}
+
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.warns = append(c.warns, rec)
+}
+
+func (c *captureLogger) recorded() []warnRecord {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return append([]warnRecord(nil), c.warns...)
 }
 
 // hookFixture builds billingFixture's plan and subscription on a ledger that
@@ -1145,6 +1200,7 @@ func TestGenerateInvoiceRejectsABadStrategyResult(t *testing.T) {
 		name   string
 		result interface{}
 	}{
+		{"nil", nil},
 		{"wrong type", "one hundred dollars"},
 		{"wrong currency", types.EUR(100)},
 		{"negative", types.USD(-100)},
@@ -1227,5 +1283,177 @@ func TestGenerateInvoicePricesASeatFeatureWithANamedStrategy(t *testing.T) {
 	}
 	if strat.calls != 1 {
 		t.Errorf("strategy called %d times, want 1", strat.calls)
+	}
+}
+
+func TestGenerateInvoiceUsesTheFeaturesStrategyOverThePlans(t *testing.T) {
+	featureStrat := &namedStrategy{name: "feature-pricing", fixedStrategy: fixedStrategy{result: types.USD(1111)}}
+	planStrat := &namedStrategy{name: "plan-pricing", fixedStrategy: fixedStrategy{result: types.USD(2222)}}
+
+	l, s, sub := hookFixture(t, func(p *plan.Plan) {
+		setFeatureMeta("pricing_strategy", "feature-pricing")(p)
+		p.Metadata = map[string]string{"pricing_strategy": "plan-pricing"}
+	}, featureStrat, planStrat)
+	ingest(t, s, sub, "api_calls", 1500)
+
+	inv, err := l.GenerateInvoice(context.Background(), sub.ID)
+	if err != nil {
+		t.Fatalf("GenerateInvoice: %v", err)
+	}
+	if got := overageAmount(t, inv); !got.Equal(types.USD(1111)) {
+		t.Errorf("got overage %v, want the feature's $11.11", got)
+	}
+	if featureStrat.calls != 1 {
+		t.Errorf("feature strategy called %d times, want 1", featureStrat.calls)
+	}
+	if planStrat.calls != 0 {
+		t.Errorf("plan strategy called %d times, want 0: the feature's choice wins", planStrat.calls)
+	}
+}
+
+func TestGenerateInvoiceHandsAStrategyItsDocumentedArguments(t *testing.T) {
+	strat := &fixedStrategy{result: types.USD(100)}
+	l, s, sub := hookFixture(t, func(p *plan.Plan) {
+		setFeatureMeta("pricing_strategy", "stub-pricing")(p)
+		p.Currency = "USD"
+		// Listed out of order, plus a tier for another feature that must
+		// not be passed along.
+		p.Pricing.Tiers = []plan.PriceTier{
+			{FeatureKey: "api_calls", Type: plan.TierGraduated, UpTo: 0, UnitAmount: types.USD(2)},
+			{FeatureKey: "other", Type: plan.TierGraduated, UpTo: 0, UnitAmount: types.USD(9)},
+			{FeatureKey: "api_calls", Type: plan.TierGraduated, UpTo: 5000, UnitAmount: types.USD(3)},
+		}
+	}, strat)
+	ingest(t, s, sub, "api_calls", 1500)
+
+	if _, err := l.GenerateInvoice(context.Background(), sub.ID); err != nil {
+		t.Fatalf("GenerateInvoice: %v", err)
+	}
+
+	if strat.usage != 1500 || strat.included != 1000 {
+		t.Errorf("got usage %d and included %d, want 1500 and 1000", strat.usage, strat.included)
+	}
+	if strat.currency != "usd" {
+		t.Errorf("got currency %q, want it lowercased", strat.currency)
+	}
+	if len(strat.tiers) != 2 {
+		t.Fatalf("got %d tiers, want the 2 belonging to the feature", len(strat.tiers))
+	}
+	first, ok1 := strat.tiers[0].(plan.PriceTier)
+	second, ok2 := strat.tiers[1].(plan.PriceTier)
+	if !ok1 || !ok2 {
+		t.Fatalf("got tier types %T and %T, want plan.PriceTier values", strat.tiers[0], strat.tiers[1])
+	}
+	if first.UpTo != 5000 || second.UpTo != 0 {
+		t.Errorf("got UpTo %d then %d, want the bounded tier first and the unbounded one last", first.UpTo, second.UpTo)
+	}
+}
+
+func TestGenerateInvoiceBoundsTheAggregatorAtThePeriodEnd(t *testing.T) {
+	ctx := context.Background()
+	agg := &countingAggregator{total: 1500}
+	l, s, sub := hookFixture(t, setFeatureMeta("aggregator", "stub-agg"), agg)
+
+	ingest(t, s, sub, "api_calls", 1)
+	if err := s.IngestBatch(ctx, []*meter.UsageEvent{{
+		ID: id.NewUsageEventID(), TenantID: sub.TenantID, AppID: sub.AppID,
+		FeatureKey: "api_calls", Quantity: 1,
+		Timestamp: sub.CurrentPeriodEnd.Add(time.Hour),
+	}}); err != nil {
+		t.Fatalf("IngestBatch: %v", err)
+	}
+
+	if _, err := l.GenerateInvoice(ctx, sub.ID); err != nil {
+		t.Fatalf("GenerateInvoice: %v", err)
+	}
+	if agg.seen != 1 {
+		t.Errorf("aggregator saw %d events, want 1: an event after the period end must not be billed", agg.seen)
+	}
+}
+
+func TestGenerateInvoiceRefusesABadAggregatorResult(t *testing.T) {
+	cases := []struct {
+		name string
+		agg  *countingAggregator
+	}{
+		{"negative total", &countingAggregator{total: -5}},
+		{"error", &countingAggregator{err: errors.New("backend down")}},
+	}
+
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			l, s, sub := hookFixture(t, setFeatureMeta("aggregator", "stub-agg"), c.agg)
+			ingest(t, s, sub, "api_calls", 1500)
+
+			_, err := l.GenerateInvoice(context.Background(), sub.ID)
+			if err == nil {
+				t.Fatal("got nil error; a bad aggregator result must fail generation")
+			}
+			if !strings.Contains(err.Error(), `"stub-agg"`) {
+				t.Errorf("error %q does not name the aggregator", err.Error())
+			}
+		})
+	}
+}
+
+func TestGenerateInvoiceWarnsWhenAnAggregatorIsNotRegistered(t *testing.T) {
+	cl := newCaptureLogger()
+	_, s, sub := hookFixture(t, setFeatureMeta("aggregator", "absent"))
+	l := ledger.New(s, ledger.WithLogger(cl))
+	ingest(t, s, sub, "api_calls", 1500)
+
+	if _, err := l.GenerateInvoice(context.Background(), sub.ID); err != nil {
+		t.Fatalf("GenerateInvoice: %v", err)
+	}
+
+	warns := cl.recorded()
+	if len(warns) != 1 {
+		t.Fatalf("got %d warnings, want 1", len(warns))
+	}
+	if !strings.Contains(warns[0].msg, "unregistered usage aggregator") {
+		t.Errorf("warning %q does not say the aggregator is unregistered", warns[0].msg)
+	}
+	if got := warns[0].fields["aggregator"]; got != "absent" {
+		t.Errorf("got aggregator field %v, want %q", got, "absent")
+	}
+}
+
+func TestGenerateInvoiceWarnsWhenAStrategyIsNotRegistered(t *testing.T) {
+	cases := []struct {
+		name      string
+		edit      func(*plan.Plan)
+		wantNamer string
+	}{
+		{"named on the feature", setFeatureMeta("pricing_strategy", "absent"), "feature names"},
+		{"named on the plan", func(p *plan.Plan) {
+			p.Metadata = map[string]string{"pricing_strategy": "absent"}
+		}, "plan names"},
+	}
+
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			cl := newCaptureLogger()
+			_, s, sub := hookFixture(t, c.edit)
+			l := ledger.New(s, ledger.WithLogger(cl))
+			ingest(t, s, sub, "api_calls", 1500)
+
+			if _, err := l.GenerateInvoice(context.Background(), sub.ID); err != nil {
+				t.Fatalf("GenerateInvoice: %v", err)
+			}
+
+			warns := cl.recorded()
+			if len(warns) != 1 {
+				t.Fatalf("got %d warnings, want 1", len(warns))
+			}
+			if !strings.Contains(warns[0].msg, "unregistered pricing strategy") {
+				t.Errorf("warning %q does not say the strategy is unregistered", warns[0].msg)
+			}
+			if !strings.Contains(warns[0].msg, c.wantNamer) {
+				t.Errorf("warning %q does not blame the %s", warns[0].msg, c.wantNamer)
+			}
+			if got := warns[0].fields["strategy"]; got != "absent" {
+				t.Errorf("got strategy field %v, want %q", got, "absent")
+			}
+		})
 	}
 }

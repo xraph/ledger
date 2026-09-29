@@ -531,7 +531,18 @@ func (l *Ledger) aggregateUsage(ctx context.Context, sub *subscription.Subscript
 		boxed[i] = events[i]
 	}
 
-	return agg.Aggregate(ctx, boxed)
+	total, err := agg.Aggregate(ctx, boxed)
+	if err != nil {
+		return 0, fmt.Errorf("usage aggregator %q: %w", name, err)
+	}
+	// A negative total would reduce billable usage below what the store
+	// recorded, and could turn an overage into a silent zero. Refuse it the
+	// way a negative tax amount or strategy result is refused.
+	if total < 0 {
+		return 0, fmt.Errorf("usage aggregator %q returned a negative total %d", name, total)
+	}
+
+	return total, nil
 }
 
 // priceFeature prices one feature's billable usage in currency, which must
@@ -544,8 +555,11 @@ func (l *Ledger) aggregateUsage(ctx context.Context, sub *subscription.Subscript
 // asked to price usage the allowance covers, and its answer must be a
 // non-negative Money in the plan's currency.
 func (l *Ledger) priceFeature(p *plan.Plan, pf plan.Feature, featureTiers []plan.PriceTier, currency string, usage, included int64) (types.Money, error) {
+	// The feature's own strategy wins over the plan's.
+	namedBy := "feature"
 	name := pf.Metadata["pricing_strategy"]
 	if name == "" {
+		namedBy = "plan"
 		name = p.Metadata["pricing_strategy"]
 	}
 	if name == "" {
@@ -554,7 +568,7 @@ func (l *Ledger) priceFeature(p *plan.Plan, pf plan.Feature, featureTiers []plan
 
 	strategy := l.plugins.GetPricingStrategy(name)
 	if strategy == nil {
-		l.logger.Warn("ledger: plan names an unregistered pricing strategy; using the built-in tiers",
+		l.logger.Warn(fmt.Sprintf("ledger: %s names an unregistered pricing strategy; using the built-in tiers", namedBy),
 			log.String("strategy", name),
 			log.String("feature", pf.Key),
 		)
@@ -562,13 +576,19 @@ func (l *Ledger) priceFeature(p *plan.Plan, pf plan.Feature, featureTiers []plan
 		return invoice.ComputeOverage(featureTiers, usage, included, currency), nil
 	}
 
+	// Defence in depth: both callers already guarantee this (the metered
+	// loop skips a Limit of -1 and any usage at or under the allowance, and
+	// the seat loop skips a seat count of zero against an allowance of
+	// zero), so today it never fires.
 	if included < 0 || usage <= included {
 		return types.Zero(currency), nil
 	}
 
-	boxed := make([]interface{}, len(featureTiers))
-	for i := range featureTiers {
-		boxed[i] = featureTiers[i]
+	// Hand the strategy a ladder in order, as invoice.ComputeOverage sees it.
+	sorted := invoice.SortTiers(featureTiers)
+	boxed := make([]interface{}, len(sorted))
+	for i := range sorted {
+		boxed[i] = sorted[i]
 	}
 
 	raw := strategy.Compute(boxed, usage, included, currency)
