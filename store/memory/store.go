@@ -3,6 +3,7 @@ package memory
 import (
 	"context"
 	"fmt"
+	"sort"
 	"sync"
 	"time"
 
@@ -162,6 +163,50 @@ func (s *Store) GetPlanBySlug(_ context.Context, slug, appID string) (*plan.Plan
 	return nil, ledger.ErrPlanNotFound
 }
 
+// window applies a store list's Offset and then its Limit, the way the SQL
+// and mongo backends do: an Offset of 0 or less skips nothing, a Limit of 0 or
+// less means no limit, and an Offset past the end yields an empty slice. The
+// rows must already be in their final order.
+func window[T any](rows []T, limit, offset int) []T {
+	start := offset
+	if start < 0 {
+		start = 0
+	}
+	if start > len(rows) {
+		start = len(rows)
+	}
+	end := len(rows)
+	if limit > 0 && start+limit < end {
+		end = start + limit
+	}
+	return rows[start:end]
+}
+
+// The list methods order their rows before paging, as the database backends
+// do. Go's map iteration order is randomised, so without this two consecutive
+// pages could overlap or skip rows. Each order matches the backends' ORDER BY
+// for the same method (plans and features oldest first, the rest newest
+// first), with the id as a tie-break in the same direction so rows stamped in
+// the same instant still page stably.
+
+func sortOldestFirst[T any](rows []T, at func(T) time.Time, key func(T) string) {
+	sort.SliceStable(rows, func(i, j int) bool {
+		if ti, tj := at(rows[i]), at(rows[j]); !ti.Equal(tj) {
+			return ti.Before(tj)
+		}
+		return key(rows[i]) < key(rows[j])
+	})
+}
+
+func sortNewestFirst[T any](rows []T, at func(T) time.Time, key func(T) string) {
+	sort.SliceStable(rows, func(i, j int) bool {
+		if ti, tj := at(rows[i]), at(rows[j]); !ti.Equal(tj) {
+			return ti.After(tj)
+		}
+		return key(rows[i]) > key(rows[j])
+	})
+}
+
 func (s *Store) ListPlans(_ context.Context, appID string, opts plan.ListOpts) ([]*plan.Plan, error) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
@@ -175,17 +220,8 @@ func (s *Store) ListPlans(_ context.Context, appID string, opts plan.ListOpts) (
 		}
 	}
 
-	// Apply limit/offset
-	start := opts.Offset
-	if start > len(result) {
-		start = len(result)
-	}
-	end := start + opts.Limit
-	if opts.Limit == 0 || end > len(result) {
-		end = len(result)
-	}
-
-	return copyPlans(result[start:end]), nil
+	sortOldestFirst(result, func(p *plan.Plan) time.Time { return p.CreatedAt }, func(p *plan.Plan) string { return p.ID.String() })
+	return copyPlans(window(result, opts.Limit, opts.Offset)), nil
 }
 
 func (s *Store) UpdatePlan(_ context.Context, p *plan.Plan) error {
@@ -292,7 +328,8 @@ func (s *Store) ListSubscriptions(_ context.Context, tenantID, appID string, opt
 			}
 		}
 	}
-	return result, nil
+	sortNewestFirst(result, func(sub *subscription.Subscription) time.Time { return sub.CreatedAt }, func(sub *subscription.Subscription) string { return sub.ID.String() })
+	return window(result, opts.Limit, opts.Offset), nil
 }
 
 func (s *Store) UpdateSubscription(_ context.Context, sub *subscription.Subscription) error {
@@ -403,7 +440,8 @@ func (s *Store) QueryUsage(_ context.Context, tenantID, appID string, opts meter
 			}
 		}
 	}
-	return result, nil
+	sortNewestFirst(result, func(e *meter.UsageEvent) time.Time { return e.Timestamp }, func(e *meter.UsageEvent) string { return e.ID.String() })
+	return window(result, opts.Limit, opts.Offset), nil
 }
 
 func (s *Store) PurgeUsage(_ context.Context, before time.Time) (int64, error) {
@@ -508,7 +546,8 @@ func (s *Store) ListInvoices(_ context.Context, tenantID, appID string, opts inv
 			}
 		}
 	}
-	return result, nil
+	sortNewestFirst(result, func(inv *invoice.Invoice) time.Time { return inv.CreatedAt }, func(inv *invoice.Invoice) string { return inv.ID.String() })
+	return window(result, opts.Limit, opts.Offset), nil
 }
 
 func (s *Store) UpdateInvoice(_ context.Context, inv *invoice.Invoice) error {
@@ -647,7 +686,8 @@ func (s *Store) ListCoupons(_ context.Context, appID string, opts coupon.ListOpt
 			}
 		}
 	}
-	return result, nil
+	sortNewestFirst(result, func(c *coupon.Coupon) time.Time { return c.CreatedAt }, func(c *coupon.Coupon) string { return c.ID.String() })
+	return window(result, opts.Limit, opts.Offset), nil
 }
 
 func (s *Store) UpdateCoupon(_ context.Context, c *coupon.Coupon) error {
@@ -870,17 +910,8 @@ func (s *Store) ListFeatures(_ context.Context, appID string, opts feature.ListO
 		}
 	}
 
-	// Apply limit/offset
-	start := opts.Offset
-	if start > len(result) {
-		start = len(result)
-	}
-	end := start + opts.Limit
-	if opts.Limit == 0 || end > len(result) {
-		end = len(result)
-	}
-
-	return copyFeatures(result[start:end]), nil
+	sortOldestFirst(result, func(f *feature.Feature) time.Time { return f.CreatedAt }, func(f *feature.Feature) string { return f.ID.String() })
+	return copyFeatures(window(result, opts.Limit, opts.Offset)), nil
 }
 
 func (s *Store) ListGlobalFeatures(_ context.Context, opts feature.ListOpts) ([]*feature.Feature, error) {
@@ -896,17 +927,8 @@ func (s *Store) ListGlobalFeatures(_ context.Context, opts feature.ListOpts) ([]
 		}
 	}
 
-	// Apply limit/offset
-	start := opts.Offset
-	if start > len(result) {
-		start = len(result)
-	}
-	end := start + opts.Limit
-	if opts.Limit == 0 || end > len(result) {
-		end = len(result)
-	}
-
-	return copyFeatures(result[start:end]), nil
+	sortOldestFirst(result, func(f *feature.Feature) time.Time { return f.CreatedAt }, func(f *feature.Feature) string { return f.ID.String() })
+	return copyFeatures(window(result, opts.Limit, opts.Offset)), nil
 }
 
 func (s *Store) UpdateFeature(_ context.Context, f *feature.Feature) error {

@@ -69,6 +69,7 @@ func Run(t *testing.T, newStore func(t *testing.T) ledgerstore.Store) {
 	t.Run("UsageEventRoundTripsFromTimeNow", func(t *testing.T) { testUsageEventRoundTripsFromTimeNow(t, newStore(t)) })
 	t.Run("ListInvoicesBoundsAreInstants", func(t *testing.T) { testListInvoicesBoundsAreInstants(t, newStore(t)) })
 	t.Run("UsageEventNearABoundaryInALocalZone", func(t *testing.T) { testUsageEventNearABoundaryInALocalZone(t, newStore(t)) })
+	t.Run("ListsPageInAStableOrder", func(t *testing.T) { testListsPageInAStableOrder(t, newStore(t)) })
 }
 
 // uniqueSuffix returns a value that differs on every call, including across
@@ -1716,5 +1717,153 @@ func testListInvoicesBoundsAreInstants(t *testing.T, s ledgerstore.Store) {
 		if len(got) != 1 || got[0].ID.String() != inPeriod.ID.String() {
 			t.Errorf("ListInvoices with bounds in %s: got %d invoices, want exactly the invoice for [Start, End)", name, len(got))
 		}
+	}
+}
+
+// testListsPageInAStableOrder pins down that every list method pages
+// consistently: fetched two rows at a time, the pages neither overlap nor
+// skip, and together they read exactly as the unpaged listing does. It does
+// not assert a sort direction, because the backends' existing orders stand
+// (plans oldest first, the rest newest first). What a caller needs is that
+// offset paging is stable, and that is what the in-memory test double got
+// wrong: it paged over Go's randomised map order, or ignored Limit and
+// Offset altogether.
+//
+// Rows are stamped a second apart so no two share a created_at, which keeps
+// the assertion about paging rather than about tie-breaking.
+func testListsPageInAStableOrder(t *testing.T, s ledgerstore.Store) {
+	ctx := context.Background()
+	appID := "app-" + uniqueSuffix()
+	tenantID := "tenant-" + uniqueSuffix()
+	base := time.Now().UTC().Truncate(time.Second).Add(-time.Hour)
+	at := func(i int) time.Time { return base.Add(time.Duration(i) * time.Second) }
+
+	const rows = 5
+	for i := 0; i < rows; i++ {
+		p := &plan.Plan{
+			Entity: types.Entity{CreatedAt: at(i), UpdatedAt: at(i)}, ID: id.NewPlanID(),
+			Name: "Plan", Slug: "plan-" + uniqueSuffix(), Currency: "usd",
+			Status: plan.StatusActive, AppID: appID,
+		}
+		if err := s.CreatePlan(ctx, p); err != nil {
+			t.Fatalf("CreatePlan: %v", err)
+		}
+
+		sub := newTestSubscription(tenantID, appID)
+		sub.CreatedAt, sub.UpdatedAt = at(i), at(i)
+		if err := s.CreateSubscription(ctx, sub); err != nil {
+			t.Fatalf("CreateSubscription: %v", err)
+		}
+
+		inv := newTestInvoice(tenantID, appID)
+		inv.CreatedAt, inv.UpdatedAt = at(i), at(i)
+		if err := s.CreateInvoice(ctx, inv); err != nil {
+			t.Fatalf("CreateInvoice: %v", err)
+		}
+
+		c := newTestCoupon(appID)
+		c.CreatedAt, c.UpdatedAt = at(i), at(i)
+		if err := s.CreateCoupon(ctx, c); err != nil {
+			t.Fatalf("CreateCoupon: %v", err)
+		}
+
+		e := newTestUsageEvent(tenantID, appID)
+		e.Timestamp = at(i)
+		if err := s.IngestBatch(ctx, []*meter.UsageEvent{e}); err != nil {
+			t.Fatalf("IngestBatch: %v", err)
+		}
+	}
+
+	lists := []struct {
+		name string
+		list func(limit, offset int) ([]string, error)
+	}{
+		{"ListPlans", func(limit, offset int) ([]string, error) {
+			got, err := s.ListPlans(ctx, appID, plan.ListOpts{Limit: limit, Offset: offset})
+			ids := make([]string, len(got))
+			for i, r := range got {
+				ids[i] = r.ID.String()
+			}
+			return ids, err
+		}},
+		{"ListSubscriptions", func(limit, offset int) ([]string, error) {
+			got, err := s.ListSubscriptions(ctx, tenantID, appID, subscription.ListOpts{Limit: limit, Offset: offset})
+			ids := make([]string, len(got))
+			for i, r := range got {
+				ids[i] = r.ID.String()
+			}
+			return ids, err
+		}},
+		{"ListInvoices", func(limit, offset int) ([]string, error) {
+			got, err := s.ListInvoices(ctx, tenantID, appID, invoice.ListOpts{Limit: limit, Offset: offset})
+			ids := make([]string, len(got))
+			for i, r := range got {
+				ids[i] = r.ID.String()
+			}
+			return ids, err
+		}},
+		{"ListCoupons", func(limit, offset int) ([]string, error) {
+			got, err := s.ListCoupons(ctx, appID, coupon.ListOpts{Limit: limit, Offset: offset})
+			ids := make([]string, len(got))
+			for i, r := range got {
+				ids[i] = r.ID.String()
+			}
+			return ids, err
+		}},
+		{"QueryUsage", func(limit, offset int) ([]string, error) {
+			got, err := s.QueryUsage(ctx, tenantID, appID, meter.QueryOpts{Limit: limit, Offset: offset})
+			ids := make([]string, len(got))
+			for i, r := range got {
+				ids[i] = r.ID.String()
+			}
+			return ids, err
+		}},
+	}
+
+	for _, l := range lists {
+		t.Run(l.name, func(t *testing.T) {
+			all, err := l.list(0, 0)
+			if err != nil {
+				t.Fatalf("unpaged: %v", err)
+			}
+			if len(all) != rows {
+				t.Fatalf("unpaged: got %d rows, want %d", len(all), rows)
+			}
+
+			var joined []string
+			seen := map[string]int{}
+			for i, wantSize := range []int{2, 2, 1} {
+				page, err := l.list(2, i*2)
+				if err != nil {
+					t.Fatalf("page at offset %d: %v", i*2, err)
+				}
+				if len(page) != wantSize {
+					t.Errorf("page at offset %d: got %d rows, want %d", i*2, len(page), wantSize)
+				}
+				for _, rid := range page {
+					seen[rid]++
+					joined = append(joined, rid)
+				}
+			}
+			for _, rid := range all {
+				if seen[rid] != 1 {
+					t.Errorf("row %s appears on %d pages, want exactly 1", rid, seen[rid])
+				}
+			}
+			if len(seen) != rows {
+				t.Errorf("pages hold %d distinct rows, want %d", len(seen), rows)
+			}
+			if !reflect.DeepEqual(joined, all) {
+				t.Errorf("pages read %v, but the unpaged list reads %v", joined, all)
+			}
+
+			past, err := l.list(2, rows)
+			if err != nil {
+				t.Fatalf("page past the end: %v", err)
+			}
+			if len(past) != 0 {
+				t.Errorf("page past the end: got %d rows, want 0", len(past))
+			}
+		})
 	}
 }

@@ -8,4 +8,13 @@ contributor:
 
 # Each surface's task appends its intents below. Queries are capability read,
 # commands capability write, and every command lists what it invalidates.
-intents: []
+intents:
+  # Plans
+  - { name: plans.list,           kind: query,   version: 1, capability: read }
+  - { name: plans.detail,         kind: query,   version: 1, capability: read }
+  - { name: plans.create,         kind: command, version: 1, capability: write, invalidates: [plans.list, overview.stats] }
+  - { name: plans.update,         kind: command, version: 1, capability: write, invalidates: [plans.list, plans.detail, subscriptions.detail, subscriptions.usage] }
+  - { name: plans.archive,        kind: command, version: 1, capability: write, invalidates: [plans.list, plans.detail, overview.stats] }
+  - { name: plans.activate,       kind: command, version: 1, capability: write, invalidates: [plans.list, plans.detail, overview.stats] }
+  - { name: plans.delete,         kind: command, version: 1, capability: write, invalidates: [plans.list, overview.stats] }
+  - { name: plans.syncToProvider, kind: command, version: 1, capability: write, invalidates: [plans.detail] }
