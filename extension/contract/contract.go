@@ -98,6 +98,7 @@ func registerAll(b *binder) {
 	registerFeatures(b)
 	registerSubscriptions(b)
 	registerInvoices(b)
+	registerCoupons(b)
 }
 
 // Ack is the answer to a command with nothing else to report.

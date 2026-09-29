@@ -49,3 +49,11 @@ intents:
   - { name: invoices.markPaid,       kind: command, version: 1, capability: write, invalidates: [invoices.list, invoices.detail, invoices.pending, overview.stats, overview.recentInvoices] }
   - { name: invoices.void,           kind: command, version: 1, capability: write, invalidates: [invoices.list, invoices.detail, invoices.pending, overview.stats, overview.recentInvoices] }
   - { name: invoices.syncToProvider, kind: command, version: 1, capability: write, invalidates: [invoices.detail] }
+
+  # Coupons
+  - { name: coupons.list,   kind: query,   version: 1, capability: read }
+  - { name: coupons.detail, kind: query,   version: 1, capability: read }
+  - { name: coupons.create, kind: command, version: 1, capability: write, invalidates: [coupons.list, overview.stats] }
+  - { name: coupons.update, kind: command, version: 1, capability: write, invalidates: [coupons.list, coupons.detail] }
+  - { name: coupons.delete, kind: command, version: 1, capability: write, invalidates: [coupons.list, subscriptions.detail, overview.stats] }
+  - { name: coupons.apply,  kind: command, version: 1, capability: write, invalidates: [coupons.list, coupons.detail, subscriptions.detail] }
