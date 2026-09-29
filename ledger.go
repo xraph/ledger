@@ -504,7 +504,7 @@ func (l *Ledger) Remaining(ctx context.Context, featureKey string) (int64, error
 // lowercased currency taken from the plan, so two values built from
 // different casings of the same currency (e.g. "USD" and "usd") never trip
 // Money.Add/Subtract's case-sensitive mismatch panic. Tax is computed on
-// the net amount — subtotal less discounts, clamped at zero — not the
+// the net amount (subtotal less discounts, clamped at zero), not the
 // gross subtotal, so a discounted invoice is never taxed on money the
 // customer was never charged.
 func (l *Ledger) GenerateInvoice(ctx context.Context, subID id.SubscriptionID) (*invoice.Invoice, error) {
@@ -570,19 +570,27 @@ func (l *Ledger) GenerateInvoice(ctx context.Context, subID id.SubscriptionID) (
 			continue
 		}
 
-		used, aggErr := l.store.Aggregate(ctx, sub.TenantID, sub.AppID, pf.Key, pf.Period)
-		if aggErr != nil {
-			return nil, fmt.Errorf("aggregate usage for feature %q: %w", pf.Key, aggErr)
-		}
-
-		billable := used - pf.Limit
-		if pf.Limit < 0 || billable <= 0 {
+		// An unlimited allowance can never bill, so this feature is
+		// skipped entirely, including ladder validation: a catalogue
+		// mistake on a feature nobody can ever be charged for should not
+		// fail every invoice on the plan.
+		if pf.Limit < 0 {
 			continue
 		}
 
 		featureTiers := tiersFor(tiers, pf.Key)
 		if vErr := invoice.ValidateTiers(featureTiers, currency); vErr != nil {
 			return nil, fmt.Errorf("plan %s feature %q: %w", p.ID, pf.Key, vErr)
+		}
+
+		used, aggErr := l.store.Aggregate(ctx, sub.TenantID, sub.AppID, pf.Key, pf.Period)
+		if aggErr != nil {
+			return nil, fmt.Errorf("aggregate usage for feature %q: %w", pf.Key, aggErr)
+		}
+
+		billable := used - pf.Limit
+		if billable <= 0 {
+			continue
 		}
 
 		amount := invoice.ComputeOverage(featureTiers, used, pf.Limit, currency)
@@ -606,20 +614,21 @@ func (l *Ledger) GenerateInvoice(ctx context.Context, subID id.SubscriptionID) (
 	// 3. Seat charges, from the quantities carried on the subscription.
 	// ComputeOverage prices the full seat count against an allowance of
 	// zero, so every seat is billed rather than only the seats past some
-	// included count — seat features do not carry an allowance.
+	// included count: seat features do not carry an allowance, and the
+	// feature's own Limit plays no part in pricing them.
 	for _, pf := range p.Features {
 		if pf.Type != plan.FeatureSeat {
-			continue
-		}
-
-		seats := sub.Quantity[pf.Key]
-		if seats <= 0 {
 			continue
 		}
 
 		featureTiers := tiersFor(tiers, pf.Key)
 		if vErr := invoice.ValidateTiers(featureTiers, currency); vErr != nil {
 			return nil, fmt.Errorf("plan %s feature %q: %w", p.ID, pf.Key, vErr)
+		}
+
+		seats := sub.Quantity[pf.Key]
+		if seats <= 0 {
+			continue
 		}
 
 		amount := invoice.ComputeOverage(featureTiers, seats, 0, currency)
@@ -652,14 +661,46 @@ func (l *Ledger) GenerateInvoice(ctx context.Context, subID id.SubscriptionID) (
 
 	discountBase := inv.Subtotal
 	for _, c := range applied {
+		// A coupon reaching here did not necessarily pass through
+		// ApplyCoupon's own checks: it may have been recorded by another
+		// path (a direct store write, a migration, a different caller
+		// entirely). Re-validate its shape before it ever discounts
+		// anything, rather than trusting that every application row was
+		// produced by the one guarded entry point.
 		var amount types.Money
 		switch c.Type {
 		case coupon.CouponTypePercentage:
+			if c.Percentage < 0 || c.Percentage > 100 {
+				return nil, fmt.Errorf("%w: coupon %q has percentage %d out of range 0..100",
+					ErrCouponInvalid, c.Code, c.Percentage)
+			}
 			amount = discountBase.Percent(c.Percentage)
 		case coupon.CouponTypeAmount:
+			if c.Amount.Amount < 0 {
+				return nil, fmt.Errorf("%w: coupon %q has a negative amount %v",
+					ErrCouponInvalid, c.Code, c.Amount)
+			}
+
+			// The effective currency is whatever Subtract will actually
+			// operate on: the Money's own currency first, falling back to
+			// the coupon's label only when the Money carries none. A plan
+			// whose currency drifted after this coupon was applied (a
+			// $5.00 coupon left attached to a plan since switched to JPY)
+			// must not silently become a five-unit discount in the new
+			// currency.
+			effectiveCurrency := strings.ToLower(c.Amount.Currency)
+			if effectiveCurrency == "" {
+				effectiveCurrency = strings.ToLower(c.Currency)
+			}
+			if effectiveCurrency != currency {
+				return nil, fmt.Errorf("%w: coupon %q is in %q, plan bills in %q",
+					ErrCouponInvalid, c.Code, effectiveCurrency, currency)
+			}
+
 			amount = types.Money{Amount: c.Amount.Amount, Currency: currency}
 		default:
-			continue
+			return nil, fmt.Errorf("%w: coupon %q has unsupported type %q",
+				ErrCouponInvalid, c.Code, c.Type)
 		}
 		if amount.IsZero() {
 			continue
@@ -706,6 +747,13 @@ func (l *Ledger) GenerateInvoice(ctx context.Context, subID id.SubscriptionID) (
 		if amount.Currency != "" && !strings.EqualFold(amount.Currency, currency) {
 			return nil, fmt.Errorf("tax calculator %q returned %s, want %s",
 				tc.Name(), amount.Currency, currency)
+		}
+		// A negative tax amount would reduce the bill, not tax it, and
+		// could drive Total below the net amount that was already clamped
+		// at zero above. Refuse it the same way a wrong type is refused: a
+		// zero or nil result stays legal and simply adds no tax line.
+		if amount.IsNegative() {
+			return nil, fmt.Errorf("tax calculator %q returned a negative tax amount %v", tc.Name(), amount)
 		}
 
 		inv.TaxAmount = inv.TaxAmount.Add(types.Money{Amount: amount.Amount, Currency: currency})

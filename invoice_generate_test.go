@@ -179,6 +179,15 @@ func TestGenerateInvoiceChargesSeats(t *testing.T) {
 	if !seats[0].Amount.Equal(types.USD(4000)) {
 		t.Errorf("got seat charge %v, want $40.00", seats[0].Amount)
 	}
+
+	// M3: the seat charge must land in Subtotal and Total, not just the
+	// line item. $49.00 base plus 5 seats at $8.00 is $89.00 either way.
+	if !inv.Subtotal.Equal(types.USD(8900)) {
+		t.Errorf("got subtotal %v, want $89.00 (base plus seats)", inv.Subtotal)
+	}
+	if !inv.Total.Equal(types.USD(8900)) {
+		t.Errorf("got total %v, want $89.00", inv.Total)
+	}
 }
 
 func TestGenerateInvoiceAppliesPercentageCoupon(t *testing.T) {
@@ -529,5 +538,338 @@ func TestGenerateInvoiceRejectsABasePriceInAnotherCurrency(t *testing.T) {
 	_, err := l.GenerateInvoice(ctx, sub.ID)
 	if !errors.Is(err, ledger.ErrInvalidPricing) {
 		t.Fatalf("got %v, want an error wrapping ledger.ErrInvalidPricing", err)
+	}
+}
+
+// I1: a tax plugin returning a negative amount would shrink Total instead
+// of taxing it, under a line item still labelled "Tax". It must be refused
+// the same way a wrong type is refused.
+func TestGenerateInvoiceRejectsANegativeTaxAmount(t *testing.T) {
+	ctx := context.Background()
+	s := memory.New()
+	l := ledger.New(s, ledger.WithPlugin(&stubTaxCalculator{result: types.USD(-700)}))
+
+	p := &plan.Plan{
+		Entity: types.NewEntity(), ID: id.NewPlanID(), Slug: "pro",
+		Currency: "usd", Status: plan.StatusActive, AppID: "app_1",
+		Pricing: &plan.Pricing{ID: id.NewPriceID(), BaseAmount: types.USD(4900)},
+	}
+	if err := s.CreatePlan(ctx, p); err != nil {
+		t.Fatalf("CreatePlan: %v", err)
+	}
+	sub := &subscription.Subscription{
+		Entity: types.NewEntity(), ID: id.NewSubscriptionID(),
+		TenantID: "tenant_1", PlanID: p.ID,
+		Status: subscription.StatusActive, AppID: "app_1",
+	}
+	if err := s.CreateSubscription(ctx, sub); err != nil {
+		t.Fatalf("CreateSubscription: %v", err)
+	}
+
+	_, err := l.GenerateInvoice(ctx, sub.ID)
+	if err == nil {
+		t.Fatal("got nil error; a tax plugin returning a negative amount must fail generation rather than shrinking the total")
+	}
+	if !strings.Contains(err.Error(), "stub-tax") {
+		t.Errorf("error %q does not name the offending plugin", err.Error())
+	}
+}
+
+// I2: a coupon reaching generation did not necessarily pass through
+// ApplyCoupon. This one is attached through the store's low-level
+// ApplyCoupon, bypassing the engine entirely, the way a direct write, a
+// migration, or a different caller could.
+func TestGenerateInvoiceRejectsANegativePercentageCouponAppliedThroughTheStore(t *testing.T) {
+	ctx := context.Background()
+	l, s, sub := billingFixture(t)
+
+	c := &coupon.Coupon{
+		Entity: types.NewEntity(), ID: id.NewCouponID(), Code: "BADPCT",
+		Type: coupon.CouponTypePercentage, Percentage: -50,
+		Currency: "usd", AppID: "app_1",
+	}
+	if err := s.CreateCoupon(ctx, c); err != nil {
+		t.Fatalf("CreateCoupon: %v", err)
+	}
+	if err := s.ApplyCoupon(ctx, sub.ID, c.ID); err != nil {
+		t.Fatalf("store ApplyCoupon: %v", err)
+	}
+
+	_, err := l.GenerateInvoice(ctx, sub.ID)
+	if !errors.Is(err, ledger.ErrCouponInvalid) {
+		t.Fatalf("got %v, want an error wrapping ledger.ErrCouponInvalid", err)
+	}
+}
+
+// I2: a coupon of a type GenerateInvoice does not know how to price (once
+// silently skipped) must fail generation rather than being ignored.
+func TestGenerateInvoiceRejectsACouponOfAnUnsupportedTypeAppliedThroughTheStore(t *testing.T) {
+	ctx := context.Background()
+	l, s, sub := billingFixture(t)
+
+	c := &coupon.Coupon{
+		Entity: types.NewEntity(), ID: id.NewCouponID(), Code: "WEIRD",
+		Type: coupon.CouponType("fixed"), Currency: "usd", AppID: "app_1",
+	}
+	if err := s.CreateCoupon(ctx, c); err != nil {
+		t.Fatalf("CreateCoupon: %v", err)
+	}
+	if err := s.ApplyCoupon(ctx, sub.ID, c.ID); err != nil {
+		t.Fatalf("store ApplyCoupon: %v", err)
+	}
+
+	_, err := l.GenerateInvoice(ctx, sub.ID)
+	if !errors.Is(err, ledger.ErrCouponInvalid) {
+		t.Fatalf("got %v, want an error wrapping ledger.ErrCouponInvalid", err)
+	}
+}
+
+// I2: a $5.00 USD coupon left attached to a subscription whose plan later
+// switched to JPY must not become a five-unit JPY discount. The plan here
+// carries no features, matching the currency-drift scenario exactly.
+func TestGenerateInvoiceRejectsACouponWhoseCurrencyDriftedFromThePlan(t *testing.T) {
+	ctx := context.Background()
+	s := memory.New()
+	l := ledger.New(s)
+
+	p := &plan.Plan{
+		Entity: types.NewEntity(), ID: id.NewPlanID(), Slug: "pro",
+		Currency: "usd", Status: plan.StatusActive, AppID: "app_1",
+		Pricing: &plan.Pricing{ID: id.NewPriceID(), BaseAmount: types.USD(4900)},
+	}
+	if err := s.CreatePlan(ctx, p); err != nil {
+		t.Fatalf("CreatePlan: %v", err)
+	}
+	sub := &subscription.Subscription{
+		Entity: types.NewEntity(), ID: id.NewSubscriptionID(),
+		TenantID: "tenant_1", PlanID: p.ID,
+		Status: subscription.StatusActive, AppID: "app_1",
+	}
+	if err := s.CreateSubscription(ctx, sub); err != nil {
+		t.Fatalf("CreateSubscription: %v", err)
+	}
+
+	if err := s.CreateCoupon(ctx, &coupon.Coupon{
+		Entity: types.NewEntity(), ID: id.NewCouponID(), Code: "FIVEUSD",
+		Type: coupon.CouponTypeAmount, Amount: types.USD(500),
+		Currency: "usd", AppID: "app_1",
+	}); err != nil {
+		t.Fatalf("CreateCoupon: %v", err)
+	}
+	if _, err := l.ApplyCoupon(ctx, sub.ID, "FIVEUSD"); err != nil {
+		t.Fatalf("ApplyCoupon: %v", err)
+	}
+
+	// The plan's currency drifts after the coupon was applied.
+	p.Currency = "jpy"
+	p.Pricing.BaseAmount = types.JPY(4900)
+	if err := s.UpdatePlan(ctx, p); err != nil {
+		t.Fatalf("UpdatePlan: %v", err)
+	}
+
+	_, err := l.GenerateInvoice(ctx, sub.ID)
+	if !errors.Is(err, ledger.ErrCouponInvalid) {
+		t.Fatalf("got %v, want an error wrapping ledger.ErrCouponInvalid", err)
+	}
+}
+
+// M1: proves overage is priced as a differential across tier boundaries,
+// not as the billable quantity times a single tier's flat rate. Limit
+// 1000, ladder 2000@5c/unbounded@3c, usage 2500:
+// price(2500) - price(1000) = (2000*5 + 500*3) - (1000*5) = 11500 - 5000 = 6500.
+// A mutation that re-subtracts the allowance by pricing the 1500 billable
+// units at the tier rate for usage (5c) alone gets 7500 instead.
+func TestGenerateInvoiceDoesNotResubtractTheAllowanceAcrossTierBoundaries(t *testing.T) {
+	ctx := context.Background()
+	l, s, sub := billingFixture(t)
+
+	p, err := s.GetPlan(ctx, sub.PlanID)
+	if err != nil {
+		t.Fatalf("GetPlan: %v", err)
+	}
+	p.Pricing.Tiers = []plan.PriceTier{
+		{FeatureKey: "api_calls", Type: plan.TierGraduated, UpTo: 2000, UnitAmount: types.USD(5)},
+		{FeatureKey: "api_calls", Type: plan.TierGraduated, UpTo: 0, UnitAmount: types.USD(3)},
+	}
+	if err := s.UpdatePlan(ctx, p); err != nil {
+		t.Fatalf("UpdatePlan: %v", err)
+	}
+
+	ingest(t, s, sub, "api_calls", 2500)
+
+	inv, err := l.GenerateInvoice(ctx, sub.ID)
+	if err != nil {
+		t.Fatalf("GenerateInvoice: %v", err)
+	}
+
+	over := lineItemsOfType(inv, invoice.LineItemOverage)
+	if len(over) != 1 {
+		t.Fatalf("got %d overage line items, want 1", len(over))
+	}
+	if over[0].Quantity != 1500 {
+		t.Errorf("got overage quantity %d, want 1500", over[0].Quantity)
+	}
+	if !over[0].Amount.Equal(types.USD(6500)) {
+		t.Errorf("got overage %v, want $65.00 (priced as the differential across tier boundaries, not the allowance re-subtracted as a flat rate)", over[0].Amount)
+	}
+}
+
+// M2: two percentage coupons must each compute against the original
+// subtotal, not compound on top of each other. Applying the 20% coupon
+// first, so the order differs from TestGenerateInvoiceStacksPercentageBeforeAmount,
+// covers both application orders across the two tests. Correct: 490 (10%
+// of 4900) + 980 (20% of 4900) = 1470, total 3430. Compounding 20% first
+// gives 980 + 10% of the discounted 3920 = 1372 instead.
+func TestGenerateInvoiceStacksTwoPercentagesWithoutCompounding(t *testing.T) {
+	ctx := context.Background()
+	l, s, sub := billingFixture(t)
+
+	for _, c := range []*coupon.Coupon{
+		{
+			Entity: types.NewEntity(), ID: id.NewCouponID(), Code: "PCT20",
+			Type: coupon.CouponTypePercentage, Percentage: 20,
+			Currency: "usd", AppID: "app_1",
+		},
+		{
+			Entity: types.NewEntity(), ID: id.NewCouponID(), Code: "PCT10",
+			Type: coupon.CouponTypePercentage, Percentage: 10,
+			Currency: "usd", AppID: "app_1",
+		},
+	} {
+		if err := s.CreateCoupon(ctx, c); err != nil {
+			t.Fatalf("CreateCoupon %s: %v", c.Code, err)
+		}
+		if _, err := l.ApplyCoupon(ctx, sub.ID, c.Code); err != nil {
+			t.Fatalf("ApplyCoupon %s: %v", c.Code, err)
+		}
+	}
+
+	inv, err := l.GenerateInvoice(ctx, sub.ID)
+	if err != nil {
+		t.Fatalf("GenerateInvoice: %v", err)
+	}
+
+	if !inv.DiscountAmount.Equal(types.USD(1470)) {
+		t.Errorf("got discount %v, want $14.70 (two independent percentages against the original subtotal, not compounded)", inv.DiscountAmount)
+	}
+	if !inv.Total.Equal(types.USD(3430)) {
+		t.Errorf("got total %v, want $34.30", inv.Total)
+	}
+}
+
+// M4: seats bill against a zero allowance, never the feature's own Limit.
+// Limit 5, quantity 3, ladder unbounded@800c: all 3 seats are billed
+// (2400), not zero.
+func TestGenerateInvoiceSeatsBillAgainstZeroAllowanceNotTheFeatureLimit(t *testing.T) {
+	ctx := context.Background()
+	l, s, sub := billingFixture(t)
+
+	p, err := s.GetPlan(ctx, sub.PlanID)
+	if err != nil {
+		t.Fatalf("GetPlan: %v", err)
+	}
+	p.Features = append(p.Features, plan.Feature{
+		ID: id.NewFeatureID(), Key: "seats", Name: "Team members",
+		Type: plan.FeatureSeat, Limit: 5, Period: plan.PeriodNone,
+	})
+	p.Pricing.Tiers = append(p.Pricing.Tiers, plan.PriceTier{
+		FeatureKey: "seats", Type: plan.TierGraduated, UpTo: 0, UnitAmount: types.USD(800),
+	})
+	if err := s.UpdatePlan(ctx, p); err != nil {
+		t.Fatalf("UpdatePlan: %v", err)
+	}
+
+	sub.Quantity = map[string]int64{"seats": 3}
+	if err := s.UpdateSubscription(ctx, sub); err != nil {
+		t.Fatalf("UpdateSubscription: %v", err)
+	}
+
+	inv, err := l.GenerateInvoice(ctx, sub.ID)
+	if err != nil {
+		t.Fatalf("GenerateInvoice: %v", err)
+	}
+
+	seats := lineItemsOfType(inv, invoice.LineItemSeat)
+	if len(seats) != 1 {
+		t.Fatalf("got %d seat line items, want 1", len(seats))
+	}
+	if seats[0].Quantity != 3 {
+		t.Errorf("got seat quantity %d, want 3", seats[0].Quantity)
+	}
+	if !seats[0].Amount.Equal(types.USD(2400)) {
+		t.Errorf("got seat charge %v, want $24.00 (all 3 seats billed against a zero allowance, not the feature's Limit of 5)", seats[0].Amount)
+	}
+	if !inv.Total.Equal(types.USD(7300)) {
+		t.Errorf("got total %v, want $73.00", inv.Total)
+	}
+}
+
+// M6: a tax calculator's returned currency must be normalised to the
+// plan's lowercased currency, not copied verbatim. Money.Equal is
+// case-sensitive, which is what makes this discriminate.
+func TestGenerateInvoiceNormalisesTheTaxCalculatorsCurrency(t *testing.T) {
+	ctx := context.Background()
+	s := memory.New()
+	l := ledger.New(s, ledger.WithPlugin(&stubTaxCalculator{result: types.Money{Amount: 980, Currency: "USD"}}))
+
+	p := &plan.Plan{
+		Entity: types.NewEntity(), ID: id.NewPlanID(), Slug: "pro",
+		Currency: "usd", Status: plan.StatusActive, AppID: "app_1",
+		Pricing: &plan.Pricing{ID: id.NewPriceID(), BaseAmount: types.USD(4900)},
+	}
+	if err := s.CreatePlan(ctx, p); err != nil {
+		t.Fatalf("CreatePlan: %v", err)
+	}
+	sub := &subscription.Subscription{
+		Entity: types.NewEntity(), ID: id.NewSubscriptionID(),
+		TenantID: "tenant_1", PlanID: p.ID,
+		Status: subscription.StatusActive, AppID: "app_1",
+	}
+	if err := s.CreateSubscription(ctx, sub); err != nil {
+		t.Fatalf("CreateSubscription: %v", err)
+	}
+
+	inv, err := l.GenerateInvoice(ctx, sub.ID)
+	if err != nil {
+		t.Fatalf("GenerateInvoice: %v", err)
+	}
+
+	if !inv.TaxAmount.Equal(types.Money{Amount: 980, Currency: "usd"}) {
+		t.Errorf("got tax %+v, want {Amount:980 Currency:usd}", inv.TaxAmount)
+	}
+	if !inv.Total.Equal(types.Money{Amount: 5880, Currency: "usd"}) {
+		t.Errorf("got total %+v, want {Amount:5880 Currency:usd}", inv.Total)
+	}
+}
+
+// M7: a metered feature with an unlimited allowance (Limit -1) is skipped
+// entirely, including ladder validation. An invalid ladder attached to
+// such a feature must never surface, since the feature can never bill.
+func TestGenerateInvoiceSkipsValidationForAnUnlimitedMeteredFeature(t *testing.T) {
+	ctx := context.Background()
+	l, s, sub := billingFixture(t)
+
+	p, err := s.GetPlan(ctx, sub.PlanID)
+	if err != nil {
+		t.Fatalf("GetPlan: %v", err)
+	}
+	p.Features[0].Limit = -1
+	// Mixed tier types on one feature: an invalid ladder.
+	p.Pricing.Tiers = []plan.PriceTier{
+		{FeatureKey: "api_calls", Type: plan.TierGraduated, UpTo: 1000, UnitAmount: types.USD(3)},
+		{FeatureKey: "api_calls", Type: plan.TierFlat, UpTo: 0, FlatAmount: types.USD(900)},
+	}
+	if err := s.UpdatePlan(ctx, p); err != nil {
+		t.Fatalf("UpdatePlan: %v", err)
+	}
+
+	ingest(t, s, sub, "api_calls", 5000)
+
+	inv, err := l.GenerateInvoice(ctx, sub.ID)
+	if err != nil {
+		t.Fatalf("GenerateInvoice: %v", err)
+	}
+	if len(lineItemsOfType(inv, invoice.LineItemOverage)) != 0 {
+		t.Errorf("got an overage line item for an unlimited feature with an invalid ladder, want none")
 	}
 }

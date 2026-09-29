@@ -66,8 +66,8 @@ func Run(t *testing.T, newStore func(t *testing.T) ledgerstore.Store) {
 // randomness. The "test" prefix only labels where the value came from; it is
 // never parsed back as a real entity id.
 //
-// Fixture values that a backend enforces as unique — a plan slug, a coupon
-// code, an app id used as part of a unique index — carry this suffix so the
+// Fixture values that a backend enforces as unique (a plan slug, a coupon
+// code, an app id used as part of a unique index) carry this suffix so the
 // suite stays repeat-run safe against a store that is migrated in place and
 // never torn down, such as Postgres pointed at a persistent scratch
 // database. Memory and SQLite start from an empty store on every call and
@@ -1292,7 +1292,7 @@ func testUsageTenantIsolation(t *testing.T, s ledgerstore.Store) {
 // (memory, sqlite, postgres, mongo) treats tenantID == "" as "do not filter
 // by tenant" while the appID filter still applies normally. A caller that
 // fails to resolve a tenant and passes "" straight through gets every
-// tenant's rows back for the given app — not zero rows, but also not every
+// tenant's rows back for the given app: not zero rows, but also not every
 // row in the table regardless of app. That is a real, present-day gap: a
 // contract layer sitting in front of these stores must refuse to call them
 // with an empty tenant id, because the stores themselves will not stop it.

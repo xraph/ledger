@@ -17,6 +17,12 @@ const (
 	StatusVoided  Status = "voided"
 )
 
+// Invoice is a bill for one subscription period.
+//
+// LineItems sum to Subtotal, minus DiscountAmount, plus TaxAmount. That sum
+// equals Total, except when the discount exceeds the subtotal: the net
+// amount then clamps at zero before tax is added, rather than letting Total
+// go negative.
 type Invoice struct {
 	types.Entity
 	ID             id.InvoiceID      `json:"id"`
@@ -42,6 +48,13 @@ type Invoice struct {
 	Metadata       map[string]string `json:"metadata,omitempty"`
 }
 
+// LineItem is one priced component of an Invoice.
+//
+// A discount line item carries a negative Amount (and UnitAmount), while
+// the invoice's own DiscountAmount is always recorded positive. A line item
+// priced from a tier ladder, such as usage overage or seat charges, carries
+// a zero UnitAmount: a ladder has no single per-unit price, so only Amount,
+// the total charged, means anything for it.
 type LineItem struct {
 	ID          id.LineItemID     `json:"id"`
 	InvoiceID   id.InvoiceID      `json:"invoice_id"`

@@ -50,8 +50,24 @@ func (l *Ledger) ApplyCoupon(ctx context.Context, subID id.SubscriptionID, code 
 		return nil, ErrCouponExhausted
 	}
 
+	// A coupon cannot raise a bill: a percentage outside 0..100 or a
+	// negative amount would add money instead of discounting it, under a
+	// line item still labelled "Discount". Reject the shape here, with the
+	// other built-in checks, before any write and before plugin validators
+	// are ever consulted.
+	switch c.Type {
+	case coupon.CouponTypePercentage:
+		if c.Percentage < 0 || c.Percentage > 100 {
+			return nil, fmt.Errorf("%w: percentage %d is out of range 0..100", ErrCouponInvalid, c.Percentage)
+		}
+	case coupon.CouponTypeAmount:
+		if c.Amount.Amount < 0 {
+			return nil, fmt.Errorf("%w: amount %v is negative", ErrCouponInvalid, c.Amount)
+		}
+	}
+
 	// Currency must match the Money the discount will actually be computed
-	// from, not just the coupon's Currency label — Money.Add and Subtract
+	// from, not just the coupon's Currency label: Money.Add and Subtract
 	// panic when the two Money values' Currency fields differ, and a label
 	// can lie about what an amount coupon's Money actually holds. Comparison
 	// is case-insensitive: "USD" and "usd" name the same currency.
@@ -69,7 +85,7 @@ func (l *Ledger) ApplyCoupon(ctx context.Context, subID id.SubscriptionID, code 
 				// The Money value is what Subtract will actually operate
 				// on. Fall back to the label only when the Money itself
 				// carries no currency, and refuse when neither says
-				// anything — that is not a currency to skip the check for.
+				// anything: that is not a currency to skip the check for.
 				couponCurrency := c.Amount.Currency
 				if couponCurrency == "" {
 					couponCurrency = c.Currency

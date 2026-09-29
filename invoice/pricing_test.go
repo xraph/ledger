@@ -590,7 +590,7 @@ func TestValidateTiers(t *testing.T) {
 		}
 	})
 
-	// R12: rule 3's FlatAmount half had no discriminating test — every
+	// R12: rule 3's FlatAmount half had no discriminating test: every
 	// existing currency-mismatch row exercised UnitAmount only, so a bug
 	// specific to the FlatAmount check could have shipped unnoticed.
 	t.Run("flat amount currency mismatch", func(t *testing.T) {

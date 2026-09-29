@@ -183,6 +183,29 @@ func TestApplyCouponRejections(t *testing.T) {
 			wantErr: ledger.ErrCouponInvalid,
 		},
 		{
+			// A coupon cannot raise a bill: a percentage below zero would
+			// add money under a line item still labelled "Discount".
+			name:    "percentage below zero",
+			mutate:  func(c *coupon.Coupon) { c.Percentage = -50 },
+			code:    "LAUNCH10",
+			wantErr: ledger.ErrCouponInvalid,
+		},
+		{
+			name:    "percentage above 100",
+			mutate:  func(c *coupon.Coupon) { c.Percentage = 101 },
+			code:    "LAUNCH10",
+			wantErr: ledger.ErrCouponInvalid,
+		},
+		{
+			name: "negative amount",
+			mutate: func(c *coupon.Coupon) {
+				c.Type = coupon.CouponTypeAmount
+				c.Amount = types.USD(-2000)
+			},
+			code:    "LAUNCH10",
+			wantErr: ledger.ErrCouponInvalid,
+		},
+		{
 			name:    "coupon belongs to a different app",
 			mutate:  func(c *coupon.Coupon) { c.AppID = "app_2" },
 			code:    "LAUNCH10",
@@ -231,6 +254,22 @@ func TestApplyCouponRejections(t *testing.T) {
 				t.Errorf("a rejected apply recorded %d applications, want 0", len(applied))
 			}
 		})
+	}
+}
+
+// TestApplyCouponAcceptsPercentageAtTheUpperBound pins the boundary: 100 is
+// a legal percentage (a coupon that zeroes the bill), and the sign/range
+// check added alongside ErrCouponInvalid must not reject it.
+func TestApplyCouponAcceptsPercentageAtTheUpperBound(t *testing.T) {
+	ctx := context.Background()
+	l, s, subID := fixture(t)
+
+	c := baseCoupon()
+	c.Percentage = 100
+	mustCreateCoupon(t, s, c)
+
+	if _, err := l.ApplyCoupon(ctx, subID, "LAUNCH10"); err != nil {
+		t.Fatalf("ApplyCoupon: %v", err)
 	}
 }
 
