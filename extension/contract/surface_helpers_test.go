@@ -9,6 +9,7 @@ import (
 	ledger "github.com/xraph/ledger"
 	"github.com/xraph/ledger/plan"
 	"github.com/xraph/ledger/store/memory"
+	"github.com/xraph/ledger/subscription"
 	"github.com/xraph/ledger/types"
 )
 
@@ -145,3 +146,13 @@ func (h *harness) activePlan(app, slug string) *plan.Plan {
 }
 
 func ctxBackground() context.Context { return context.Background() }
+
+// subscribe creates a subscription through the engine.
+func (h *harness) subscribe(app, tenant string, p *plan.Plan) *subscription.Subscription {
+	h.t.Helper()
+	sub := &subscription.Subscription{TenantID: tenant, PlanID: p.ID, AppID: app}
+	if err := h.eng.CreateSubscription(context.Background(), sub); err != nil {
+		h.t.Fatalf("CreateSubscription: %v", err)
+	}
+	return sub
+}

@@ -27,3 +27,14 @@ intents:
   - { name: features.archive,        kind: command, version: 1, capability: write, invalidates: [features.list, features.detail] }
   - { name: features.delete,         kind: command, version: 1, capability: write, invalidates: [features.list] }
   - { name: features.syncToProvider, kind: command, version: 1, capability: write, invalidates: [features.detail] }
+
+  # Subscriptions
+  - { name: subscriptions.list,           kind: query,   version: 1, capability: read }
+  - { name: subscriptions.detail,         kind: query,   version: 1, capability: read }
+  - { name: subscriptions.usage,          kind: query,   version: 1, capability: read }
+  - { name: subscriptions.create,         kind: command, version: 1, capability: write, invalidates: [subscriptions.list, overview.stats] }
+  - { name: subscriptions.changePlan,     kind: command, version: 1, capability: write, invalidates: [subscriptions.list, subscriptions.detail, subscriptions.usage, entitlements.check] }
+  - { name: subscriptions.pause,          kind: command, version: 1, capability: write, invalidates: [subscriptions.list, subscriptions.detail, overview.stats] }
+  - { name: subscriptions.resume,         kind: command, version: 1, capability: write, invalidates: [subscriptions.list, subscriptions.detail, overview.stats] }
+  - { name: subscriptions.cancel,         kind: command, version: 1, capability: write, invalidates: [subscriptions.list, subscriptions.detail, overview.stats, entitlements.check] }
+  - { name: subscriptions.syncToProvider, kind: command, version: 1, capability: write, invalidates: [subscriptions.detail] }

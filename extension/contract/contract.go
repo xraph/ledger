@@ -96,6 +96,7 @@ func validateManifest(m *dash.ContractManifest) error {
 func registerAll(b *binder) {
 	registerPlans(b)
 	registerFeatures(b)
+	registerSubscriptions(b)
 }
 
 // Ack is the answer to a command with nothing else to report.
