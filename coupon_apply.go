@@ -55,6 +55,11 @@ func (l *Ledger) ApplyCoupon(ctx context.Context, subID id.SubscriptionID, code 
 	// line item still labelled "Discount". Reject the shape here, with the
 	// other built-in checks, before any write and before plugin validators
 	// are ever consulted.
+	//
+	// A Type that is neither percentage nor amount is refused too. Invoice
+	// generation cannot price such a coupon and fails on it, and nothing can
+	// detach an applied coupon from a subscription, so accepting one here
+	// would leave that subscription permanently unbillable.
 	switch c.Type {
 	case coupon.CouponTypePercentage:
 		if c.Percentage < 0 || c.Percentage > 100 {
@@ -64,6 +69,8 @@ func (l *Ledger) ApplyCoupon(ctx context.Context, subID id.SubscriptionID, code 
 		if c.Amount.Amount < 0 {
 			return nil, fmt.Errorf("%w: amount %v is negative", ErrCouponInvalid, c.Amount)
 		}
+	default:
+		return nil, fmt.Errorf("%w: coupon %q has unsupported type %q", ErrCouponInvalid, c.Code, c.Type)
 	}
 
 	// Currency must match the Money the discount will actually be computed

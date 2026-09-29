@@ -615,7 +615,9 @@ func (l *Ledger) GenerateInvoice(ctx context.Context, subID id.SubscriptionID) (
 	// ComputeOverage prices the full seat count against an allowance of
 	// zero, so every seat is billed rather than only the seats past some
 	// included count: seat features do not carry an allowance, and the
-	// feature's own Limit plays no part in pricing them.
+	// feature's own Limit plays no part in pricing them. For the same
+	// reason a seat feature with Limit -1 is not skipped, unlike a metered
+	// one.
 	for _, pf := range p.Features {
 		if pf.Type != plan.FeatureSeat {
 			continue
@@ -651,8 +653,10 @@ func (l *Ledger) GenerateInvoice(ctx context.Context, subID id.SubscriptionID) (
 
 	// 4. Coupon discounts. Percentage coupons compute against the subtotal
 	// as it stood before any discount, so two stacked percentages do not
-	// compound. Amount coupons subtract flat. ApplyCoupon has already
-	// refused any coupon whose currency differs from the plan's, which is
+	// compound. Amount coupons subtract flat. Each coupon is validated again
+	// below (range, sign, type and currency against the plan) because it may
+	// have been attached by a path other than ApplyCoupon, or the plan may
+	// have changed since it was applied. That per-coupon currency check is
 	// what keeps Money.Add from panicking here.
 	applied, couponErr := l.store.ListAppliedCoupons(ctx, sub.ID)
 	if couponErr != nil {

@@ -206,6 +206,22 @@ func TestApplyCouponRejections(t *testing.T) {
 			wantErr: ledger.ErrCouponInvalid,
 		},
 		{
+			// Generation cannot price a coupon of an unknown type and
+			// fails on it, and no API detaches an applied coupon, so
+			// applying one would make the subscription permanently
+			// unbillable.
+			name:    "unsupported coupon type",
+			mutate:  func(c *coupon.Coupon) { c.Type = coupon.CouponType("fixed") },
+			code:    "LAUNCH10",
+			wantErr: ledger.ErrCouponInvalid,
+		},
+		{
+			name:    "empty coupon type",
+			mutate:  func(c *coupon.Coupon) { c.Type = coupon.CouponType("") },
+			code:    "LAUNCH10",
+			wantErr: ledger.ErrCouponInvalid,
+		},
+		{
 			name:    "coupon belongs to a different app",
 			mutate:  func(c *coupon.Coupon) { c.AppID = "app_2" },
 			code:    "LAUNCH10",
@@ -254,6 +270,23 @@ func TestApplyCouponRejections(t *testing.T) {
 				t.Errorf("a rejected apply recorded %d applications, want 0", len(applied))
 			}
 		})
+	}
+}
+
+// TestApplyCouponAcceptsAnAmountOfZero pins the other boundary: an amount of
+// exactly zero is not negative, so the sign check must let it through. It
+// fails if the guard is tightened from "< 0" to "<= 0".
+func TestApplyCouponAcceptsAnAmountOfZero(t *testing.T) {
+	ctx := context.Background()
+	l, s, subID := fixture(t)
+
+	c := baseCoupon()
+	c.Type = coupon.CouponTypeAmount
+	c.Amount = types.USD(0)
+	mustCreateCoupon(t, s, c)
+
+	if _, err := l.ApplyCoupon(ctx, subID, "LAUNCH10"); err != nil {
+		t.Fatalf("ApplyCoupon: %v", err)
 	}
 }
 

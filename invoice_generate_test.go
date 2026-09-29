@@ -601,6 +601,105 @@ func TestGenerateInvoiceRejectsANegativePercentageCouponAppliedThroughTheStore(t
 	}
 }
 
+// G6b: the upper half of the percentage range, through the store.
+func TestGenerateInvoiceRejectsAPercentageAbove100AppliedThroughTheStore(t *testing.T) {
+	ctx := context.Background()
+	l, s, sub := billingFixture(t)
+
+	c := &coupon.Coupon{
+		Entity: types.NewEntity(), ID: id.NewCouponID(), Code: "OVER100",
+		Type: coupon.CouponTypePercentage, Percentage: 150,
+		Currency: "usd", AppID: "app_1",
+	}
+	if err := s.CreateCoupon(ctx, c); err != nil {
+		t.Fatalf("CreateCoupon: %v", err)
+	}
+	if err := s.ApplyCoupon(ctx, sub.ID, c.ID); err != nil {
+		t.Fatalf("store ApplyCoupon: %v", err)
+	}
+
+	_, err := l.GenerateInvoice(ctx, sub.ID)
+	if !errors.Is(err, ledger.ErrCouponInvalid) {
+		t.Fatalf("got %v, want an error wrapping ledger.ErrCouponInvalid", err)
+	}
+}
+
+// G7: a negative amount coupon, through the store. Subtracting it would
+// raise the bill under a line labelled "Discount".
+func TestGenerateInvoiceRejectsANegativeAmountCouponAppliedThroughTheStore(t *testing.T) {
+	ctx := context.Background()
+	l, s, sub := billingFixture(t)
+
+	c := &coupon.Coupon{
+		Entity: types.NewEntity(), ID: id.NewCouponID(), Code: "NEGAMT",
+		Type: coupon.CouponTypeAmount, Amount: types.USD(-500),
+		Currency: "usd", AppID: "app_1",
+	}
+	if err := s.CreateCoupon(ctx, c); err != nil {
+		t.Fatalf("CreateCoupon: %v", err)
+	}
+	if err := s.ApplyCoupon(ctx, sub.ID, c.ID); err != nil {
+		t.Fatalf("store ApplyCoupon: %v", err)
+	}
+
+	_, err := l.GenerateInvoice(ctx, sub.ID)
+	if !errors.Is(err, ledger.ErrCouponInvalid) {
+		t.Fatalf("got %v, want an error wrapping ledger.ErrCouponInvalid", err)
+	}
+}
+
+// G11: an invalid ladder fails generation even when usage is under the
+// allowance, so a bad ladder fails every billing run and not only the first
+// one that goes over. No usage is ingested here.
+func TestGenerateInvoiceRejectsAnInvalidMeteredLadderEvenUnderTheAllowance(t *testing.T) {
+	ctx := context.Background()
+	l, s, sub := billingFixture(t)
+
+	p, err := s.GetPlan(ctx, sub.PlanID)
+	if err != nil {
+		t.Fatalf("GetPlan: %v", err)
+	}
+	p.Pricing.Tiers = append(p.Pricing.Tiers, plan.PriceTier{
+		FeatureKey: "api_calls", Type: plan.TierFlat, UpTo: 5000, FlatAmount: types.USD(900),
+	})
+	if err := s.UpdatePlan(ctx, p); err != nil {
+		t.Fatalf("UpdatePlan: %v", err)
+	}
+
+	_, err = l.GenerateInvoice(ctx, sub.ID)
+	if !errors.Is(err, invoice.ErrInvalidTiers) {
+		t.Fatalf("got %v, want an error wrapping invoice.ErrInvalidTiers", err)
+	}
+}
+
+// G10: the same for a seat feature, with a quantity of zero.
+func TestGenerateInvoiceRejectsAnInvalidSeatLadderEvenWithZeroSeats(t *testing.T) {
+	ctx := context.Background()
+	l, s, sub := billingFixture(t)
+
+	p, err := s.GetPlan(ctx, sub.PlanID)
+	if err != nil {
+		t.Fatalf("GetPlan: %v", err)
+	}
+	p.Features = append(p.Features, plan.Feature{
+		ID: id.NewFeatureID(), Key: "seats", Name: "Team members",
+		Type: plan.FeatureSeat, Period: plan.PeriodNone,
+	})
+	p.Pricing.Tiers = append(p.Pricing.Tiers,
+		plan.PriceTier{FeatureKey: "seats", Type: plan.TierGraduated, UpTo: 10, UnitAmount: types.USD(800)},
+		plan.PriceTier{FeatureKey: "seats", Type: plan.TierFlat, UpTo: 0, FlatAmount: types.USD(900)},
+	)
+	if err := s.UpdatePlan(ctx, p); err != nil {
+		t.Fatalf("UpdatePlan: %v", err)
+	}
+
+	// sub.Quantity is left empty: zero seats.
+	_, err = l.GenerateInvoice(ctx, sub.ID)
+	if !errors.Is(err, invoice.ErrInvalidTiers) {
+		t.Fatalf("got %v, want an error wrapping invoice.ErrInvalidTiers", err)
+	}
+}
+
 // I2: a coupon of a type GenerateInvoice does not know how to price (once
 // silently skipped) must fail generation rather than being ignored.
 func TestGenerateInvoiceRejectsACouponOfAnUnsupportedTypeAppliedThroughTheStore(t *testing.T) {
