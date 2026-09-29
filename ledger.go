@@ -244,7 +244,17 @@ func (l *Ledger) ArchiveFeature(ctx context.Context, featureID id.FeatureID) err
 // ──────────────────────────────────────────────────
 
 // CreateSubscription creates a new subscription.
+//
+// A subscription must name its tenant. Every store reads an empty tenant id
+// as "every tenant", so one without a tenant would later be billed for other
+// customers' usage. It is refused with an error wrapping ErrInvalidInput and
+// nothing is written. The app id may stay empty: deployments that never set
+// one still bill their base fee.
 func (l *Ledger) CreateSubscription(ctx context.Context, sub *subscription.Subscription) error {
+	if sub.TenantID == "" {
+		return fmt.Errorf("%w: subscription has no tenant id", ErrInvalidInput)
+	}
+
 	if sub.ID == (id.SubscriptionID{}) {
 		sub.ID = id.NewSubscriptionID()
 	}
@@ -505,10 +515,16 @@ func (l *Ledger) Remaining(ctx context.Context, featureKey string) (int64, error
 // the store. An unregistered name falls back to the store rather than
 // failing: a plan referring to a plugin that is not installed should still
 // bill.
+//
+// GenerateInvoice has already refused an empty tenant id. The plugin path
+// also refuses an empty app id, because it reads events through QueryUsage,
+// which drops the app filter when the app id is empty. The store path does
+// not need that check: store.Aggregate matches the app id exactly, so an
+// empty one only ever matches events recorded without an app.
 func (l *Ledger) aggregateUsage(ctx context.Context, sub *subscription.Subscription, pf plan.Feature) (int64, error) {
 	name := pf.Metadata["aggregator"]
 	if name == "" {
-		return l.store.Aggregate(ctx, sub.TenantID, sub.AppID, pf.Key, pf.Period)
+		return l.storeUsage(ctx, sub, pf)
 	}
 
 	agg := l.plugins.GetUsageAggregator(name)
@@ -518,7 +534,12 @@ func (l *Ledger) aggregateUsage(ctx context.Context, sub *subscription.Subscript
 			log.String("feature", pf.Key),
 		)
 
-		return l.store.Aggregate(ctx, sub.TenantID, sub.AppID, pf.Key, pf.Period)
+		return l.storeUsage(ctx, sub, pf)
+	}
+
+	if sub.AppID == "" {
+		return 0, fmt.Errorf("%w: usage aggregator %q needs an app id to scope its events, and subscription %s has none",
+			ErrInvalidInput, name, sub.ID)
 	}
 
 	events, err := l.store.QueryUsage(ctx, sub.TenantID, sub.AppID, meter.QueryOpts{
@@ -544,6 +565,23 @@ func (l *Ledger) aggregateUsage(ctx context.Context, sub *subscription.Subscript
 	// way a negative tax amount or strategy result is refused.
 	if total < 0 {
 		return 0, fmt.Errorf("usage aggregator %q returned a negative total %d", name, total)
+	}
+
+	return total, nil
+}
+
+// storeUsage totals a feature's usage through store.Aggregate. Meter accepts
+// negative quantities (a correction, say), so the sum can come back below
+// zero. That is refused rather than billed as nothing, the same way a
+// plugin aggregator's negative total is: a silent zero would hide an
+// overage along with whatever made the total negative.
+func (l *Ledger) storeUsage(ctx context.Context, sub *subscription.Subscription, pf plan.Feature) (int64, error) {
+	total, err := l.store.Aggregate(ctx, sub.TenantID, sub.AppID, pf.Key, pf.Period)
+	if err != nil {
+		return 0, err
+	}
+	if total < 0 {
+		return 0, fmt.Errorf("store returned a negative total %d", total)
 	}
 
 	return total, nil
@@ -639,10 +677,21 @@ func addChecked(stage string, a, b types.Money) (types.Money, error) {
 // An amount that overflows an int64 fails generation with an error wrapping
 // types.ErrOverflow that names the stage, and nothing is stored: a wrapped
 // figure must never become an invoice.
+//
+// A subscription with an empty tenant id is refused with an error wrapping
+// ErrInvalidInput before anything else is read for it. Every store reads an
+// empty tenant as "every tenant", so billing one would total other
+// customers' usage. An empty app id is allowed and still bills the base
+// fee; only a feature totalled by a plugin aggregator refuses it (see
+// aggregateUsage).
 func (l *Ledger) GenerateInvoice(ctx context.Context, subID id.SubscriptionID) (*invoice.Invoice, error) {
 	sub, err := l.store.GetSubscription(ctx, subID)
 	if err != nil {
 		return nil, err
+	}
+
+	if sub.TenantID == "" {
+		return nil, fmt.Errorf("%w: subscription %s has no tenant id", ErrInvalidInput, sub.ID)
 	}
 
 	p, err := l.store.GetPlan(ctx, sub.PlanID)
@@ -671,7 +720,13 @@ func (l *Ledger) GenerateInvoice(ctx context.Context, subID id.SubscriptionID) (
 
 	// 1. Base subscription fee. A base price stored in a currency other
 	// than the plan's is a catalogue error, not something to panic over:
-	// reject it before it ever reaches Money.Add.
+	// reject it before it ever reaches Money.Add. A negative base price is a
+	// catalogue error too, and is refused rather than skipped: skipping it
+	// would invoice the plan as though it had no base fee at all.
+	if p.Pricing != nil && p.Pricing.BaseAmount.IsNegative() {
+		return nil, fmt.Errorf("%w: plan %s base price %v is negative",
+			ErrInvalidPricing, p.ID, p.Pricing.BaseAmount)
+	}
 	if p.Pricing != nil && p.Pricing.BaseAmount.IsPositive() {
 		if p.Pricing.BaseAmount.Currency != "" && !strings.EqualFold(p.Pricing.BaseAmount.Currency, currency) {
 			return nil, fmt.Errorf("%w: plan %s base price is in %q, plan bills in %q",

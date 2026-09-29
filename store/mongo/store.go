@@ -1022,7 +1022,7 @@ func (s *Store) IncrementCouponRedemptions(ctx context.Context, couponID id.Coup
 // the first by hand when the second doesn't land as a success: insert the
 // application row, then run the redemption-count increment as a single
 // filtered update whose filter itself encodes the cap
-// (`{max_redemptions: 0} OR {$expr: {$lt: [times_redeemed,
+// (`{max_redemptions: {$lte: 0}} OR {$expr: {$lt: [times_redeemed,
 // max_redemptions]}}`), which MongoDB evaluates and applies atomically
 // against that one document. A document update in MongoDB is always atomic
 // per document, so the increment step alone is race-free the same way the
@@ -1078,7 +1078,7 @@ func (s *Store) RedeemCoupon(ctx context.Context, subID id.SubscriptionID, coupo
 		Filter(bson.M{
 			"_id": couponID.String(),
 			"$or": []bson.M{
-				{"max_redemptions": 0},
+				{"max_redemptions": bson.M{"$lte": 0}},
 				{"$expr": bson.M{"$lt": bson.A{"$times_redeemed", "$max_redemptions"}}},
 			},
 		}).

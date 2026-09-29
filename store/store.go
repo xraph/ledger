@@ -86,7 +86,8 @@ type Store interface {
 	// neither does. The redemption cap (MaxRedemptions) is enforced by a
 	// conditional increment inside that unit, not by a read followed by a
 	// separate write, so it holds under concurrent callers racing the same
-	// coupon toward its cap.
+	// coupon toward its cap. A MaxRedemptions of zero or less means
+	// unlimited on every backend.
 	RedeemCoupon(ctx context.Context, subID id.SubscriptionID, couponID id.CouponID) error
 
 	// Core methods

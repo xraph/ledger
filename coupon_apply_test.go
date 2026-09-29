@@ -238,10 +238,11 @@ func TestApplyCouponRejections(t *testing.T) {
 			tt.mutate(c)
 			mustCreateCoupon(t, s, c)
 
-			// Capture before the call: on the memory store, GetCoupon and
-			// GetCouponByID return the same pointer this test created, so
-			// comparing stored.TimesRedeemed against c.TimesRedeemed after
-			// the call would always compare a value against itself.
+			// Capture before the call. The memory store copies a coupon on
+			// the way in and on the way out (since Task 12), so c is not the
+			// stored value and a redemption would not move c.TimesRedeemed.
+			// Taking the count now keeps the comparison below honest even if
+			// a store ever handed back its own pointer again.
 			want := c.TimesRedeemed
 
 			_, err := l.ApplyCoupon(ctx, subID, tt.code)

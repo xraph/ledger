@@ -49,6 +49,7 @@ func Run(t *testing.T, newStore func(t *testing.T) ledgerstore.Store) {
 	t.Run("RedeemCouponRecordsAndCounts", func(t *testing.T) { testRedeemCouponRecordsAndCounts(t, newStore(t)) })
 	t.Run("RedeemCouponRespectsTheCap", func(t *testing.T) { testRedeemCouponRespectsTheCap(t, newStore(t)) })
 	t.Run("RedeemCouponUnlimited", func(t *testing.T) { testRedeemCouponUnlimited(t, newStore(t)) })
+	t.Run("RedeemCouponNegativeCapIsUnlimited", func(t *testing.T) { testRedeemCouponNegativeCapIsUnlimited(t, newStore(t)) })
 	t.Run("RedeemCouponDuplicate", func(t *testing.T) { testRedeemCouponDuplicate(t, newStore(t)) })
 	t.Run("RedeemCouponRejectsBadInput", func(t *testing.T) { testRedeemCouponRejectsBadInput(t, newStore(t)) })
 	t.Run("RedeemCouponConcurrentCap", func(t *testing.T) { testRedeemCouponConcurrentCap(t, newStore(t)) })
@@ -774,6 +775,36 @@ func testRedeemCouponUnlimited(t *testing.T, s ledgerstore.Store) {
 	}
 	if got.TimesRedeemed != 6 {
 		t.Errorf("got TimesRedeemed %d, want 6", got.TimesRedeemed)
+	}
+}
+
+// testRedeemCouponNegativeCapIsUnlimited pins the one cap rule every
+// backend and the engine share: MaxRedemptions of zero or less means
+// unlimited. The SQL and mongo backends used to encode "= 0", which read a
+// negative cap as already exhausted while memory and ApplyCoupon read it as
+// unlimited.
+func testRedeemCouponNegativeCapIsUnlimited(t *testing.T, s ledgerstore.Store) {
+	ctx := context.Background()
+	appID := "app-" + uniqueSuffix()
+
+	c := newTestCoupon(appID)
+	c.MaxRedemptions = -1
+	if err := s.CreateCoupon(ctx, c); err != nil {
+		t.Fatalf("CreateCoupon: %v", err)
+	}
+
+	for i := range 3 {
+		if err := s.RedeemCoupon(ctx, id.NewSubscriptionID(), c.ID); err != nil {
+			t.Fatalf("RedeemCoupon %d with MaxRedemptions -1: %v", i+1, err)
+		}
+	}
+
+	got, err := s.GetCouponByID(ctx, c.ID)
+	if err != nil {
+		t.Fatalf("GetCouponByID: %v", err)
+	}
+	if got.TimesRedeemed != 3 {
+		t.Errorf("got TimesRedeemed %d, want 3", got.TimesRedeemed)
 	}
 }
 

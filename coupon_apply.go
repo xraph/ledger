@@ -45,7 +45,8 @@ func (l *Ledger) ApplyCoupon(ctx context.Context, subID id.SubscriptionID, code 
 		return nil, ErrCouponExpired
 	}
 
-	// MaxRedemptions of zero means unlimited.
+	// MaxRedemptions of zero or less means unlimited, the same rule every
+	// store's RedeemCoupon applies.
 	if c.MaxRedemptions > 0 && c.TimesRedeemed >= c.MaxRedemptions {
 		return nil, ErrCouponExhausted
 	}

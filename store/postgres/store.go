@@ -1010,7 +1010,7 @@ func (s *Store) IncrementCouponRedemptions(ctx context.Context, couponID id.Coup
 // increments its redemption count in one transaction, committing only when
 // both writes land. The cap (MaxRedemptions) is enforced by a conditional
 // UPDATE - `times_redeemed = times_redeemed + 1 WHERE id = ? AND
-// (max_redemptions = 0 OR times_redeemed < max_redemptions)` - rather than
+// (max_redemptions <= 0 OR times_redeemed < max_redemptions)` - rather than
 // a read of TimesRedeemed followed by a separate write, so two concurrent
 // transactions racing the same coupon toward its cap cannot both read the
 // count before either writes it: Postgres takes a row lock on the first
@@ -1075,7 +1075,7 @@ func (s *Store) RedeemCoupon(ctx context.Context, subID id.SubscriptionID, coupo
 		Set("times_redeemed = times_redeemed + 1").
 		Set("updated_at = ?", now()).
 		Where("id = ?", couponID.String()).
-		Where("(max_redemptions = 0 OR times_redeemed < max_redemptions)").
+		Where("(max_redemptions <= 0 OR times_redeemed < max_redemptions)").
 		Exec(ctx)
 	if err != nil {
 		return err

@@ -1635,3 +1635,42 @@ type namedTax struct {
 }
 
 func (n *namedTax) Name() string { return n.name }
+
+// A negative quantity is legal to meter (a correction, say), so the store's
+// total for a period can come back below zero. Billing that as nothing
+// would hide the problem; it must fail and name the feature instead.
+func TestGenerateInvoiceRefusesANegativeStoreTotal(t *testing.T) {
+	l, s, sub := billingFixture(t)
+	ingest(t, s, sub, "api_calls", -50)
+
+	inv, err := l.GenerateInvoice(context.Background(), sub.ID)
+	if err == nil {
+		t.Fatalf("got invoice with total %v, want an error for a negative usage total", inv.Total)
+	}
+	if !strings.Contains(err.Error(), `"api_calls"`) {
+		t.Errorf("error %q does not name the feature", err.Error())
+	}
+	requireNoInvoiceStored(t, s, sub)
+}
+
+// Refusing a negative total at billing time must not stop anyone metering a
+// negative quantity.
+func TestMeterStillAcceptsANegativeQuantity(t *testing.T) {
+	l, _, _ := billingFixture(t)
+	ctx := context.WithValue(context.Background(), "tenant_id", "tenant_1")
+	ctx = context.WithValue(ctx, "app_id", "app_1")
+
+	if err := l.Meter(ctx, "api_calls", -50); err != nil {
+		t.Fatalf("Meter(-50): %v", err)
+	}
+}
+
+func TestGenerateInvoiceRefusesANegativeBaseAmount(t *testing.T) {
+	l, s, sub := hookFixture(t, setBaseAmount(-100))
+
+	inv, err := l.GenerateInvoice(context.Background(), sub.ID)
+	if !errors.Is(err, ledger.ErrInvalidPricing) {
+		t.Fatalf("got invoice %v, err %v, want an error wrapping ErrInvalidPricing", inv, err)
+	}
+	requireNoInvoiceStored(t, s, sub)
+}
