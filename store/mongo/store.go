@@ -898,8 +898,28 @@ func (s *Store) UpdateCoupon(ctx context.Context, c *coupon.Coupon) error {
 	m := toCouponModel(c)
 	m.UpdatedAt = now()
 
+	// Every field but _id and times_redeemed. The redemption count belongs to
+	// RedeemCoupon and IncrementCouponRedemptions, so a stale copy of the
+	// coupon cannot roll it back. A nil validity bound is written as null,
+	// which is how an edit clears it.
 	_, err := s.mdb.NewUpdate(m).
 		Filter(bson.M{"_id": m.ID}).
+		SetUpdate(bson.M{"$set": bson.M{
+			"code":            m.Code,
+			"name":            m.Name,
+			"type":            m.Type,
+			"amount_cents":    m.AmountCents,
+			"amount_currency": m.AmountCurrency,
+			"percentage":      m.Percentage,
+			"currency":        m.Currency,
+			"max_redemptions": m.MaxRedemptions,
+			"valid_from":      m.ValidFrom,
+			"valid_until":     m.ValidUntil,
+			"app_id":          m.AppID,
+			"metadata":        m.Metadata,
+			"created_at":      m.CreatedAt,
+			"updated_at":      m.UpdatedAt,
+		}}).
 		Exec(ctx)
 	if err != nil {
 		return fmt.Errorf("ledger/mongo: update coupon: %w", err)

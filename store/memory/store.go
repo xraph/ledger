@@ -587,6 +587,11 @@ func (s *Store) UpdateCoupon(_ context.Context, c *coupon.Coupon) error {
 	defer s.mu.Unlock()
 
 	stored := *c
+	// The redemption count belongs to RedeemCoupon. Keep whatever is stored,
+	// whatever the caller's copy carries.
+	if current, ok := s.coupons[c.ID.String()]; ok {
+		stored.TimesRedeemed = current.TimesRedeemed
+	}
 	s.coupons[c.ID.String()] = &stored
 	return nil
 }

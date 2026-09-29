@@ -53,6 +53,7 @@ func Run(t *testing.T, newStore func(t *testing.T) ledgerstore.Store) {
 	t.Run("RedeemCouponDuplicate", func(t *testing.T) { testRedeemCouponDuplicate(t, newStore(t)) })
 	t.Run("RedeemCouponRejectsBadInput", func(t *testing.T) { testRedeemCouponRejectsBadInput(t, newStore(t)) })
 	t.Run("RedeemCouponConcurrentCap", func(t *testing.T) { testRedeemCouponConcurrentCap(t, newStore(t)) })
+	t.Run("UpdateCouponLeavesTimesRedeemedAlone", func(t *testing.T) { testUpdateCouponLeavesTimesRedeemedAlone(t, newStore(t)) })
 	t.Run("SubscriptionTenantIsolation", func(t *testing.T) { testSubscriptionTenantIsolation(t, newStore(t)) })
 	t.Run("SubscriptionQuantityRoundTrip", func(t *testing.T) { testSubscriptionQuantityRoundTrip(t, newStore(t)) })
 	t.Run("InvoiceTenantIsolation", func(t *testing.T) { testInvoiceTenantIsolation(t, newStore(t)) })
@@ -705,6 +706,42 @@ func testRedeemCouponRecordsAndCounts(t *testing.T, s ledgerstore.Store) {
 	}
 	if got.TimesRedeemed != 1 {
 		t.Errorf("got TimesRedeemed %d, want 1", got.TimesRedeemed)
+	}
+}
+
+// testUpdateCouponLeavesTimesRedeemedAlone pins that UpdateCoupon writes a
+// coupon's editable fields but never its redemption count: a caller holding a
+// stale copy, with TimesRedeemed still 0, must not roll the count back.
+func testUpdateCouponLeavesTimesRedeemedAlone(t *testing.T, s ledgerstore.Store) {
+	ctx := context.Background()
+	appID := "app-" + uniqueSuffix()
+
+	c := newTestCoupon(appID)
+	if err := s.CreateCoupon(ctx, c); err != nil {
+		t.Fatalf("CreateCoupon: %v", err)
+	}
+
+	for i := 0; i < 2; i++ {
+		if err := s.RedeemCoupon(ctx, id.NewSubscriptionID(), c.ID); err != nil {
+			t.Fatalf("RedeemCoupon %d: %v", i, err)
+		}
+	}
+
+	stale := *c // still carries TimesRedeemed 0
+	stale.Name = "Renamed " + uniqueSuffix()
+	if err := s.UpdateCoupon(ctx, &stale); err != nil {
+		t.Fatalf("UpdateCoupon: %v", err)
+	}
+
+	got, err := s.GetCouponByID(ctx, c.ID)
+	if err != nil {
+		t.Fatalf("GetCouponByID: %v", err)
+	}
+	if got.Name != stale.Name {
+		t.Errorf("Name = %q, want %q", got.Name, stale.Name)
+	}
+	if got.TimesRedeemed != 2 {
+		t.Errorf("TimesRedeemed = %d, want 2: UpdateCoupon must not write the count", got.TimesRedeemed)
 	}
 }
 

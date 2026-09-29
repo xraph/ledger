@@ -849,10 +849,20 @@ func (s *Store) ListCoupons(ctx context.Context, appID string, opts coupon.ListO
 	return result, nil
 }
 
+// couponUpdateColumns lists every coupon column UpdateCoupon writes. It leaves
+// out the primary key, which WherePK matches on, and times_redeemed, which only
+// RedeemCoupon and IncrementCouponRedemptions may change: a caller holding a
+// stale copy of the coupon must not roll the count back.
+var couponUpdateColumns = []string{
+	"code", "name", "type", "amount_cents", "amount_currency", "percentage",
+	"currency", "max_redemptions", "valid_from", "valid_until", "app_id",
+	"metadata", "created_at", "updated_at",
+}
+
 func (s *Store) UpdateCoupon(ctx context.Context, c *coupon.Coupon) error {
 	m := toCouponModel(c)
 	m.UpdatedAt = now()
-	_, err := s.sdb.NewUpdate(m).WherePK().Exec(ctx)
+	_, err := s.sdb.NewUpdate(m).Column(couponUpdateColumns...).WherePK().Exec(ctx)
 	return err
 }
 
