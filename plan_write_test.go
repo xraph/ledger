@@ -208,3 +208,36 @@ func TestDeletePlanRefusesWhileInUse(t *testing.T) {
 		t.Errorf("after delete: got %v, want ErrPlanNotFound", err)
 	}
 }
+
+// A plan stored before currencies were normalised carries "USD". Editing it
+// must not be refused as a currency change: the currency is the same one.
+func TestUpdatePlanAcceptsALegacyUppercaseCurrency(t *testing.T) {
+	ctx := context.Background()
+	s := memory.New()
+	l := ledger.New(s)
+
+	legacy := validPlan("legacy", "app_1")
+	legacy.Entity = types.NewEntity()
+	legacy.ID = id.NewPlanID()
+	legacy.Status = plan.StatusActive
+	legacy.Currency = "USD"
+	if err := s.CreatePlan(ctx, legacy); err != nil {
+		t.Fatalf("CreatePlan: %v", err)
+	}
+
+	edit, err := l.GetPlan(ctx, legacy.ID)
+	if err != nil {
+		t.Fatalf("GetPlan: %v", err)
+	}
+	edit.Name = "Legacy renamed"
+	if err := l.UpdatePlan(ctx, edit); err != nil {
+		t.Fatalf("UpdatePlan: %v", err)
+	}
+	got, err := l.GetPlan(ctx, legacy.ID)
+	if err != nil {
+		t.Fatalf("GetPlan: %v", err)
+	}
+	if got.Name != "Legacy renamed" {
+		t.Errorf("name = %q, want Legacy renamed", got.Name)
+	}
+}

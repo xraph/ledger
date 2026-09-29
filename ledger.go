@@ -324,11 +324,19 @@ func (l *Ledger) GetActiveSubscription(ctx context.Context, tenantID, appID stri
 	return l.store.GetActiveSubscription(ctx, tenantID, appID)
 }
 
-// CancelSubscription cancels a subscription.
+// CancelSubscription cancels a subscription. A subscription that is already
+// canceled or expired is refused, so a second cancel can neither move its
+// cancel_at nor announce the cancellation again.
 func (l *Ledger) CancelSubscription(ctx context.Context, subID id.SubscriptionID, immediately bool) error {
 	sub, err := l.store.GetSubscription(ctx, subID)
 	if err != nil {
 		return err
+	}
+	switch sub.Status {
+	case subscription.StatusCanceled:
+		return ErrSubscriptionCanceled
+	case subscription.StatusExpired:
+		return ErrSubscriptionExpired
 	}
 
 	cancelAt := sub.CurrentPeriodEnd

@@ -126,7 +126,10 @@ func (l *Ledger) transitionSubscription(ctx context.Context, subID id.Subscripti
 }
 
 // liveInvoiceForPeriod returns a non-voided invoice already covering the
-// subscription's current period, or nil when there is none.
+// subscription's current period, or nil when there is none. It matches on the
+// subscription as well as the period: two subscriptions for one tenant can
+// share a period (SDK callers can align every period to the calendar), and
+// each of them is billed on its own.
 //
 // It lists the period rather than calling GetInvoiceByPeriod: that method
 // returns a single row, and once an invoice has been voided and regenerated
@@ -141,7 +144,7 @@ func (l *Ledger) liveInvoiceForPeriod(ctx context.Context, sub *subscription.Sub
 		return nil, err
 	}
 	for _, inv := range invs {
-		if inv.TenantID == sub.TenantID && inv.AppID == sub.AppID &&
+		if inv.SubscriptionID == sub.ID && inv.TenantID == sub.TenantID && inv.AppID == sub.AppID &&
 			inv.PeriodStart.Equal(sub.CurrentPeriodStart) && inv.PeriodEnd.Equal(sub.CurrentPeriodEnd) &&
 			inv.Status != invoice.StatusVoided {
 			return inv, nil

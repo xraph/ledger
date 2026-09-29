@@ -3,6 +3,7 @@ package ledger_test
 import (
 	"context"
 	"errors"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -591,5 +592,43 @@ func TestApplyCouponCannotExceedTheCapConcurrently(t *testing.T) {
 	}
 	if stored.TimesRedeemed != 3 {
 		t.Errorf("got TimesRedeemed %d, want exactly 3", stored.TimesRedeemed)
+	}
+}
+
+// A plugin validator's refusal is a refusal of the coupon, so it must read as
+// ErrCouponInvalid (BAD_REQUEST on the dashboard) and keep the validator's own
+// message, not surface as an unclassified internal error.
+func TestApplyCouponValidatorRefusalIsCouponInvalid(t *testing.T) {
+	ctx := context.Background()
+	v := &stubValidator{err: errors.New("tenant is on the deny list")}
+	s := memory.New()
+	l := ledger.New(s, ledger.WithPlugin(v))
+
+	p := &plan.Plan{
+		Entity: types.NewEntity(), ID: id.NewPlanID(), Currency: "usd",
+		Status: plan.StatusActive, AppID: "app_1", Slug: "pro",
+	}
+	if err := s.CreatePlan(ctx, p); err != nil {
+		t.Fatalf("CreatePlan: %v", err)
+	}
+	sub := &subscription.Subscription{
+		Entity: types.NewEntity(), ID: id.NewSubscriptionID(),
+		TenantID: "tenant_1", PlanID: p.ID,
+		Status: subscription.StatusActive, AppID: "app_1",
+	}
+	if err := s.CreateSubscription(ctx, sub); err != nil {
+		t.Fatalf("CreateSubscription: %v", err)
+	}
+	mustCreateCoupon(t, s, baseCoupon())
+
+	_, err := l.ApplyCoupon(ctx, sub.ID, "LAUNCH10")
+	if !errors.Is(err, ledger.ErrCouponInvalid) {
+		t.Errorf("got %v, want it to wrap ErrCouponInvalid", err)
+	}
+	if !errors.Is(err, v.err) {
+		t.Errorf("got %v, want it to keep the validator's error", err)
+	}
+	if err == nil || !strings.Contains(err.Error(), "tenant is on the deny list") {
+		t.Errorf("message %v does not carry the validator's text", err)
 	}
 }

@@ -109,7 +109,7 @@ func (l *Ledger) ApplyCoupon(ctx context.Context, subID id.SubscriptionID, code 
 
 	for _, v := range l.plugins.GetCouponValidators() {
 		if vErr := v.ValidateCoupon(ctx, c, sub); vErr != nil {
-			return nil, fmt.Errorf("ledger: coupon validator %q refused: %w", v.Name(), vErr)
+			return nil, fmt.Errorf("%w: coupon validator %q refused: %w", ErrCouponInvalid, v.Name(), vErr)
 		}
 	}
 

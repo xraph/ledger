@@ -139,7 +139,9 @@ func (l *Ledger) UpdatePlan(ctx context.Context, p *plan.Plan) error {
 	if p.AppID != existing.AppID {
 		return fmt.Errorf("%w: a plan cannot move between apps", ErrInvalidInput)
 	}
-	if p.Currency != existing.Currency {
+	// EqualFold, not !=: a plan stored before currencies were normalised
+	// carries "USD", and the normalised "usd" is the same currency.
+	if !strings.EqualFold(p.Currency, existing.Currency) {
 		return fmt.Errorf("%w: a plan's currency cannot change once it is created", ErrInvalidInput)
 	}
 	if err := validatePlan(p); err != nil {

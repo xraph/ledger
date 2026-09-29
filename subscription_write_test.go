@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"testing"
+	"time"
 
 	ledger "github.com/xraph/ledger"
 	"github.com/xraph/ledger/id"
@@ -197,4 +198,100 @@ func TestGenerateInvoiceRefusesASecondInvoiceForThePeriod(t *testing.T) {
 	if _, err := l.GenerateInvoice(ctx, sub.ID); !errors.Is(err, ledger.ErrAlreadyExists) {
 		t.Errorf("third: got %v, want ErrAlreadyExists", err)
 	}
+}
+
+// Two subscriptions for one tenant in one app can share a billing period, for
+// example when an SDK caller aligns every period to the calendar month. Each
+// one is billed on its own: the first invoice must not block the second.
+func TestGenerateInvoiceBillsTwoSubscriptionsSharingAPeriod(t *testing.T) {
+	ctx := context.Background()
+	s := memory.New()
+	l := ledger.New(s)
+	p := activePlan(t, l, "shared", "app_1", 0)
+
+	start := time.Date(2026, 9, 1, 0, 0, 0, 0, time.UTC)
+	end := time.Date(2026, 10, 1, 0, 0, 0, 0, time.UTC)
+	subs := make([]*subscription.Subscription, 2)
+	for i := range subs {
+		subs[i] = &subscription.Subscription{
+			Entity: types.NewEntity(), ID: id.NewSubscriptionID(),
+			TenantID: "t1", PlanID: p.ID, AppID: "app_1",
+			Status:             subscription.StatusActive,
+			CurrentPeriodStart: start, CurrentPeriodEnd: end,
+		}
+		if err := s.CreateSubscription(ctx, subs[i]); err != nil {
+			t.Fatalf("CreateSubscription: %v", err)
+		}
+	}
+
+	for i, sub := range subs {
+		inv, err := l.GenerateInvoice(ctx, sub.ID)
+		if err != nil {
+			t.Fatalf("subscription %d: %v", i, err)
+		}
+		if inv.SubscriptionID.String() != sub.ID.String() {
+			t.Errorf("subscription %d: invoice belongs to %s", i, inv.SubscriptionID)
+		}
+	}
+	for i, sub := range subs {
+		if _, err := l.GenerateInvoice(ctx, sub.ID); !errors.Is(err, ledger.ErrAlreadyExists) {
+			t.Errorf("second generate on subscription %d: got %v, want ErrAlreadyExists", i, err)
+		}
+	}
+}
+
+func TestCancelSubscriptionRefusesAnEndedSubscription(t *testing.T) {
+	ctx := context.Background()
+	s := memory.New()
+	l := ledger.New(s)
+	p := activePlan(t, l, "ended", "app_1", 0)
+
+	t.Run("canceled", func(t *testing.T) {
+		sub := &subscription.Subscription{TenantID: "t1", PlanID: p.ID, AppID: "app_1"}
+		if err := l.CreateSubscription(ctx, sub); err != nil {
+			t.Fatalf("CreateSubscription: %v", err)
+		}
+		if err := l.CancelSubscription(ctx, sub.ID, true); err != nil {
+			t.Fatalf("first cancel: %v", err)
+		}
+		before, err := s.GetSubscription(ctx, sub.ID)
+		if err != nil {
+			t.Fatalf("GetSubscription: %v", err)
+		}
+
+		for _, immediately := range []bool{false, true} {
+			if err := l.CancelSubscription(ctx, sub.ID, immediately); !errors.Is(err, ledger.ErrSubscriptionCanceled) {
+				t.Errorf("cancel again (immediately=%v): got %v, want ErrSubscriptionCanceled", immediately, err)
+			}
+		}
+
+		after, err := s.GetSubscription(ctx, sub.ID)
+		if err != nil {
+			t.Fatalf("GetSubscription: %v", err)
+		}
+		if after.Status != subscription.StatusCanceled || after.CancelAt == nil || !after.CancelAt.Equal(*before.CancelAt) {
+			t.Errorf("a refused cancel changed the row: status %q cancel_at %v, want canceled and %v",
+				after.Status, after.CancelAt, before.CancelAt)
+		}
+	})
+
+	t.Run("expired", func(t *testing.T) {
+		sub := &subscription.Subscription{
+			Entity: types.NewEntity(), ID: id.NewSubscriptionID(),
+			TenantID: "t2", PlanID: p.ID, AppID: "app_1", Status: subscription.StatusExpired,
+		}
+		if err := s.CreateSubscription(ctx, sub); err != nil {
+			t.Fatalf("CreateSubscription: %v", err)
+		}
+		if err := l.CancelSubscription(ctx, sub.ID, false); !errors.Is(err, ledger.ErrSubscriptionExpired) {
+			t.Errorf("got %v, want ErrSubscriptionExpired", err)
+		}
+		after, err := s.GetSubscription(ctx, sub.ID)
+		if err != nil {
+			t.Fatalf("GetSubscription: %v", err)
+		}
+		if after.CancelAt != nil {
+			t.Errorf("a refused cancel set cancel_at to %v", after.CancelAt)
+		}
+	})
 }
