@@ -18,3 +18,12 @@ intents:
   - { name: plans.activate,       kind: command, version: 1, capability: write, invalidates: [plans.list, plans.detail, overview.stats] }
   - { name: plans.delete,         kind: command, version: 1, capability: write, invalidates: [plans.list, overview.stats] }
   - { name: plans.syncToProvider, kind: command, version: 1, capability: write, invalidates: [plans.detail] }
+
+  # Features (the reusable catalog)
+  - { name: features.list,           kind: query,   version: 1, capability: read }
+  - { name: features.detail,         kind: query,   version: 1, capability: read }
+  - { name: features.create,         kind: command, version: 1, capability: write, invalidates: [features.list] }
+  - { name: features.update,         kind: command, version: 1, capability: write, invalidates: [features.list, features.detail] }
+  - { name: features.archive,        kind: command, version: 1, capability: write, invalidates: [features.list, features.detail] }
+  - { name: features.delete,         kind: command, version: 1, capability: write, invalidates: [features.list] }
+  - { name: features.syncToProvider, kind: command, version: 1, capability: write, invalidates: [features.detail] }

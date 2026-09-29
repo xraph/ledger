@@ -11,6 +11,7 @@ import (
 
 	ledger "github.com/xraph/ledger"
 	"github.com/xraph/ledger/coupon"
+	"github.com/xraph/ledger/feature"
 	"github.com/xraph/ledger/id"
 	"github.com/xraph/ledger/invoice"
 	"github.com/xraph/ledger/meter"
@@ -334,6 +335,17 @@ func testCouponAppIsolation(t *testing.T, s ledgerstore.Store) {
 // newTestCoupon builds a coupon fixture whose code carries a unique suffix,
 // so a UNIQUE(code, app_id) index doesn't reject a second run against a
 // persistent database (Postgres run twice in a row against the same DSN).
+// newTestFeature builds a catalog feature with a unique key. An empty appID
+// makes it global.
+func newTestFeature(appID string) *feature.Feature {
+	return &feature.Feature{
+		Entity: types.NewEntity(), ID: id.NewFeatureID(),
+		Key: "feat-" + uniqueSuffix(), Name: "Feature",
+		Type: feature.FeatureMetered, DefaultLimit: 100, Period: feature.PeriodMonthly,
+		Status: feature.StatusActive, AppID: appID,
+	}
+}
+
 func newTestCoupon(appID string) *coupon.Coupon {
 	code := "LAUNCH10-" + uniqueSuffix()
 	return &coupon.Coupon{
@@ -1724,10 +1736,13 @@ func testListInvoicesBoundsAreInstants(t *testing.T, s ledgerstore.Store) {
 // consistently: fetched two rows at a time, the pages neither overlap nor
 // skip, and together they read exactly as the unpaged listing does. It does
 // not assert a sort direction, because the backends' existing orders stand
-// (plans oldest first, the rest newest first). What a caller needs is that
-// offset paging is stable, and that is what the in-memory test double got
-// wrong: it paged over Go's randomised map order, or ignored Limit and
-// Offset altogether.
+// (plans and catalog features oldest first, the rest newest first). What a
+// caller needs is that offset paging is stable, and that is what the in-memory
+// test double got wrong: it paged over Go's randomised map order, or ignored
+// Limit and Offset altogether.
+//
+// The global feature list belongs to no app, so it is checked by
+// testSharedListPages, which cannot assume the list holds only this test's rows.
 //
 // Rows are stamped a second apart so no two share a created_at, which keeps
 // the assertion about paging rather than about tie-breaking.
@@ -1739,6 +1754,7 @@ func testListsPageInAStableOrder(t *testing.T, s ledgerstore.Store) {
 	at := func(i int) time.Time { return base.Add(time.Duration(i) * time.Second) }
 
 	const rows = 5
+	var globalIDs []string
 	for i := 0; i < rows; i++ {
 		p := &plan.Plan{
 			Entity: types.Entity{CreatedAt: at(i), UpdatedAt: at(i)}, ID: id.NewPlanID(),
@@ -1772,13 +1788,30 @@ func testListsPageInAStableOrder(t *testing.T, s ledgerstore.Store) {
 		if err := s.IngestBatch(ctx, []*meter.UsageEvent{e}); err != nil {
 			t.Fatalf("IngestBatch: %v", err)
 		}
+
+		f := newTestFeature(appID)
+		f.CreatedAt, f.UpdatedAt = at(i), at(i)
+		if err := s.CreateFeature(ctx, f); err != nil {
+			t.Fatalf("CreateFeature: %v", err)
+		}
+
+		g := newTestFeature("")
+		g.CreatedAt, g.UpdatedAt = at(i), at(i)
+		if err := s.CreateFeature(ctx, g); err != nil {
+			t.Fatalf("CreateFeature (global): %v", err)
+		}
+		globalIDs = append(globalIDs, g.ID.String())
 	}
 
 	lists := []struct {
 		name string
-		list func(limit, offset int) ([]string, error)
+		// shared marks a list that cannot be isolated to this test's rows:
+		// the global catalog belongs to no app, so a store that outlives the
+		// run (Postgres) holds rows from earlier runs as well.
+		shared bool
+		list   func(limit, offset int) ([]string, error)
 	}{
-		{"ListPlans", func(limit, offset int) ([]string, error) {
+		{"ListPlans", false, func(limit, offset int) ([]string, error) {
 			got, err := s.ListPlans(ctx, appID, plan.ListOpts{Limit: limit, Offset: offset})
 			ids := make([]string, len(got))
 			for i, r := range got {
@@ -1786,7 +1819,7 @@ func testListsPageInAStableOrder(t *testing.T, s ledgerstore.Store) {
 			}
 			return ids, err
 		}},
-		{"ListSubscriptions", func(limit, offset int) ([]string, error) {
+		{"ListSubscriptions", false, func(limit, offset int) ([]string, error) {
 			got, err := s.ListSubscriptions(ctx, tenantID, appID, subscription.ListOpts{Limit: limit, Offset: offset})
 			ids := make([]string, len(got))
 			for i, r := range got {
@@ -1794,7 +1827,7 @@ func testListsPageInAStableOrder(t *testing.T, s ledgerstore.Store) {
 			}
 			return ids, err
 		}},
-		{"ListInvoices", func(limit, offset int) ([]string, error) {
+		{"ListInvoices", false, func(limit, offset int) ([]string, error) {
 			got, err := s.ListInvoices(ctx, tenantID, appID, invoice.ListOpts{Limit: limit, Offset: offset})
 			ids := make([]string, len(got))
 			for i, r := range got {
@@ -1802,7 +1835,7 @@ func testListsPageInAStableOrder(t *testing.T, s ledgerstore.Store) {
 			}
 			return ids, err
 		}},
-		{"ListCoupons", func(limit, offset int) ([]string, error) {
+		{"ListCoupons", false, func(limit, offset int) ([]string, error) {
 			got, err := s.ListCoupons(ctx, appID, coupon.ListOpts{Limit: limit, Offset: offset})
 			ids := make([]string, len(got))
 			for i, r := range got {
@@ -1810,8 +1843,24 @@ func testListsPageInAStableOrder(t *testing.T, s ledgerstore.Store) {
 			}
 			return ids, err
 		}},
-		{"QueryUsage", func(limit, offset int) ([]string, error) {
+		{"QueryUsage", false, func(limit, offset int) ([]string, error) {
 			got, err := s.QueryUsage(ctx, tenantID, appID, meter.QueryOpts{Limit: limit, Offset: offset})
+			ids := make([]string, len(got))
+			for i, r := range got {
+				ids[i] = r.ID.String()
+			}
+			return ids, err
+		}},
+		{"ListFeatures", false, func(limit, offset int) ([]string, error) {
+			got, err := s.ListFeatures(ctx, appID, feature.ListOpts{Limit: limit, Offset: offset})
+			ids := make([]string, len(got))
+			for i, r := range got {
+				ids[i] = r.ID.String()
+			}
+			return ids, err
+		}},
+		{"ListGlobalFeatures", true, func(limit, offset int) ([]string, error) {
+			got, err := s.ListGlobalFeatures(ctx, feature.ListOpts{Limit: limit, Offset: offset})
 			ids := make([]string, len(got))
 			for i, r := range got {
 				ids[i] = r.ID.String()
@@ -1821,6 +1870,10 @@ func testListsPageInAStableOrder(t *testing.T, s ledgerstore.Store) {
 	}
 
 	for _, l := range lists {
+		if l.shared {
+			t.Run(l.name, func(t *testing.T) { testSharedListPages(t, l.list, globalIDs) })
+			continue
+		}
 		t.Run(l.name, func(t *testing.T) {
 			all, err := l.list(0, 0)
 			if err != nil {
@@ -1865,5 +1918,66 @@ func testListsPageInAStableOrder(t *testing.T, s ledgerstore.Store) {
 				t.Errorf("page past the end: got %d rows, want 0", len(past))
 			}
 		})
+	}
+}
+
+// testSharedListPages is the paging check for a list that other rows share, so
+// its length is not known. It pages through the whole list two rows at a time
+// and asserts the same three things: the pages neither overlap nor skip, they
+// read exactly as the unpaged list does, and a page past the end is empty.
+// It also asserts the rows this test created (mine, oldest first) come back
+// in that order, which is the order the backends promise.
+func testSharedListPages(t *testing.T, list func(limit, offset int) ([]string, error), mine []string) {
+	t.Helper()
+
+	all, err := list(0, 0)
+	if err != nil {
+		t.Fatalf("unpaged: %v", err)
+	}
+
+	next := 0
+	for _, rid := range all {
+		if next < len(mine) && rid == mine[next] {
+			next++
+		}
+	}
+	if next != len(mine) {
+		t.Errorf("the unpaged list holds %d of the %d rows created, in creation order; want all of them", next, len(mine))
+	}
+
+	var joined []string
+	seen := map[string]int{}
+	for offset := 0; offset <= len(all); offset += 2 {
+		page, err := list(2, offset)
+		if err != nil {
+			t.Fatalf("page at offset %d: %v", offset, err)
+		}
+		want := 2
+		if len(all)-offset < want {
+			want = len(all) - offset
+		}
+		if len(page) != want {
+			t.Errorf("page at offset %d: got %d rows, want %d", offset, len(page), want)
+		}
+		for _, rid := range page {
+			seen[rid]++
+			joined = append(joined, rid)
+		}
+	}
+	for _, rid := range all {
+		if seen[rid] != 1 {
+			t.Errorf("row %s appears on %d pages, want exactly 1", rid, seen[rid])
+		}
+	}
+	if !reflect.DeepEqual(joined, all) {
+		t.Errorf("pages read %v, but the unpaged list reads %v", joined, all)
+	}
+
+	past, err := list(2, len(all))
+	if err != nil {
+		t.Fatalf("page past the end: %v", err)
+	}
+	if len(past) != 0 {
+		t.Errorf("page past the end: got %d rows, want 0", len(past))
 	}
 }

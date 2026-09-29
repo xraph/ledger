@@ -95,6 +95,7 @@ func validateManifest(m *dash.ContractManifest) error {
 // registerAll binds every surface. Each surface's task adds one line here.
 func registerAll(b *binder) {
 	registerPlans(b)
+	registerFeatures(b)
 }
 
 // Ack is the answer to a command with nothing else to report.
