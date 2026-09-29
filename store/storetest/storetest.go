@@ -4,9 +4,11 @@ import (
 	"context"
 	"errors"
 	"reflect"
+	"strings"
 	"sync"
 	"testing"
 	"time"
+	"unsafe"
 
 	ledger "github.com/xraph/ledger"
 	"github.com/xraph/ledger/coupon"
@@ -60,6 +62,11 @@ func Run(t *testing.T, newStore func(t *testing.T) ledgerstore.Store) {
 	t.Run("IngestDuplicateKeyIsCountedOnce", func(t *testing.T) { testIngestDuplicateKeyIsCountedOnce(t, newStore(t)) })
 	t.Run("IngestKeyedAndKeylessMix", func(t *testing.T) { testIngestKeyedAndKeylessMix(t, newStore(t)) })
 	t.Run("QueryUsageWindowIsHalfOpen", func(t *testing.T) { testQueryUsageWindowIsHalfOpen(t, newStore(t)) })
+	t.Run("SubscriptionPeriodsRoundTripFromLocalTime", func(t *testing.T) {
+		testSubscriptionPeriodsRoundTripFromLocalTime(t, newStore(t))
+	})
+	t.Run("UsageEventRoundTripsFromLocalTime", func(t *testing.T) { testUsageEventRoundTripsFromLocalTime(t, newStore(t)) })
+	t.Run("UsageEventNearABoundaryInALocalZone", func(t *testing.T) { testUsageEventNearABoundaryInALocalZone(t, newStore(t)) })
 }
 
 // uniqueSuffix returns a value that differs on every call, including across
@@ -1472,5 +1479,162 @@ func testQueryUsageWindowIsHalfOpen(t *testing.T, s ledgerstore.Store) {
 	if len(shifted) != 3 || !hasUsageEventID(shifted, atStart.ID) || !hasUsageEventID(shifted, afterStart.ID) ||
 		!hasUsageEventID(shifted, beforeEnd.ID) {
 		t.Errorf("QueryUsage with bounds in another zone: got %d events, want the same three as the UTC window", len(shifted))
+	}
+}
+
+// timeHeader mirrors the leading fields of time.Time's memory layout. It
+// exists only so localNow can set the location of a time.Time that still
+// carries its monotonic reading; localNow verifies the result and fails the
+// test loudly if a future Go release changes the layout.
+type timeHeader struct {
+	wall uint64
+	ext  int64
+	loc  *time.Location
+}
+
+// localNow returns time.Now() placed in a fixed UTC-5 zone with the
+// monotonic clock reading that time.Now() carries. That is what Ledger's own
+// write paths (Ledger.Meter, Ledger.CreateSubscription) hand to a store on a
+// host whose zone is not UTC: a non-UTC location and an "m=+..." suffix in
+// the default string form. The tests below must not call .UTC() or .Round(0)
+// on it, since stripping either is exactly what a store has to do for itself.
+//
+// time.Time.In, time.Time.Local and time.Time.UTC all drop the monotonic
+// reading, so the location is set directly on a copy of time.Now(). The
+// alternative, assigning to time.Local for the duration of the call, races
+// with every goroutine that calls time.Now(), including the database
+// drivers' background ones.
+func localNow(t *testing.T) time.Time {
+	t.Helper()
+
+	zone := time.FixedZone("CDT", -5*3600)
+	got := time.Now()
+	(*timeHeader)(unsafe.Pointer(&got)).loc = zone
+
+	if got.Location() != zone {
+		t.Fatalf("localNow could not set the location: %q", got.String())
+	}
+	if !strings.Contains(got.String(), "m=+") {
+		t.Fatalf("localNow has no monotonic reading: %q", got.String())
+	}
+	if !strings.Contains(got.String(), "-0500 CDT") {
+		t.Fatalf("localNow is not in UTC-5: %q", got.String())
+	}
+	return got
+}
+
+// sameInstantToMillisecond reports whether a and b are the same instant once
+// both are truncated to the millisecond, the precision MongoDB stores.
+func sameInstantToMillisecond(a, b time.Time) bool {
+	return a.Truncate(time.Millisecond).Equal(b.Truncate(time.Millisecond))
+}
+
+// testSubscriptionPeriodsRoundTripFromLocalTime stores a subscription whose
+// period bounds and CancelAt come from time.Now() in a non-UTC zone, monotonic
+// reading intact, and reads it back. SQLite once wrote such a value as
+// "2026-09-29 15:43:04.194044 -0500 CDT m=+0.017196459" and could not scan it
+// again, so every subscription made through Ledger.CreateSubscription was
+// unreadable there.
+func testSubscriptionPeriodsRoundTripFromLocalTime(t *testing.T, s ledgerstore.Store) {
+	ctx := context.Background()
+	appID := "app-" + uniqueSuffix()
+	tenantID := "tenant-" + uniqueSuffix()
+
+	start := localNow(t)
+	end := start.AddDate(0, 1, 0)
+	cancelAt := localNow(t).Add(48 * time.Hour)
+
+	sub := newTestSubscription(tenantID, appID)
+	sub.CurrentPeriodStart = start
+	sub.CurrentPeriodEnd = end
+	sub.CancelAt = &cancelAt
+	if err := s.CreateSubscription(ctx, sub); err != nil {
+		t.Fatalf("CreateSubscription: %v", err)
+	}
+
+	got, err := s.GetSubscription(ctx, sub.ID)
+	if err != nil {
+		t.Fatalf("GetSubscription: %v", err)
+	}
+
+	if got.CurrentPeriodStart.IsZero() || !sameInstantToMillisecond(got.CurrentPeriodStart, start) {
+		t.Errorf("CurrentPeriodStart: got %v, want the instant %v", got.CurrentPeriodStart, start)
+	}
+	if got.CurrentPeriodEnd.IsZero() || !sameInstantToMillisecond(got.CurrentPeriodEnd, end) {
+		t.Errorf("CurrentPeriodEnd: got %v, want the instant %v", got.CurrentPeriodEnd, end)
+	}
+	if got.CancelAt == nil || got.CancelAt.IsZero() {
+		t.Fatalf("CancelAt: got %v, want the instant %v", got.CancelAt, cancelAt)
+	}
+	if !sameInstantToMillisecond(*got.CancelAt, cancelAt) {
+		t.Errorf("CancelAt: got %v, want the instant %v", *got.CancelAt, cancelAt)
+	}
+}
+
+// testUsageEventRoundTripsFromLocalTime ingests an event stamped from
+// time.Now() in a non-UTC zone, monotonic reading intact, and queries it back
+// through a window written in UTC. SQLite once stored such an event in a form
+// QueryUsage could not scan.
+func testUsageEventRoundTripsFromLocalTime(t *testing.T, s ledgerstore.Store) {
+	ctx := context.Background()
+	appID := "app-" + uniqueSuffix()
+	tenantID := "tenant-" + uniqueSuffix()
+	featureKey := "local-" + uniqueSuffix()
+
+	stamp := localNow(t)
+	evt := &meter.UsageEvent{
+		ID: id.NewUsageEventID(), TenantID: tenantID, AppID: appID,
+		FeatureKey: featureKey, Quantity: 1, Timestamp: stamp,
+	}
+	if err := s.IngestBatch(ctx, []*meter.UsageEvent{evt}); err != nil {
+		t.Fatalf("IngestBatch: %v", err)
+	}
+
+	got, err := s.QueryUsage(ctx, tenantID, appID, meter.QueryOpts{
+		FeatureKey: featureKey,
+		Start:      stamp.Add(-time.Hour).UTC(),
+		End:        stamp.Add(time.Hour).UTC(),
+	})
+	if err != nil {
+		t.Fatalf("QueryUsage: %v", err)
+	}
+	if len(got) != 1 || got[0].ID.String() != evt.ID.String() {
+		t.Fatalf("QueryUsage: got %d events, want exactly the ingested event %s", len(got), evt.ID)
+	}
+	if got[0].Timestamp.IsZero() || !sameInstantToMillisecond(got[0].Timestamp, stamp) {
+		t.Errorf("Timestamp: got %v, want the instant %v", got[0].Timestamp, stamp)
+	}
+}
+
+// testUsageEventNearABoundaryInALocalZone is the text-comparison case. SQLite
+// compares timestamps as text, so a row stored in UTC-5 sorts by its local
+// wall clock: an event 30 minutes into a UTC window has a local wall clock of
+// the previous evening and falls outside a text comparison against UTC
+// bounds, and is silently dropped when it is the only row.
+func testUsageEventNearABoundaryInALocalZone(t *testing.T, s ledgerstore.Store) {
+	ctx := context.Background()
+	appID := "app-" + uniqueSuffix()
+	tenantID := "tenant-" + uniqueSuffix()
+	featureKey := "boundary-" + uniqueSuffix()
+
+	start := time.Date(2026, time.March, 1, 0, 0, 0, 0, time.UTC)
+	end := start.AddDate(0, 1, 0)
+
+	local := time.FixedZone("CDT", -5*3600)
+	evt := &meter.UsageEvent{
+		ID: id.NewUsageEventID(), TenantID: tenantID, AppID: appID,
+		FeatureKey: featureKey, Quantity: 1, Timestamp: start.Add(30 * time.Minute).In(local),
+	}
+	if err := s.IngestBatch(ctx, []*meter.UsageEvent{evt}); err != nil {
+		t.Fatalf("IngestBatch: %v", err)
+	}
+
+	got, err := s.QueryUsage(ctx, tenantID, appID, meter.QueryOpts{FeatureKey: featureKey, Start: start, End: end})
+	if err != nil {
+		t.Fatalf("QueryUsage: %v", err)
+	}
+	if len(got) != 1 || got[0].ID.String() != evt.ID.String() {
+		t.Errorf("QueryUsage[Start, End): got %d events, want the event stamped 30 minutes after Start "+
+			"(its UTC-5 wall clock is the previous evening, and a store that compares text drops it)", len(got))
 	}
 }

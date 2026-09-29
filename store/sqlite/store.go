@@ -431,7 +431,7 @@ func (s *Store) UpdateSubscription(ctx context.Context, sub *subscription.Subscr
 func (s *Store) CancelSubscription(ctx context.Context, subID id.SubscriptionID, cancelAt time.Time) error {
 	t := now()
 	updates := s.sdb.NewUpdate((*subscriptionModel)(nil)).
-		Set("cancel_at = ?", cancelAt).
+		Set("cancel_at = ?", cancelAt.UTC()).
 		Set("updated_at = ?", t).
 		Where("id = ?", subID.String())
 
@@ -472,12 +472,20 @@ func (s *Store) IngestBatch(ctx context.Context, events []*meter.UsageEvent) err
 }
 
 func (s *Store) Aggregate(ctx context.Context, tenantID, appID, featureKey string, period plan.Period) (int64, error) {
-	startOfPeriod := getStartOfPeriod(time.Now(), period)
+	// The period start is an instant, so it is bound in UTC: SQLite compares
+	// these timestamps as text, and every stored one is UTC.
+	//
+	// It is inclusive, matching the half-open [Start, End) window QueryUsage
+	// applies: an event stamped exactly at the start of the period belongs to
+	// it. The start is computed from time.Now(), so a test cannot place an
+	// event on that instant without an injectable clock, and none is
+	// invented here.
+	startOfPeriod := getStartOfPeriod(time.Now(), period).UTC()
 
 	var total int64
 	err := s.sdb.NewRaw(`
 		SELECT COALESCE(SUM(quantity), 0) FROM ledger_usage_events
-		WHERE tenant_id = ? AND app_id = ? AND feature_key = ? AND timestamp > ?
+		WHERE tenant_id = ? AND app_id = ? AND feature_key = ? AND timestamp >= ?
 	`, tenantID, appID, featureKey, startOfPeriod).Scan(ctx, &total)
 	if err != nil {
 		return 0, err
@@ -546,7 +554,7 @@ func (s *Store) QueryUsage(ctx context.Context, tenantID, appID string, opts met
 
 func (s *Store) PurgeUsage(ctx context.Context, before time.Time) (int64, error) {
 	res, err := s.sdb.NewDelete((*usageEventModel)(nil)).
-		Where("timestamp < ?", before).
+		Where("timestamp < ?", before.UTC()).
 		Exec(ctx)
 	if err != nil {
 		return 0, err
@@ -687,8 +695,8 @@ func (s *Store) GetInvoiceByPeriod(ctx context.Context, tenantID, appID string, 
 	err := s.sdb.NewSelect(m).
 		Where("tenant_id = ?", tenantID).
 		Where("app_id = ?", appID).
-		Where("period_start = ?", periodStart).
-		Where("period_end = ?", periodEnd).
+		Where("period_start = ?", periodStart.UTC()).
+		Where("period_end = ?", periodEnd.UTC()).
 		Scan(ctx)
 	if err != nil {
 		if isNoRows(err) {
@@ -728,7 +736,7 @@ func (s *Store) MarkInvoicePaid(ctx context.Context, invID id.InvoiceID, paidAt 
 	t := now()
 	res, err := s.sdb.NewUpdate((*invoiceModel)(nil)).
 		Set("status = ?", string(invoice.StatusPaid)).
-		Set("paid_at = ?", paidAt).
+		Set("paid_at = ?", paidAt.UTC()).
 		Set("payment_ref = ?", paymentRef).
 		Set("updated_at = ?", t).
 		Where("id = ?", invID.String()).

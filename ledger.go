@@ -252,8 +252,12 @@ func (l *Ledger) CreateSubscription(ctx context.Context, sub *subscription.Subsc
 
 	// Set initial period
 	if sub.CurrentPeriodStart.IsZero() {
-		sub.CurrentPeriodStart = time.Now()
-		sub.CurrentPeriodEnd = time.Now().AddDate(0, 1, 0) // Monthly by default
+		// Stored times are UTC, so every backend holds the same
+		// representation. time.Now() carries the host's zone and a monotonic
+		// reading, neither of which a store can round-trip.
+		now := time.Now().UTC()
+		sub.CurrentPeriodStart = now
+		sub.CurrentPeriodEnd = now.AddDate(0, 1, 0) // Monthly by default
 	}
 
 	if err := l.store.CreateSubscription(ctx, sub); err != nil {
@@ -286,7 +290,7 @@ func (l *Ledger) CancelSubscription(ctx context.Context, subID id.SubscriptionID
 
 	cancelAt := sub.CurrentPeriodEnd
 	if immediately {
-		cancelAt = time.Now()
+		cancelAt = time.Now().UTC()
 	}
 
 	if err := l.store.CancelSubscription(ctx, subID, cancelAt); err != nil {
@@ -320,7 +324,7 @@ func (l *Ledger) Meter(ctx context.Context, featureKey string, quantity int64) e
 		AppID:      appID,
 		FeatureKey: featureKey,
 		Quantity:   quantity,
-		Timestamp:  time.Now(),
+		Timestamp:  time.Now().UTC(),
 	}
 
 	select {
@@ -1330,7 +1334,7 @@ func (l *Ledger) FinalizeInvoice(ctx context.Context, invID id.InvoiceID) error 
 	}
 
 	inv.Status = invoice.StatusPending
-	now := time.Now()
+	now := time.Now().UTC()
 	dueDate := now.AddDate(0, 0, 30) // 30-day payment terms
 	inv.DueDate = &dueDate
 
@@ -1385,7 +1389,7 @@ func (l *Ledger) MarkInvoiceVoided(ctx context.Context, invID id.InvoiceID, reas
 		return err
 	}
 
-	now := time.Now()
+	now := time.Now().UTC()
 	inv.Status = invoice.StatusVoided
 	inv.VoidedAt = &now
 	inv.VoidReason = reason

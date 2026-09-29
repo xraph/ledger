@@ -284,13 +284,18 @@ func (s *Store) Aggregate(_ context.Context, tenantID, appID, featureKey string,
 
 	var total int64
 	now := time.Now()
+	// The period start is inclusive, matching the half-open [Start, End)
+	// window QueryUsage applies: an event stamped exactly at the start of the
+	// period belongs to it. The start is computed from time.Now(), so a test
+	// cannot place an event on that instant without an injectable clock, and
+	// none is invented here.
 	startOfPeriod := getStartOfPeriod(now, period)
 
 	for _, event := range s.usageEvents {
 		if event.TenantID == tenantID &&
 			event.AppID == appID &&
 			event.FeatureKey == featureKey &&
-			event.Timestamp.After(startOfPeriod) {
+			!event.Timestamp.Before(startOfPeriod) {
 			total += event.Quantity
 		}
 	}

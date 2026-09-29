@@ -447,6 +447,11 @@ func (s *Store) IngestBatch(ctx context.Context, events []*meter.UsageEvent) err
 }
 
 func (s *Store) Aggregate(ctx context.Context, tenantID, appID, featureKey string, period plan.Period) (int64, error) {
+	// The period start is inclusive, matching the half-open [Start, End)
+	// window QueryUsage applies: an event stamped exactly at the start of the
+	// period belongs to it. The start is computed from time.Now(), so a test
+	// cannot place an event on that instant without an injectable clock, and
+	// none is invented here.
 	startOfPeriod := getStartOfPeriod(time.Now(), period)
 
 	pipeline := bson.A{
@@ -455,7 +460,7 @@ func (s *Store) Aggregate(ctx context.Context, tenantID, appID, featureKey strin
 				"tenant_id":   tenantID,
 				"app_id":      appID,
 				"feature_key": featureKey,
-				"timestamp":   bson.M{"$gt": startOfPeriod},
+				"timestamp":   bson.M{"$gte": startOfPeriod},
 			},
 		},
 		bson.M{

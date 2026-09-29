@@ -490,12 +490,17 @@ func (s *Store) IngestBatch(ctx context.Context, events []*meter.UsageEvent) err
 }
 
 func (s *Store) Aggregate(ctx context.Context, tenantID, appID, featureKey string, period plan.Period) (int64, error) {
+	// The period start is inclusive, matching the half-open [Start, End)
+	// window QueryUsage applies: an event stamped exactly at the start of the
+	// period belongs to it. The start is computed from time.Now(), so a test
+	// cannot place an event on that instant without an injectable clock, and
+	// none is invented here.
 	startOfPeriod := getStartOfPeriod(time.Now(), period)
 
 	var total int64
 	err := s.pg.NewRaw(`
 		SELECT COALESCE(SUM(quantity), 0) FROM ledger_usage_events
-		WHERE tenant_id = $1 AND app_id = $2 AND feature_key = $3 AND timestamp > $4
+		WHERE tenant_id = $1 AND app_id = $2 AND feature_key = $3 AND timestamp >= $4
 	`, tenantID, appID, featureKey, startOfPeriod).Scan(ctx, &total)
 	if err != nil {
 		return 0, err

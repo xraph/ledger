@@ -17,6 +17,21 @@ import (
 	"github.com/xraph/ledger/types"
 )
 
+// utcPtr returns a pointer to the UTC form of *t, or nil when t is nil. It
+// copies rather than aliasing so the caller's value is never modified.
+//
+// Every time written to SQLite goes through .UTC(): the driver stores a
+// time.Time as its default string form, so a local zone or a monotonic
+// clock reading ("... -0500 CDT m=+0.017") would be stored as text that can
+// neither be parsed back nor compared with UTC bounds. .UTC() drops both.
+func utcPtr(t *time.Time) *time.Time {
+	if t == nil {
+		return nil
+	}
+	u := t.UTC()
+	return &u
+}
+
 // ==================== Plan models ====================
 
 type planModel struct {
@@ -58,8 +73,8 @@ func toPlanModel(p *plan.Plan) *planModel {
 		ProviderID:   p.ProviderID,
 		ProviderName: p.ProviderName,
 		Metadata:     string(metadata),
-		CreatedAt:    p.CreatedAt,
-		UpdatedAt:    p.UpdatedAt,
+		CreatedAt:    p.CreatedAt.UTC(),
+		UpdatedAt:    p.UpdatedAt.UTC(),
 	}
 }
 
@@ -145,20 +160,20 @@ func toSubscriptionModel(s *subscription.Subscription) *subscriptionModel {
 		TenantID:           s.TenantID,
 		PlanID:             s.PlanID.String(),
 		Status:             string(s.Status),
-		CurrentPeriodStart: s.CurrentPeriodStart,
-		CurrentPeriodEnd:   s.CurrentPeriodEnd,
-		TrialStart:         s.TrialStart,
-		TrialEnd:           s.TrialEnd,
-		CanceledAt:         s.CanceledAt,
-		CancelAt:           s.CancelAt,
-		EndedAt:            s.EndedAt,
+		CurrentPeriodStart: s.CurrentPeriodStart.UTC(),
+		CurrentPeriodEnd:   s.CurrentPeriodEnd.UTC(),
+		TrialStart:         utcPtr(s.TrialStart),
+		TrialEnd:           utcPtr(s.TrialEnd),
+		CanceledAt:         utcPtr(s.CanceledAt),
+		CancelAt:           utcPtr(s.CancelAt),
+		EndedAt:            utcPtr(s.EndedAt),
 		AppID:              s.AppID,
 		ProviderID:         s.ProviderID,
 		ProviderName:       s.ProviderName,
 		Metadata:           string(metadata),
 		Quantity:           string(quantityJSON),
-		CreatedAt:          s.CreatedAt,
-		UpdatedAt:          s.UpdatedAt,
+		CreatedAt:          s.CreatedAt.UTC(),
+		UpdatedAt:          s.UpdatedAt.UTC(),
 	}
 }
 
@@ -234,7 +249,7 @@ func toUsageEventModel(e *meter.UsageEvent) *usageEventModel {
 		AppID:          e.AppID,
 		FeatureKey:     e.FeatureKey,
 		Quantity:       e.Quantity,
-		Timestamp:      e.Timestamp,
+		Timestamp:      e.Timestamp.UTC(),
 		IdempotencyKey: e.IdempotencyKey,
 		Metadata:       string(metadata),
 		CreatedAt:      time.Now().UTC(),
@@ -297,7 +312,7 @@ func toEntitlementCacheModel(tenantID, appID, featureKey string, result *entitle
 		Remaining:  result.Remaining,
 		SoftLimit:  result.SoftLimit,
 		Reason:     result.Reason,
-		ExpiresAt:  expiresAt,
+		ExpiresAt:  expiresAt.UTC(),
 		CreatedAt:  time.Now().UTC(),
 	}
 }
@@ -367,19 +382,19 @@ func toInvoiceModel(inv *invoice.Invoice) *invoiceModel {
 		TotalAmountCents:    inv.Total.Amount,
 		TotalCurrency:       inv.Total.Currency,
 		LineItems:           string(lineItems),
-		PeriodStart:         inv.PeriodStart,
-		PeriodEnd:           inv.PeriodEnd,
-		DueDate:             inv.DueDate,
-		PaidAt:              inv.PaidAt,
-		VoidedAt:            inv.VoidedAt,
+		PeriodStart:         inv.PeriodStart.UTC(),
+		PeriodEnd:           inv.PeriodEnd.UTC(),
+		DueDate:             utcPtr(inv.DueDate),
+		PaidAt:              utcPtr(inv.PaidAt),
+		VoidedAt:            utcPtr(inv.VoidedAt),
 		VoidReason:          inv.VoidReason,
 		PaymentRef:          inv.PaymentRef,
 		ProviderID:          inv.ProviderID,
 		ProviderName:        inv.ProviderName,
 		AppID:               inv.AppID,
 		Metadata:            string(metadata),
-		CreatedAt:           inv.CreatedAt,
-		UpdatedAt:           inv.UpdatedAt,
+		CreatedAt:           inv.CreatedAt.UTC(),
+		UpdatedAt:           inv.UpdatedAt.UTC(),
 	}
 }
 
@@ -469,12 +484,12 @@ func toCouponModel(c *coupon.Coupon) *couponModel {
 		Currency:       c.Currency,
 		MaxRedemptions: c.MaxRedemptions,
 		TimesRedeemed:  c.TimesRedeemed,
-		ValidFrom:      c.ValidFrom,
-		ValidUntil:     c.ValidUntil,
+		ValidFrom:      utcPtr(c.ValidFrom),
+		ValidUntil:     utcPtr(c.ValidUntil),
 		AppID:          c.AppID,
 		Metadata:       string(metadata),
-		CreatedAt:      c.CreatedAt,
-		UpdatedAt:      c.UpdatedAt,
+		CreatedAt:      c.CreatedAt.UTC(),
+		UpdatedAt:      c.UpdatedAt.UTC(),
 	}
 }
 
@@ -565,8 +580,8 @@ func toFeatureModel(f *feature.Feature) *featureModel {
 		ProviderID:   f.ProviderID,
 		ProviderName: f.ProviderName,
 		Metadata:     string(metadata),
-		CreatedAt:    f.CreatedAt,
-		UpdatedAt:    f.UpdatedAt,
+		CreatedAt:    f.CreatedAt.UTC(),
+		UpdatedAt:    f.UpdatedAt.UTC(),
 	}
 }
 
