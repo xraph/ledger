@@ -496,6 +496,13 @@ func (r *Registry) GetPricingStrategy(name string) PricingStrategy {
 	return r.pricingStrategies[name]
 }
 
+// GetUsageAggregator returns the usage aggregator registered under name, or nil.
+func (r *Registry) GetUsageAggregator(name string) UsageAggregator {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	return r.usageAggregators[name]
+}
+
 // GetTaxCalculators returns all registered tax calculators.
 func (r *Registry) GetTaxCalculators() []TaxCalculator {
 	r.mu.RLock()

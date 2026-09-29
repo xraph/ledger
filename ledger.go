@@ -495,6 +495,97 @@ func (l *Ledger) Remaining(ctx context.Context, featureKey string) (int64, error
 // Invoice Generation
 // ──────────────────────────────────────────────────
 
+// aggregateUsage totals a feature's usage for billing. A feature naming a
+// registered aggregator under metadata key "aggregator" is aggregated by the
+// plugin over the subscription's billing period; anything else goes through
+// the store. An unregistered name falls back to the store rather than
+// failing: a plan referring to a plugin that is not installed should still
+// bill.
+func (l *Ledger) aggregateUsage(ctx context.Context, sub *subscription.Subscription, pf plan.Feature) (int64, error) {
+	name := pf.Metadata["aggregator"]
+	if name == "" {
+		return l.store.Aggregate(ctx, sub.TenantID, sub.AppID, pf.Key, pf.Period)
+	}
+
+	agg := l.plugins.GetUsageAggregator(name)
+	if agg == nil {
+		l.logger.Warn("ledger: feature names an unregistered usage aggregator; using the store",
+			log.String("aggregator", name),
+			log.String("feature", pf.Key),
+		)
+
+		return l.store.Aggregate(ctx, sub.TenantID, sub.AppID, pf.Key, pf.Period)
+	}
+
+	events, err := l.store.QueryUsage(ctx, sub.TenantID, sub.AppID, meter.QueryOpts{
+		FeatureKey: pf.Key,
+		Start:      sub.CurrentPeriodStart,
+		End:        sub.CurrentPeriodEnd,
+	})
+	if err != nil {
+		return 0, fmt.Errorf("query usage for aggregator %q: %w", name, err)
+	}
+
+	boxed := make([]interface{}, len(events))
+	for i := range events {
+		boxed[i] = events[i]
+	}
+
+	return agg.Aggregate(ctx, boxed)
+}
+
+// priceFeature prices one feature's billable usage in currency, which must
+// be the plan's already-lowercased currency as GenerateInvoice normalised it.
+// featureTiers must already have passed invoice.ValidateTiers.
+//
+// A feature naming a registered pricing strategy under metadata key
+// "pricing_strategy", or failing that a plan naming one, is priced by the
+// plugin. Everything else uses the built-in tier models. The plugin is never
+// asked to price usage the allowance covers, and its answer must be a
+// non-negative Money in the plan's currency.
+func (l *Ledger) priceFeature(p *plan.Plan, pf plan.Feature, featureTiers []plan.PriceTier, currency string, usage, included int64) (types.Money, error) {
+	name := pf.Metadata["pricing_strategy"]
+	if name == "" {
+		name = p.Metadata["pricing_strategy"]
+	}
+	if name == "" {
+		return invoice.ComputeOverage(featureTiers, usage, included, currency), nil
+	}
+
+	strategy := l.plugins.GetPricingStrategy(name)
+	if strategy == nil {
+		l.logger.Warn("ledger: plan names an unregistered pricing strategy; using the built-in tiers",
+			log.String("strategy", name),
+			log.String("feature", pf.Key),
+		)
+
+		return invoice.ComputeOverage(featureTiers, usage, included, currency), nil
+	}
+
+	if included < 0 || usage <= included {
+		return types.Zero(currency), nil
+	}
+
+	boxed := make([]interface{}, len(featureTiers))
+	for i := range featureTiers {
+		boxed[i] = featureTiers[i]
+	}
+
+	raw := strategy.Compute(boxed, usage, included, currency)
+	amount, ok := raw.(types.Money)
+	if !ok {
+		return types.Money{}, fmt.Errorf("pricing strategy %q returned %T, want types.Money", name, raw)
+	}
+	if amount.Currency != "" && !strings.EqualFold(amount.Currency, currency) {
+		return types.Money{}, fmt.Errorf("pricing strategy %q returned %s, want %s", name, amount.Currency, currency)
+	}
+	if amount.IsNegative() {
+		return types.Money{}, fmt.Errorf("pricing strategy %q returned a negative amount %v", name, amount)
+	}
+
+	return types.Money{Amount: amount.Amount, Currency: currency}, nil
+}
+
 // GenerateInvoice generates an invoice for a subscription period.
 //
 // It assembles line items in a fixed order: the base fee, then metered
@@ -583,7 +674,7 @@ func (l *Ledger) GenerateInvoice(ctx context.Context, subID id.SubscriptionID) (
 			return nil, fmt.Errorf("plan %s feature %q: %w", p.ID, pf.Key, vErr)
 		}
 
-		used, aggErr := l.store.Aggregate(ctx, sub.TenantID, sub.AppID, pf.Key, pf.Period)
+		used, aggErr := l.aggregateUsage(ctx, sub, pf)
 		if aggErr != nil {
 			return nil, fmt.Errorf("aggregate usage for feature %q: %w", pf.Key, aggErr)
 		}
@@ -593,7 +684,10 @@ func (l *Ledger) GenerateInvoice(ctx context.Context, subID id.SubscriptionID) (
 			continue
 		}
 
-		amount := invoice.ComputeOverage(featureTiers, used, pf.Limit, currency)
+		amount, priceErr := l.priceFeature(p, pf, featureTiers, currency, used, pf.Limit)
+		if priceErr != nil {
+			return nil, fmt.Errorf("price feature %q: %w", pf.Key, priceErr)
+		}
 		if amount.IsZero() {
 			continue
 		}
@@ -633,7 +727,10 @@ func (l *Ledger) GenerateInvoice(ctx context.Context, subID id.SubscriptionID) (
 			continue
 		}
 
-		amount := invoice.ComputeOverage(featureTiers, seats, 0, currency)
+		amount, priceErr := l.priceFeature(p, pf, featureTiers, currency, seats, 0)
+		if priceErr != nil {
+			return nil, fmt.Errorf("price feature %q: %w", pf.Key, priceErr)
+		}
 		if amount.IsZero() {
 			continue
 		}

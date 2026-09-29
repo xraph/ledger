@@ -13,6 +13,7 @@ import (
 	"github.com/xraph/ledger/invoice"
 	"github.com/xraph/ledger/meter"
 	"github.com/xraph/ledger/plan"
+	"github.com/xraph/ledger/plugin"
 	"github.com/xraph/ledger/store/memory"
 	"github.com/xraph/ledger/subscription"
 	"github.com/xraph/ledger/types"
@@ -970,5 +971,261 @@ func TestGenerateInvoiceSkipsValidationForAnUnlimitedMeteredFeature(t *testing.T
 	}
 	if len(lineItemsOfType(inv, invoice.LineItemOverage)) != 0 {
 		t.Errorf("got an overage line item for an unlimited feature with an invalid ladder, want none")
+	}
+}
+
+// countingAggregator returns a fixed total and records how many events it saw.
+type countingAggregator struct {
+	total int64
+	seen  int
+}
+
+func (a *countingAggregator) Name() string           { return "stub-agg" }
+func (a *countingAggregator) AggregatorName() string { return "stub-agg" }
+func (a *countingAggregator) Aggregate(_ context.Context, events []interface{}) (int64, error) {
+	a.seen = len(events)
+	return a.total, nil
+}
+
+// fixedStrategy returns a fixed result and counts how often it is asked.
+type fixedStrategy struct {
+	result interface{}
+	calls  int
+}
+
+func (s *fixedStrategy) Name() string         { return "stub-pricing" }
+func (s *fixedStrategy) StrategyName() string { return "stub-pricing" }
+func (s *fixedStrategy) Compute(_ []interface{}, _, _ int64, _ string) interface{} {
+	s.calls++
+	return s.result
+}
+
+// hookFixture builds billingFixture's plan and subscription on a ledger that
+// carries the given plugins, and lets the caller edit the plan first.
+func hookFixture(t *testing.T, edit func(p *plan.Plan), plugins ...plugin.Plugin) (*ledger.Ledger, *memory.Store, *subscription.Subscription) {
+	t.Helper()
+	ctx := context.Background()
+
+	opts := make([]ledger.Option, 0, len(plugins))
+	for _, pl := range plugins {
+		opts = append(opts, ledger.WithPlugin(pl))
+	}
+
+	// Reuse billingFixture for the plan and subscription, then rebuild the
+	// ledger over the same store with the plugins attached.
+	_, s, sub := billingFixture(t)
+	l := ledger.New(s, opts...)
+
+	p, err := s.GetPlan(ctx, sub.PlanID)
+	if err != nil {
+		t.Fatalf("GetPlan: %v", err)
+	}
+	edit(p)
+	if err := s.UpdatePlan(ctx, p); err != nil {
+		t.Fatalf("UpdatePlan: %v", err)
+	}
+
+	return l, s, sub
+}
+
+func setFeatureMeta(key, value string) func(*plan.Plan) {
+	return func(p *plan.Plan) {
+		if p.Features[0].Metadata == nil {
+			p.Features[0].Metadata = map[string]string{}
+		}
+		p.Features[0].Metadata[key] = value
+	}
+}
+
+func overageAmount(t *testing.T, inv *invoice.Invoice) types.Money {
+	t.Helper()
+	over := lineItemsOfType(inv, invoice.LineItemOverage)
+	if len(over) == 0 {
+		return types.Zero("usd")
+	}
+	if len(over) != 1 {
+		t.Fatalf("got %d overage line items, want at most 1", len(over))
+	}
+	return over[0].Amount
+}
+
+func TestGenerateInvoiceUsesANamedUsageAggregator(t *testing.T) {
+	ctx := context.Background()
+	agg := &countingAggregator{total: 1500}
+	l, s, sub := hookFixture(t, setFeatureMeta("aggregator", "stub-agg"), agg)
+
+	// One event inside the billing period, one before it. The aggregator
+	// must see only the first.
+	ingest(t, s, sub, "api_calls", 1)
+	if err := s.IngestBatch(ctx, []*meter.UsageEvent{{
+		ID: id.NewUsageEventID(), TenantID: sub.TenantID, AppID: sub.AppID,
+		FeatureKey: "api_calls", Quantity: 1,
+		Timestamp: sub.CurrentPeriodStart.Add(-time.Hour),
+	}}); err != nil {
+		t.Fatalf("IngestBatch: %v", err)
+	}
+
+	inv, err := l.GenerateInvoice(ctx, sub.ID)
+	if err != nil {
+		t.Fatalf("GenerateInvoice: %v", err)
+	}
+
+	// The aggregator reported 1500 against a 1000 allowance at 3c.
+	if got := overageAmount(t, inv); !got.Equal(types.USD(1500)) {
+		t.Errorf("got overage %v, want $15.00 priced from the aggregator's total", got)
+	}
+	if agg.seen != 1 {
+		t.Errorf("aggregator saw %d events, want 1: it must be bounded to the billing period", agg.seen)
+	}
+}
+
+func TestGenerateInvoiceFallsBackWhenTheAggregatorIsNotRegistered(t *testing.T) {
+	l, s, sub := hookFixture(t, setFeatureMeta("aggregator", "absent"))
+	ingest(t, s, sub, "api_calls", 1500)
+
+	inv, err := l.GenerateInvoice(context.Background(), sub.ID)
+	if err != nil {
+		t.Fatalf("GenerateInvoice: %v", err)
+	}
+	if got := overageAmount(t, inv); !got.Equal(types.USD(1500)) {
+		t.Errorf("got overage %v, want the store's $15.00", got)
+	}
+}
+
+func TestGenerateInvoiceUsesANamedPricingStrategy(t *testing.T) {
+	cases := []struct {
+		name string
+		edit func(*plan.Plan)
+	}{
+		{"named on the feature", setFeatureMeta("pricing_strategy", "stub-pricing")},
+		{"named on the plan", func(p *plan.Plan) {
+			p.Metadata = map[string]string{"pricing_strategy": "stub-pricing"}
+		}},
+	}
+
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			strat := &fixedStrategy{result: types.USD(12345)}
+			l, s, sub := hookFixture(t, c.edit, strat)
+			ingest(t, s, sub, "api_calls", 1500)
+
+			inv, err := l.GenerateInvoice(context.Background(), sub.ID)
+			if err != nil {
+				t.Fatalf("GenerateInvoice: %v", err)
+			}
+			if strat.calls != 1 {
+				t.Errorf("strategy called %d times, want 1", strat.calls)
+			}
+			if got := overageAmount(t, inv); !got.Equal(types.USD(12345)) {
+				t.Errorf("got overage %v, want the strategy's $123.45", got)
+			}
+		})
+	}
+}
+
+func TestGenerateInvoiceDoesNotCallAStrategyWithinTheAllowance(t *testing.T) {
+	strat := &fixedStrategy{result: types.USD(12345)}
+	l, s, sub := hookFixture(t, setFeatureMeta("pricing_strategy", "stub-pricing"), strat)
+	ingest(t, s, sub, "api_calls", 500)
+
+	inv, err := l.GenerateInvoice(context.Background(), sub.ID)
+	if err != nil {
+		t.Fatalf("GenerateInvoice: %v", err)
+	}
+	if strat.calls != 0 {
+		t.Errorf("strategy called %d times for usage inside the allowance, want 0", strat.calls)
+	}
+	if got := overageAmount(t, inv); !got.IsZero() {
+		t.Errorf("got overage %v, want none", got)
+	}
+}
+
+func TestGenerateInvoiceRejectsABadStrategyResult(t *testing.T) {
+	cases := []struct {
+		name   string
+		result interface{}
+	}{
+		{"wrong type", "one hundred dollars"},
+		{"wrong currency", types.EUR(100)},
+		{"negative", types.USD(-100)},
+	}
+
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			l, s, sub := hookFixture(t, setFeatureMeta("pricing_strategy", "stub-pricing"),
+				&fixedStrategy{result: c.result})
+			ingest(t, s, sub, "api_calls", 1500)
+
+			_, err := l.GenerateInvoice(context.Background(), sub.ID)
+			if err == nil {
+				t.Fatal("got nil error; a bad strategy result must fail generation")
+			}
+			if !strings.Contains(err.Error(), "stub-pricing") {
+				t.Errorf("error %q does not name the strategy", err.Error())
+			}
+		})
+	}
+}
+
+func TestGenerateInvoiceFallsBackWhenTheStrategyIsNotRegistered(t *testing.T) {
+	l, s, sub := hookFixture(t, setFeatureMeta("pricing_strategy", "absent"))
+	ingest(t, s, sub, "api_calls", 1500)
+
+	inv, err := l.GenerateInvoice(context.Background(), sub.ID)
+	if err != nil {
+		t.Fatalf("GenerateInvoice: %v", err)
+	}
+	if got := overageAmount(t, inv); !got.Equal(types.USD(1500)) {
+		t.Errorf("got overage %v, want the built-in $15.00", got)
+	}
+}
+
+func TestGenerateInvoiceAcceptsAStrategyResultInAnotherCurrencyCasing(t *testing.T) {
+	strat := &fixedStrategy{result: types.Money{Amount: 500, Currency: "USD"}}
+	l, s, sub := hookFixture(t, setFeatureMeta("pricing_strategy", "stub-pricing"), strat)
+	ingest(t, s, sub, "api_calls", 1500)
+
+	inv, err := l.GenerateInvoice(context.Background(), sub.ID)
+	if err != nil {
+		t.Fatalf("GenerateInvoice: %v", err)
+	}
+	if got := overageAmount(t, inv); !got.Equal(types.USD(500)) {
+		t.Errorf("got overage %v, want $5.00 normalised to the plan's currency", got)
+	}
+}
+
+func TestGenerateInvoicePricesASeatFeatureWithANamedStrategy(t *testing.T) {
+	ctx := context.Background()
+	strat := &fixedStrategy{result: types.USD(777)}
+	l, s, sub := hookFixture(t, func(p *plan.Plan) {
+		p.Features = append(p.Features, plan.Feature{
+			ID: id.NewFeatureID(), Key: "seats", Name: "Team members",
+			Type: plan.FeatureSeat, Limit: 0, Period: plan.PeriodNone,
+			Metadata: map[string]string{"pricing_strategy": "stub-pricing"},
+		})
+		p.Pricing.Tiers = append(p.Pricing.Tiers, plan.PriceTier{
+			FeatureKey: "seats", Type: plan.TierGraduated, UpTo: 0, UnitAmount: types.USD(800),
+		})
+	}, strat)
+
+	sub.Quantity = map[string]int64{"seats": 5}
+	if err := s.UpdateSubscription(ctx, sub); err != nil {
+		t.Fatalf("UpdateSubscription: %v", err)
+	}
+
+	inv, err := l.GenerateInvoice(ctx, sub.ID)
+	if err != nil {
+		t.Fatalf("GenerateInvoice: %v", err)
+	}
+
+	seats := lineItemsOfType(inv, invoice.LineItemSeat)
+	if len(seats) != 1 {
+		t.Fatalf("got %d seat line items, want 1", len(seats))
+	}
+	if !seats[0].Amount.Equal(types.USD(777)) {
+		t.Errorf("got seat charge %v, want the strategy's $7.77 rather than the built-in $40.00", seats[0].Amount)
+	}
+	if strat.calls != 1 {
+		t.Errorf("strategy called %d times, want 1", strat.calls)
 	}
 }
