@@ -2,6 +2,9 @@ package types
 
 import (
 	"encoding/json"
+	"errors"
+	"math"
+	"math/big"
 	"testing"
 )
 
@@ -324,5 +327,236 @@ func TestMoneyPercent(t *testing.T) {
 				t.Errorf("Percent(%d): got %v, want %v", tt.pct, got, tt.want)
 			}
 		})
+	}
+}
+
+func TestCheckedAdd(t *testing.T) {
+	tests := []struct {
+		name    string
+		a, b    Money
+		want    Money
+		wantErr bool
+	}{
+		{"ordinary sum", USD(4900), USD(100), USD(5000), false},
+		{"max plus zero is fine", USD(math.MaxInt64), USD(0), USD(math.MaxInt64), false},
+		{"max minus one plus one is fine", USD(math.MaxInt64 - 1), USD(1), USD(math.MaxInt64), false},
+		{"max plus one overflows", USD(math.MaxInt64), USD(1), Money{}, true},
+		{"one plus max overflows", USD(1), USD(math.MaxInt64), Money{}, true},
+		{"two large halves overflow", USD(math.MaxInt64/2 + 1), USD(math.MaxInt64/2 + 1), Money{}, true},
+		{"min plus zero is fine", USD(math.MinInt64), USD(0), USD(math.MinInt64), false},
+		{"min plus minus one overflows", USD(math.MinInt64), USD(-1), Money{}, true},
+		{"min plus max is minus one", USD(math.MinInt64), USD(math.MaxInt64), USD(-1), false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, err := tt.a.CheckedAdd(tt.b)
+			if tt.wantErr {
+				if !errors.Is(err, ErrOverflow) {
+					t.Fatalf("got err %v, want ErrOverflow", err)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+			if !got.Equal(tt.want) {
+				t.Errorf("got %v, want %v", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestCheckedAddCurrencyMismatchIsAnErrorNotAPanic(t *testing.T) {
+	defer func() {
+		if r := recover(); r != nil {
+			t.Fatalf("CheckedAdd panicked on a currency mismatch: %v", r)
+		}
+	}()
+
+	_, err := USD(100).CheckedAdd(EUR(100))
+	if err == nil {
+		t.Fatal("got nil error for a currency mismatch")
+	}
+	if errors.Is(err, ErrOverflow) {
+		t.Errorf("a currency mismatch must not be reported as an overflow: %v", err)
+	}
+}
+
+func TestCheckedSubtract(t *testing.T) {
+	tests := []struct {
+		name    string
+		a, b    Money
+		want    Money
+		wantErr bool
+	}{
+		{"ordinary difference", USD(5000), USD(100), USD(4900), false},
+		{"min minus zero is fine", USD(math.MinInt64), USD(0), USD(math.MinInt64), false},
+		{"min minus one overflows", USD(math.MinInt64), USD(1), Money{}, true},
+		{"max minus minus one overflows", USD(math.MaxInt64), USD(-1), Money{}, true},
+		{"zero minus min overflows", USD(0), USD(math.MinInt64), Money{}, true},
+		{"max minus max is zero", USD(math.MaxInt64), USD(math.MaxInt64), USD(0), false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, err := tt.a.CheckedSubtract(tt.b)
+			if tt.wantErr {
+				if !errors.Is(err, ErrOverflow) {
+					t.Fatalf("got err %v, want ErrOverflow", err)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+			if !got.Equal(tt.want) {
+				t.Errorf("got %v, want %v", got, tt.want)
+			}
+		})
+	}
+
+	if _, err := USD(1).CheckedSubtract(EUR(1)); err == nil || errors.Is(err, ErrOverflow) {
+		t.Errorf("got %v, want a non-overflow error for a currency mismatch", err)
+	}
+}
+
+func TestCheckedMultiply(t *testing.T) {
+	tests := []struct {
+		name    string
+		m       Money
+		qty     int64
+		want    Money
+		wantErr bool
+	}{
+		{"ordinary product", USD(3), 1500, USD(4500), false},
+		{"zero amount", USD(0), math.MaxInt64, USD(0), false},
+		{"zero quantity", USD(math.MaxInt64), 0, USD(0), false},
+		{"times one", USD(math.MaxInt64), 1, USD(math.MaxInt64), false},
+		{"max amount times two overflows", USD(math.MaxInt64), 2, Money{}, true},
+		{"just inside the boundary", USD(math.MaxInt64 / 3), 3, USD(math.MaxInt64 / 3 * 3), false},
+		{"just past the boundary", USD(math.MaxInt64/3 + 1), 3, Money{}, true},
+		{"three cents by half of max overflows", USD(3), math.MaxInt64 / 2, Money{}, true},
+		{"negative amount inside the boundary", USD(math.MinInt64 / 2), 2, USD(math.MinInt64), false},
+		{"negative amount past the boundary", USD(math.MinInt64/2 - 1), 2, Money{}, true},
+		{"negative quantity inside the boundary", USD(2), math.MinInt64 / 2, USD(math.MinInt64), false},
+		{"negative quantity past the boundary", USD(3), math.MinInt64/2 - 1, Money{}, true},
+		{"min times minus one overflows", USD(math.MinInt64), -1, Money{}, true},
+		{"minus one times min overflows", USD(-1), math.MinInt64, Money{}, true},
+		{"two negatives overflow", USD(math.MinInt64/2 - 1), -2, Money{}, true},
+		{"two negatives inside the boundary", USD(-3), -1000, USD(3000), false},
+		{"min times one", USD(math.MinInt64), 1, USD(math.MinInt64), false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, err := tt.m.CheckedMultiply(tt.qty)
+			if tt.wantErr {
+				if !errors.Is(err, ErrOverflow) {
+					t.Fatalf("got %v, err %v, want ErrOverflow", got, err)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+			if !got.Equal(tt.want) {
+				t.Errorf("got %v, want %v", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestCheckedPercent(t *testing.T) {
+	if _, err := USD(math.MaxInt64).CheckedPercent(2); !errors.Is(err, ErrOverflow) {
+		t.Errorf("CheckedPercent(MaxInt64, 2): got err %v, want ErrOverflow", err)
+	}
+	if _, err := USD(math.MinInt64).CheckedPercent(-1); !errors.Is(err, ErrOverflow) {
+		t.Errorf("CheckedPercent(MinInt64, -1): got err %v, want ErrOverflow", err)
+	}
+	// MaxInt64 * 1 fits, so one percent of it must succeed.
+	got, err := USD(math.MaxInt64).CheckedPercent(1)
+	if err != nil {
+		t.Fatalf("CheckedPercent(MaxInt64, 1): unexpected error %v", err)
+	}
+	if want := int64(math.MaxInt64 / 100); got.Amount != want {
+		t.Errorf("CheckedPercent(MaxInt64, 1): got %d, want %d", got.Amount, want)
+	}
+	if got, err := USD(math.MaxInt64).CheckedPercent(0); err != nil || !got.IsZero() {
+		t.Errorf("CheckedPercent(MaxInt64, 0): got %v, %v, want zero and no error", got, err)
+	}
+}
+
+// TestCheckedPercentAgreesWithPercent pins the checked form to the panicking
+// one on every row TestMoneyPercent already covers.
+func TestCheckedPercentAgreesWithPercent(t *testing.T) {
+	tests := []struct {
+		name string
+		base Money
+		pct  int
+	}{
+		{"ten percent of $49.00", USD(4900), 10},
+		{"twenty-five percent of $49.00", USD(4900), 25},
+		{"zero percent", USD(4900), 0},
+		{"one hundred percent", USD(4900), 100},
+		{"over one hundred percent", USD(4900), 150},
+		{"truncates rather than rounds", USD(101), 10},
+		{"negative percent negates", USD(4900), -10},
+		{"negative percent truncates toward zero", USD(101), -10},
+		{"negative amount truncates toward zero", USD(-101), 10},
+		{"preserves currency", EUR(19900), 50},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, err := tt.base.CheckedPercent(tt.pct)
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+			if want := tt.base.Percent(tt.pct); !got.Equal(want) {
+				t.Errorf("CheckedPercent(%d): got %v, want %v (what Percent returns)", tt.pct, got, want)
+			}
+		})
+	}
+}
+
+// TestCheckedMultiplyMatchesBigInt cross-checks the overflow detection
+// against arbitrary-precision arithmetic over every pair of boundary values.
+func TestCheckedMultiplyMatchesBigInt(t *testing.T) {
+	values := []int64{
+		0, 1, -1, 2, -2, 3, -3, 10, -10, 100, -100,
+		math.MaxInt64, math.MaxInt64 - 1, math.MaxInt64 / 2, math.MaxInt64/2 + 1, math.MaxInt64 / 3, math.MaxInt64/3 + 1,
+		math.MinInt64, math.MinInt64 + 1, math.MinInt64 / 2, math.MinInt64/2 - 1, math.MinInt64 / 3, math.MinInt64/3 - 1,
+		1 << 31, -(1 << 31), 1 << 32, -(1 << 32), 3_037_000_499, 3_037_000_500,
+	}
+	lo, hi := big.NewInt(math.MinInt64), big.NewInt(math.MaxInt64)
+
+	for _, a := range values {
+		for _, b := range values {
+			exact := new(big.Int).Mul(big.NewInt(a), big.NewInt(b))
+			fits := exact.Cmp(lo) >= 0 && exact.Cmp(hi) <= 0
+
+			got, err := USD(a).CheckedMultiply(b)
+			switch {
+			case fits && err != nil:
+				t.Errorf("CheckedMultiply(%d, %d): unexpected error %v", a, b, err)
+			case fits && got.Amount != exact.Int64():
+				t.Errorf("CheckedMultiply(%d, %d): got %d, want %d", a, b, got.Amount, exact.Int64())
+			case !fits && !errors.Is(err, ErrOverflow):
+				t.Errorf("CheckedMultiply(%d, %d): got %v, %v, want ErrOverflow (exact product %s)", a, b, got, err, exact)
+			}
+
+			sum := new(big.Int).Add(big.NewInt(a), big.NewInt(b))
+			sumFits := sum.Cmp(lo) >= 0 && sum.Cmp(hi) <= 0
+			if _, err := USD(a).CheckedAdd(USD(b)); sumFits != (err == nil) {
+				t.Errorf("CheckedAdd(%d, %d): err %v, but the exact sum %s fits=%v", a, b, err, sum, sumFits)
+			}
+
+			diff := new(big.Int).Sub(big.NewInt(a), big.NewInt(b))
+			diffFits := diff.Cmp(lo) >= 0 && diff.Cmp(hi) <= 0
+			if _, err := USD(a).CheckedSubtract(USD(b)); diffFits != (err == nil) {
+				t.Errorf("CheckedSubtract(%d, %d): err %v, but the exact difference %s fits=%v", a, b, err, diff, diffFits)
+			}
+		}
 	}
 }

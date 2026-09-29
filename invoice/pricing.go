@@ -73,11 +73,14 @@ func tierAt(tiers []plan.PriceTier, qty int64) plan.PriceTier {
 // the remaining 1000. A ladder with no unbounded tier extends its last tier
 // to cover everything above its highest UpTo instead of pricing it at zero.
 //
+// Every tier's product and the running total are checked: an overflow
+// returns an error wrapping types.ErrOverflow and no amount.
+//
 // tiers must already be sorted by SortTiers.
-func computeGraduated(tiers []plan.PriceTier, qty int64, currency string) types.Money {
+func computeGraduated(tiers []plan.PriceTier, qty int64, currency string) (types.Money, error) {
 	total := types.Zero(currency)
 	if qty <= 0 {
-		return total
+		return total, nil
 	}
 
 	var consumed int64
@@ -104,14 +107,20 @@ func computeGraduated(tiers []plan.PriceTier, qty int64, currency string) types.
 			units = remaining
 		}
 
-		total = total.Add(types.Money{
-			Amount:   t.UnitAmount.Amount * units,
-			Currency: currency,
-		})
+		charge, err := types.Money{Amount: t.UnitAmount.Amount, Currency: currency}.CheckedMultiply(units)
+		if err != nil {
+			return types.Money{}, fmt.Errorf("graduated pricing for feature %q, tier %d (UpTo %d), %d units: %w",
+				t.FeatureKey, i, t.UpTo, units, err)
+		}
+		total, err = total.CheckedAdd(charge)
+		if err != nil {
+			return types.Money{}, fmt.Errorf("graduated pricing for feature %q, summing tier %d (UpTo %d): %w",
+				t.FeatureKey, i, t.UpTo, err)
+		}
 		consumed += units
 	}
 
-	return total
+	return total, nil
 }
 
 // computeVolume applies the rate of the tier covering TOTAL usage to the
@@ -120,28 +129,39 @@ func computeGraduated(tiers []plan.PriceTier, qty int64, currency string) types.
 // not a blend. A ladder with no unbounded tier extends its last tier's rate
 // to any quantity above its highest UpTo.
 //
+// The rate times the billable units is checked: an overflow returns an error
+// wrapping types.ErrOverflow and no amount.
+//
 // tiers must already be sorted by SortTiers. This is the one function
 // ComputeOverage calls for the volume model, so a bug here is caught by
 // both this package's direct computeVolume tests and by ComputeOverage's
 // own volume-dispatch tests, instead of production silently bypassing it.
-func computeVolume(tiers []plan.PriceTier, usage, included int64, currency string) types.Money {
+func computeVolume(tiers []plan.PriceTier, usage, included int64, currency string) (types.Money, error) {
 	if usage <= 0 || len(tiers) == 0 {
-		return types.Zero(currency)
+		return types.Zero(currency), nil
 	}
 
 	billable := usage - included
 	if billable <= 0 {
-		return types.Zero(currency)
+		return types.Zero(currency), nil
 	}
 
-	rate := tierAt(tiers, usage).UnitAmount.Amount
-	return types.Money{Amount: rate * billable, Currency: currency}
+	t := tierAt(tiers, usage)
+	charge, err := types.Money{Amount: t.UnitAmount.Amount, Currency: currency}.CheckedMultiply(billable)
+	if err != nil {
+		return types.Money{}, fmt.Errorf("volume pricing for feature %q (UpTo %d), %d units: %w",
+			t.FeatureKey, t.UpTo, billable, err)
+	}
+
+	return charge, nil
 }
 
 // computeFlat charges the flat fee attached to the tier the quantity reaches.
 // It is a fee for being in a band, not a per-unit rate, so the quantity
 // selects a tier and is then discarded. A ladder with no unbounded tier
 // extends its last tier's fee to any quantity above its highest UpTo.
+//
+// A flat fee involves no arithmetic, so it cannot overflow.
 //
 // tiers must already be sorted by SortTiers.
 func computeFlat(tiers []plan.PriceTier, qty int64, currency string) types.Money {
@@ -180,27 +200,32 @@ func computeFlat(tiers []plan.PriceTier, qty int64, currency string) types.Money
 // UpTo: the last tier after sorting extends to cover everything above it
 // (see computeGraduated, computeVolume, computeFlat, and tierAt).
 //
+// Every product and sum is checked. When one overflows an int64 the result is
+// an error wrapping types.ErrOverflow and a zero Money, never a wrapped
+// amount: a plugin aggregator reporting MaxInt64/2 units at 3c used to price
+// as a huge negative overage.
+//
 // included < 0 means an unlimited allowance, matching plan.Feature.Limit ==
 // -1, and prices at zero regardless of usage. usage <= included also prices
 // at zero.
 //
 // An empty tier slice prices at zero: a metered feature whose plan declares
 // no tiers is a gap in the catalogue, not a billing failure. Callers must
-// call ValidateTiers before ComputeOverage, which cannot return an error
-// and prices an invalid ladder by best effort; the default branch below,
-// for a tier type ValidateTiers would have rejected, also prices at zero,
-// but ValidateTiers is what is meant to keep callers from reaching it.
-func ComputeOverage(tiers []plan.PriceTier, usage, included int64, currency string) types.Money {
+// call ValidateTiers before ComputeOverage, which reports only arithmetic
+// overflow and prices an invalid ladder by best effort; the default branch
+// below, for a tier type ValidateTiers would have rejected, also prices at
+// zero, but ValidateTiers is what is meant to keep callers from reaching it.
+func ComputeOverage(tiers []plan.PriceTier, usage, included int64, currency string) (types.Money, error) {
 	currency = strings.ToLower(currency)
 
 	if len(tiers) == 0 {
-		return types.Zero(currency)
+		return types.Zero(currency), nil
 	}
 	if included < 0 {
-		return types.Zero(currency)
+		return types.Zero(currency), nil
 	}
 	if usage <= included {
-		return types.Zero(currency)
+		return types.Zero(currency), nil
 	}
 
 	sorted := SortTiers(tiers)
@@ -214,15 +239,30 @@ func ComputeOverage(tiers []plan.PriceTier, usage, included int64, currency stri
 		// allowance already sat in: included 3000 with usage 3001 must not
 		// bill a whole new $20 fee for crossing one unit inside a band the
 		// allowance already paid for.
-		fee := computeFlat(sorted, usage, currency).Subtract(computeFlat(sorted, included, currency))
-		return fee.Max(types.Zero(currency))
+		fee, err := computeFlat(sorted, usage, currency).CheckedSubtract(computeFlat(sorted, included, currency))
+		if err != nil {
+			return types.Money{}, fmt.Errorf("flat pricing for feature %q, fee difference: %w", sorted[0].FeatureKey, err)
+		}
+		return fee.Max(types.Zero(currency)), nil
 	case plan.TierGraduated:
-		return computeGraduated(sorted, usage, currency).Subtract(computeGraduated(sorted, included, currency))
+		priced, err := computeGraduated(sorted, usage, currency)
+		if err != nil {
+			return types.Money{}, err
+		}
+		allowance, err := computeGraduated(sorted, included, currency)
+		if err != nil {
+			return types.Money{}, err
+		}
+		overage, err := priced.CheckedSubtract(allowance)
+		if err != nil {
+			return types.Money{}, fmt.Errorf("graduated pricing for feature %q, allowance difference: %w", sorted[0].FeatureKey, err)
+		}
+		return overage, nil
 	default:
 		// An unrecognised tier type prices at zero rather than guessing.
 		// ValidateTiers rejects this before ComputeOverage is ever called
 		// with it; this branch only guards a caller who skipped that step.
-		return types.Zero(currency)
+		return types.Zero(currency), nil
 	}
 }
 
@@ -231,8 +271,8 @@ var ErrInvalidTiers = errors.New("invoice: invalid price tiers")
 
 // ValidateTiers reports whether one feature's tiers can be priced
 // unambiguously in the given currency. Callers must validate before
-// ComputeOverage, which cannot return an error and prices an invalid ladder
-// by best effort.
+// ComputeOverage, which prices an invalid ladder by best effort and reports
+// only arithmetic overflow.
 //
 // Every returned error names the offending tier by its index in the slice
 // and its UpTo, not only its FeatureKey: a plan with several tiers sharing

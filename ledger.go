@@ -563,7 +563,7 @@ func (l *Ledger) priceFeature(p *plan.Plan, pf plan.Feature, featureTiers []plan
 		name = p.Metadata["pricing_strategy"]
 	}
 	if name == "" {
-		return invoice.ComputeOverage(featureTiers, usage, included, currency), nil
+		return invoice.ComputeOverage(featureTiers, usage, included, currency)
 	}
 
 	strategy := l.plugins.GetPricingStrategy(name)
@@ -573,7 +573,7 @@ func (l *Ledger) priceFeature(p *plan.Plan, pf plan.Feature, featureTiers []plan
 			log.String("feature", pf.Key),
 		)
 
-		return invoice.ComputeOverage(featureTiers, usage, included, currency), nil
+		return invoice.ComputeOverage(featureTiers, usage, included, currency)
 	}
 
 	// Defence in depth: both callers already guarantee this (the metered
@@ -606,6 +606,18 @@ func (l *Ledger) priceFeature(p *plan.Plan, pf plan.Feature, featureTiers []plan
 	return types.Money{Amount: amount.Amount, Currency: currency}, nil
 }
 
+// addChecked adds b to a, refusing an overflowing sum. The error names the
+// stage that was being built and wraps types.ErrOverflow, so a caller can
+// match it with errors.Is.
+func addChecked(stage string, a, b types.Money) (types.Money, error) {
+	sum, err := a.CheckedAdd(b)
+	if err != nil {
+		return types.Money{}, fmt.Errorf("%s: %w", stage, err)
+	}
+
+	return sum, nil
+}
+
 // GenerateInvoice generates an invoice for a subscription period.
 //
 // It assembles line items in a fixed order: the base fee, then metered
@@ -618,6 +630,11 @@ func (l *Ledger) priceFeature(p *plan.Plan, pf plan.Feature, featureTiers []plan
 // the net amount (subtotal less discounts, clamped at zero), not the
 // gross subtotal, so a discounted invoice is never taxed on money the
 // customer was never charged.
+//
+// Every sum it builds (subtotal, discount, net, tax and total) is checked.
+// An amount that overflows an int64 fails generation with an error wrapping
+// types.ErrOverflow that names the stage, and nothing is stored: a wrapped
+// figure must never become an invoice.
 func (l *Ledger) GenerateInvoice(ctx context.Context, subID id.SubscriptionID) (*invoice.Invoice, error) {
 	sub, err := l.store.GetSubscription(ctx, subID)
 	if err != nil {
@@ -667,7 +684,11 @@ func (l *Ledger) GenerateInvoice(ctx context.Context, subID id.SubscriptionID) (
 			Amount:      base,
 			Type:        invoice.LineItemBase,
 		})
-		inv.Subtotal = inv.Subtotal.Add(base)
+		subtotal, addErr := addChecked("subtotal: adding the base fee", inv.Subtotal, base)
+		if addErr != nil {
+			return nil, addErr
+		}
+		inv.Subtotal = subtotal
 	}
 
 	// 2. Metered usage overage, priced from the plan's tiers.
@@ -722,7 +743,11 @@ func (l *Ledger) GenerateInvoice(ctx context.Context, subID id.SubscriptionID) (
 			Amount:      amount,
 			Type:        invoice.LineItemOverage,
 		})
-		inv.Subtotal = inv.Subtotal.Add(amount)
+		subtotal, addErr := addChecked(fmt.Sprintf("subtotal: adding feature %q overage", pf.Key), inv.Subtotal, amount)
+		if addErr != nil {
+			return nil, addErr
+		}
+		inv.Subtotal = subtotal
 	}
 
 	// 3. Seat charges, from the quantities carried on the subscription.
@@ -765,7 +790,11 @@ func (l *Ledger) GenerateInvoice(ctx context.Context, subID id.SubscriptionID) (
 			Amount:      amount,
 			Type:        invoice.LineItemSeat,
 		})
-		inv.Subtotal = inv.Subtotal.Add(amount)
+		subtotal, addErr := addChecked(fmt.Sprintf("subtotal: adding feature %q seats", pf.Key), inv.Subtotal, amount)
+		if addErr != nil {
+			return nil, addErr
+		}
+		inv.Subtotal = subtotal
 	}
 
 	// 4. Coupon discounts. Percentage coupons compute against the subtotal
@@ -795,7 +824,11 @@ func (l *Ledger) GenerateInvoice(ctx context.Context, subID id.SubscriptionID) (
 				return nil, fmt.Errorf("%w: coupon %q has percentage %d out of range 0..100",
 					ErrCouponInvalid, c.Code, c.Percentage)
 			}
-			amount = discountBase.Percent(c.Percentage)
+			pct, pctErr := discountBase.CheckedPercent(c.Percentage)
+			if pctErr != nil {
+				return nil, fmt.Errorf("discount: coupon %q at %d%%: %w", c.Code, c.Percentage, pctErr)
+			}
+			amount = pct
 		case coupon.CouponTypeAmount:
 			if c.Amount.Amount < 0 {
 				return nil, fmt.Errorf("%w: coupon %q has a negative amount %v",
@@ -836,14 +869,21 @@ func (l *Ledger) GenerateInvoice(ctx context.Context, subID id.SubscriptionID) (
 			Amount:      amount.Negate(),
 			Type:        invoice.LineItemDiscount,
 		})
-		inv.DiscountAmount = inv.DiscountAmount.Add(amount)
+		discount, addErr := addChecked(fmt.Sprintf("discount: adding coupon %q", c.Code), inv.DiscountAmount, amount)
+		if addErr != nil {
+			return nil, addErr
+		}
+		inv.DiscountAmount = discount
 	}
 
 	// The net amount is what tax is actually charged on, and what the
 	// final total is built from. It is clamped at zero here, before tax:
 	// Ledger has no refund path, so a discount larger than the bill must
 	// produce a free invoice, never a negative one.
-	net := inv.Subtotal.Subtract(inv.DiscountAmount)
+	net, netErr := inv.Subtotal.CheckedSubtract(inv.DiscountAmount)
+	if netErr != nil {
+		return nil, fmt.Errorf("net amount: %w", netErr)
+	}
 	if net.IsNegative() {
 		net = types.Zero(currency)
 	}
@@ -877,7 +917,12 @@ func (l *Ledger) GenerateInvoice(ctx context.Context, subID id.SubscriptionID) (
 			return nil, fmt.Errorf("tax calculator %q returned a negative tax amount %v", tc.Name(), amount)
 		}
 
-		inv.TaxAmount = inv.TaxAmount.Add(types.Money{Amount: amount.Amount, Currency: currency})
+		taxTotal, addErr := addChecked(fmt.Sprintf("tax: adding calculator %q", tc.Name()),
+			inv.TaxAmount, types.Money{Amount: amount.Amount, Currency: currency})
+		if addErr != nil {
+			return nil, addErr
+		}
+		inv.TaxAmount = taxTotal
 	}
 
 	if inv.TaxAmount.IsPositive() {
@@ -893,7 +938,11 @@ func (l *Ledger) GenerateInvoice(ctx context.Context, subID id.SubscriptionID) (
 	}
 
 	// Total is the already-clamped net amount plus tax.
-	inv.Total = net.Add(inv.TaxAmount)
+	total, totalErr := addChecked("invoice total: adding tax to the net amount", net, inv.TaxAmount)
+	if totalErr != nil {
+		return nil, totalErr
+	}
+	inv.Total = total
 
 	// Save invoice
 	if err := l.store.CreateInvoice(ctx, inv); err != nil {

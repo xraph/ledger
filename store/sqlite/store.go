@@ -511,11 +511,15 @@ func (s *Store) QueryUsage(ctx context.Context, tenantID, appID string, opts met
 	if opts.FeatureKey != "" {
 		q = q.Where("feature_key = ?", opts.FeatureKey)
 	}
+	// The window is half-open, [Start, End): an event stamped exactly at
+	// Start is inside it and one stamped exactly at End belongs to the next
+	// billing period. SQLite compares these timestamps as text, so the bounds
+	// are put in UTC, the zone events are stored in, before they are bound.
 	if !opts.Start.IsZero() {
-		q = q.Where("timestamp >= ?", opts.Start)
+		q = q.Where("timestamp >= ?", opts.Start.UTC())
 	}
 	if !opts.End.IsZero() {
-		q = q.Where("timestamp <= ?", opts.End)
+		q = q.Where("timestamp < ?", opts.End.UTC())
 	}
 	if opts.Limit > 0 {
 		q = q.Limit(opts.Limit)

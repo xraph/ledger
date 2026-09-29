@@ -523,7 +523,9 @@ func (s *Store) QueryUsage(ctx context.Context, tenantID, appID string, opts met
 			filter["timestamp"] = bson.M{}
 		}
 		if ts, ok := filter["timestamp"].(bson.M); ok {
-			ts["$lte"] = opts.End
+			// Half-open window, [Start, End): an event exactly at End belongs
+			// to the next billing period.
+			ts["$lt"] = opts.End
 		}
 	}
 

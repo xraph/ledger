@@ -3,9 +3,16 @@ package types
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
+	"math"
+	"math/bits"
 	"strings"
 )
+
+// ErrOverflow is wrapped by every checked Money operation whose exact result
+// does not fit in an int64. A wrapped amount must never become an invoice.
+var ErrOverflow = errors.New("types: money arithmetic overflow")
 
 // Money represents a monetary value in the smallest currency unit.
 // All arithmetic is integer-only — no floating point.
@@ -61,6 +68,79 @@ func (m Money) Multiply(qty int64) Money {
 	return Money{Amount: m.Amount * qty, Currency: m.Currency}
 }
 
+// CheckedAdd adds two Money values. It returns an error wrapping ErrOverflow
+// when the exact sum does not fit in an int64, and an error (not a panic)
+// when the currencies differ. Add and Subtract keep their panicking
+// behaviour for callers that have already ruled both out.
+func (m Money) CheckedAdd(other Money) (Money, error) {
+	if m.Currency != other.Currency {
+		return Money{}, fmt.Errorf("money: currency mismatch: %s != %s", m.Currency, other.Currency)
+	}
+	if (other.Amount > 0 && m.Amount > math.MaxInt64-other.Amount) ||
+		(other.Amount < 0 && m.Amount < math.MinInt64-other.Amount) {
+		return Money{}, fmt.Errorf("%w: %d + %d", ErrOverflow, m.Amount, other.Amount)
+	}
+	return Money{Amount: m.Amount + other.Amount, Currency: m.Currency}, nil
+}
+
+// CheckedSubtract subtracts another Money value. It returns an error
+// wrapping ErrOverflow when the exact difference does not fit in an int64,
+// and an error (not a panic) when the currencies differ.
+func (m Money) CheckedSubtract(other Money) (Money, error) {
+	if m.Currency != other.Currency {
+		return Money{}, fmt.Errorf("money: currency mismatch: %s != %s", m.Currency, other.Currency)
+	}
+	if (other.Amount < 0 && m.Amount > math.MaxInt64+other.Amount) ||
+		(other.Amount > 0 && m.Amount < math.MinInt64+other.Amount) {
+		return Money{}, fmt.Errorf("%w: %d - %d", ErrOverflow, m.Amount, other.Amount)
+	}
+	return Money{Amount: m.Amount - other.Amount, Currency: m.Currency}, nil
+}
+
+// CheckedMultiply multiplies the Money by a quantity. It returns an error
+// wrapping ErrOverflow when the exact product does not fit in an int64.
+func (m Money) CheckedMultiply(qty int64) (Money, error) {
+	product, ok := mulInt64(m.Amount, qty)
+	if !ok {
+		return Money{}, fmt.Errorf("%w: %d * %d", ErrOverflow, m.Amount, qty)
+	}
+	return Money{Amount: product, Currency: m.Currency}, nil
+}
+
+// mulInt64 returns a*b and whether it fits in an int64. It multiplies the
+// magnitudes as uint64 with math/bits, so the check is exact, including for
+// math.MinInt64, whose magnitude has no int64 form.
+func mulInt64(a, b int64) (int64, bool) {
+	if a == 0 || b == 0 {
+		return 0, true
+	}
+	negative := (a < 0) != (b < 0)
+	hi, lo := bits.Mul64(absUint64(a), absUint64(b))
+	if hi != 0 {
+		return 0, false
+	}
+	if negative {
+		// The most negative int64 has magnitude 1<<63.
+		if lo > 1<<63 {
+			return 0, false
+		}
+		return int64(-lo), true //nolint:gosec // lo <= 1<<63, so the negation fits
+	}
+	if lo > math.MaxInt64 {
+		return 0, false
+	}
+	return int64(lo), true //nolint:gosec // lo <= MaxInt64
+}
+
+// absUint64 returns |v| as a uint64. Negating in unsigned arithmetic is
+// exact for math.MinInt64 too.
+func absUint64(v int64) uint64 {
+	if v < 0 {
+		return -uint64(v)
+	}
+	return uint64(v)
+}
+
 // Divide divides the Money by a divisor. Uses integer division.
 func (m Money) Divide(divisor int64) Money {
 	if divisor == 0 {
@@ -76,6 +156,18 @@ func (m Money) Divide(divisor int64) Money {
 // whatever the sign. Callers needing the remainder must compute it.
 func (m Money) Percent(pct int) Money {
 	return Money{Amount: m.Amount * int64(pct) / 100, Currency: m.Currency}
+}
+
+// CheckedPercent returns pct percent of the Money value, truncating toward
+// zero exactly as Percent does. It returns an error wrapping ErrOverflow when
+// Amount*pct does not fit in an int64. Dividing the product by 100 cannot
+// overflow.
+func (m Money) CheckedPercent(pct int) (Money, error) {
+	product, ok := mulInt64(m.Amount, int64(pct))
+	if !ok {
+		return Money{}, fmt.Errorf("%w: %d * %d%%", ErrOverflow, m.Amount, pct)
+	}
+	return Money{Amount: product / 100, Currency: m.Currency}, nil
 }
 
 // Negate returns the negative of the Money value.

@@ -319,7 +319,11 @@ func (s *Store) QueryUsage(_ context.Context, tenantID, appID string, opts meter
 		e := &s.usageEvents[i]
 		if (tenantID == "" || e.TenantID == tenantID) && (appID == "" || e.AppID == appID) {
 			if opts.FeatureKey == "" || e.FeatureKey == opts.FeatureKey {
-				if (opts.Start.IsZero() || e.Timestamp.After(opts.Start)) &&
+				// The window is half-open, [Start, End): an event stamped
+				// exactly at Start is inside it and one stamped exactly at End
+				// belongs to the next billing period. A zero Start or End is
+				// unbounded on that side.
+				if (opts.Start.IsZero() || !e.Timestamp.Before(opts.Start)) &&
 					(opts.End.IsZero() || e.Timestamp.Before(opts.End)) {
 					result = append(result, e)
 				}
@@ -550,8 +554,13 @@ func (s *Store) ListCoupons(_ context.Context, appID string, opts coupon.ListOpt
 	for _, c := range s.coupons {
 		if appID == "" || c.AppID == appID {
 			if opts.Active {
-				if (c.ValidFrom == nil || now.After(*c.ValidFrom)) &&
-					(c.ValidUntil == nil || now.Before(*c.ValidUntil)) {
+				// A coupon is valid on [ValidFrom, ValidUntil], inclusive at
+				// both ends: the rule the database backends and
+				// Ledger.ApplyCoupon use. Only the instant itself differs from
+				// a strict comparison, and that cannot be tested without an
+				// injectable clock, so no test pins it.
+				if (c.ValidFrom == nil || !now.Before(*c.ValidFrom)) &&
+					(c.ValidUntil == nil || !now.After(*c.ValidUntil)) {
 					cp := *c
 					result = append(result, &cp)
 				}

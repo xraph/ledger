@@ -2,6 +2,7 @@ package invoice
 
 import (
 	"errors"
+	"math"
 	"strings"
 	"testing"
 
@@ -98,7 +99,10 @@ func TestComputeGraduated(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got := computeGraduated(SortTiers(ladder), tt.qty, "usd")
+			got, err := computeGraduated(SortTiers(ladder), tt.qty, "usd")
+			if err != nil {
+				t.Fatalf("computeGraduated(%d): unexpected error %v", tt.qty, err)
+			}
 			if !got.Equal(tt.want) {
 				t.Errorf("computeGraduated(%d): got %v, want %v", tt.qty, got, tt.want)
 			}
@@ -111,7 +115,10 @@ func TestComputeGraduatedZeroAndNegativeQuantity(t *testing.T) {
 	ladder := []plan.PriceTier{tier(1000, 3, 0), tier(0, 1, 0)}
 
 	for _, qty := range []int64{0, -1, -5000} {
-		got := computeGraduated(SortTiers(ladder), qty, "usd")
+		got, err := computeGraduated(SortTiers(ladder), qty, "usd")
+		if err != nil {
+			t.Fatalf("computeGraduated(%d): unexpected error %v", qty, err)
+		}
 		if !got.IsZero() {
 			t.Errorf("computeGraduated(%d): got %v, want zero", qty, got)
 		}
@@ -156,7 +163,10 @@ func TestComputeVolume(t *testing.T) {
 			// that ComputeOverage can call this exact function instead of
 			// repeating the same lookup-and-multiply inline. included 0
 			// reproduces the old bare-quantity behaviour these rows pin.
-			got := computeVolume(SortTiers(ladder), tt.qty, 0, "usd")
+			got, err := computeVolume(SortTiers(ladder), tt.qty, 0, "usd")
+			if err != nil {
+				t.Fatalf("computeVolume(%d): unexpected error %v", tt.qty, err)
+			}
 			if !got.Equal(tt.want) {
 				t.Errorf("computeVolume(%d): got %v, want %v", tt.qty, got, tt.want)
 			}
@@ -214,7 +224,10 @@ func TestComputeOverage(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got := ComputeOverage(tt.tiers, tt.usage, tt.included, "usd")
+			got, err := ComputeOverage(tt.tiers, tt.usage, tt.included, "usd")
+			if err != nil {
+				t.Fatalf("ComputeOverage: unexpected error %v", err)
+			}
 			if !got.Equal(tt.want) {
 				t.Errorf("ComputeOverage(usage=%d, included=%d): got %v, want %v",
 					tt.usage, tt.included, got, tt.want)
@@ -241,7 +254,10 @@ func TestComputeOverageDispatchesOnTierType(t *testing.T) {
 
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
-			got := ComputeOverage(c.tiers, 3000, 0, "usd")
+			got, err := ComputeOverage(c.tiers, 3000, 0, "usd")
+			if err != nil {
+				t.Fatalf("ComputeOverage: unexpected error %v", err)
+			}
 			if !got.Equal(c.want) {
 				t.Errorf("%s: got %v, want %v", c.name, got, c.want)
 			}
@@ -273,7 +289,10 @@ func TestComputeOverageBoundaries(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got := ComputeOverage(tt.tiers, tt.usage, 0, "usd")
+			got, err := ComputeOverage(tt.tiers, tt.usage, 0, "usd")
+			if err != nil {
+				t.Fatalf("ComputeOverage: unexpected error %v", err)
+			}
 			if !got.Equal(tt.want) {
 				t.Errorf("ComputeOverage(usage=%d): got %v, want %v", tt.usage, got, tt.want)
 			}
@@ -299,7 +318,10 @@ func TestComputeOverageNegativeUpToIsUnbounded(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got := ComputeOverage(readmePlan, tt.usage, tt.included, "usd")
+			got, err := ComputeOverage(readmePlan, tt.usage, tt.included, "usd")
+			if err != nil {
+				t.Fatalf("ComputeOverage: unexpected error %v", err)
+			}
 			if !got.Equal(tt.want) {
 				t.Errorf("ComputeOverage(usage=%d, included=%d): got %v, want %v",
 					tt.usage, tt.included, got, tt.want)
@@ -317,7 +339,10 @@ func TestComputeOverageNormalisesCurrency(t *testing.T) {
 	flat := []plan.PriceTier{flatTier(1000, 500), flatTier(0, 9000)}
 
 	t.Run("graduated charge uses lowercase currency", func(t *testing.T) {
-		got := ComputeOverage(graduated, 100, 0, "USD")
+		got, err := ComputeOverage(graduated, 100, 0, "USD")
+		if err != nil {
+			t.Fatalf("ComputeOverage: unexpected error %v", err)
+		}
 		want := types.Money{Amount: 300, Currency: "usd"}
 		if !got.Equal(want) {
 			t.Errorf("got %#v, want %#v", got, want)
@@ -325,7 +350,10 @@ func TestComputeOverageNormalisesCurrency(t *testing.T) {
 	})
 
 	t.Run("volume charge uses lowercase currency", func(t *testing.T) {
-		got := ComputeOverage(volume, 100, 0, "USD")
+		got, err := ComputeOverage(volume, 100, 0, "USD")
+		if err != nil {
+			t.Fatalf("ComputeOverage: unexpected error %v", err)
+		}
 		want := types.Money{Amount: 300, Currency: "usd"}
 		if !got.Equal(want) {
 			t.Errorf("got %#v, want %#v", got, want)
@@ -333,7 +361,10 @@ func TestComputeOverageNormalisesCurrency(t *testing.T) {
 	})
 
 	t.Run("flat charge uses lowercase currency", func(t *testing.T) {
-		got := ComputeOverage(flat, 100, 0, "USD")
+		got, err := ComputeOverage(flat, 100, 0, "USD")
+		if err != nil {
+			t.Fatalf("ComputeOverage: unexpected error %v", err)
+		}
 		want := types.Money{Amount: 500, Currency: "usd"}
 		if !got.Equal(want) {
 			t.Errorf("got %#v, want %#v", got, want)
@@ -341,7 +372,10 @@ func TestComputeOverageNormalisesCurrency(t *testing.T) {
 	})
 
 	t.Run("zero charge still uses lowercase currency", func(t *testing.T) {
-		got := ComputeOverage(graduated, 0, 0, "USD")
+		got, err := ComputeOverage(graduated, 0, 0, "USD")
+		if err != nil {
+			t.Fatalf("ComputeOverage: unexpected error %v", err)
+		}
 		want := types.Money{Amount: 0, Currency: "usd"}
 		if !got.Equal(want) {
 			t.Errorf("got %#v, want %#v", got, want)
@@ -370,7 +404,10 @@ func TestComputeOverageLastTierExtends(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got := ComputeOverage(tt.tiers, tt.usage, 0, "usd")
+			got, err := ComputeOverage(tt.tiers, tt.usage, 0, "usd")
+			if err != nil {
+				t.Fatalf("ComputeOverage: unexpected error %v", err)
+			}
 			if !got.Equal(tt.want) {
 				t.Errorf("ComputeOverage(usage=%d): got %v, want %v", tt.usage, got, tt.want)
 			}
@@ -385,7 +422,10 @@ func TestComputeOverageAllowanceNotGivenTwice(t *testing.T) {
 	flat := []plan.PriceTier{flatTier(1000, 500), flatTier(0, 2000)}
 
 	t.Run("volume charges the total-usage tier's rate on only the excess", func(t *testing.T) {
-		got := ComputeOverage(volume, 1500, 1000, "usd")
+		got, err := ComputeOverage(volume, 1500, 1000, "usd")
+		if err != nil {
+			t.Fatalf("ComputeOverage: unexpected error %v", err)
+		}
 		want := types.USD(1000)
 		if !got.Equal(want) {
 			t.Errorf("got %v, want %v", got, want)
@@ -397,7 +437,10 @@ func TestComputeOverageAllowanceNotGivenTwice(t *testing.T) {
 	// the 1000th unit still belongs to) -> 2000-500 = 1500, not the full
 	// $20 band fee. Changed from 1500 (was 2000 pre-round-2).
 	t.Run("flat charges only the fee difference between usage and included", func(t *testing.T) {
-		got := ComputeOverage(flat, 1500, 1000, "usd")
+		got, err := ComputeOverage(flat, 1500, 1000, "usd")
+		if err != nil {
+			t.Fatalf("ComputeOverage: unexpected error %v", err)
+		}
 		want := types.USD(1500)
 		if !got.Equal(want) {
 			t.Errorf("got %v, want %v", got, want)
@@ -405,7 +448,10 @@ func TestComputeOverageAllowanceNotGivenTwice(t *testing.T) {
 	})
 
 	t.Run("flat charges nothing until usage exceeds included", func(t *testing.T) {
-		got := ComputeOverage(flat, 800, 1000, "usd")
+		got, err := ComputeOverage(flat, 800, 1000, "usd")
+		if err != nil {
+			t.Fatalf("ComputeOverage: unexpected error %v", err)
+		}
 		want := types.USD(0)
 		if !got.Equal(want) {
 			t.Errorf("got %v, want %v", got, want)
@@ -417,7 +463,10 @@ func TestComputeOverageAllowanceNotGivenTwice(t *testing.T) {
 // plan.Feature.Limit == -1.
 func TestComputeOverageNegativeIncludedIsUnlimited(t *testing.T) {
 	ladder := []plan.PriceTier{tier(1000, 3, 0), tier(0, 1, 0)}
-	got := ComputeOverage(ladder, 100, -1, "usd")
+	got, err := ComputeOverage(ladder, 100, -1, "usd")
+	if err != nil {
+		t.Fatalf("ComputeOverage: unexpected error %v", err)
+	}
 	want := types.USD(0)
 	if !got.Equal(want) {
 		t.Errorf("got %v, want %v", got, want)
@@ -432,7 +481,10 @@ func TestComputeOverageNegativeIncludedIsUnlimited(t *testing.T) {
 // panic or compile error would.
 func TestComputeOverageSortsUnsortedInput(t *testing.T) {
 	unsorted := []plan.PriceTier{tier(0, 1, 0), tier(1000, 3, 0)}
-	got := ComputeOverage(unsorted, 1500, 0, "usd")
+	got, err := ComputeOverage(unsorted, 1500, 0, "usd")
+	if err != nil {
+		t.Fatalf("ComputeOverage: unexpected error %v", err)
+	}
 	want := types.USD(3500)
 	if !got.Equal(want) {
 		t.Errorf("got %v, want %v", got, want)
@@ -466,7 +518,10 @@ func TestComputeOverageFlatIsADifferential(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got := ComputeOverage(flat, tt.usage, tt.included, "usd")
+			got, err := ComputeOverage(flat, tt.usage, tt.included, "usd")
+			if err != nil {
+				t.Fatalf("ComputeOverage: unexpected error %v", err)
+			}
 			if !got.Equal(tt.want) {
 				t.Errorf("ComputeOverage(usage=%d, included=%d): got %v, want %v",
 					tt.usage, tt.included, got, tt.want)
@@ -640,6 +695,80 @@ func TestValidateTiers(t *testing.T) {
 		}
 		if !strings.Contains(err.Error(), "tier 1") {
 			t.Errorf("error %q does not name the offending tier by index (want to contain %q)", err.Error(), "tier 1")
+		}
+	})
+}
+
+// Overflow: every product and sum in the tier models is checked. Before this,
+// a usage of MaxInt64/2 at 3c wrapped to -$46,116,860,184,273,909.07.
+func TestComputeOverageRefusesOverflow(t *testing.T) {
+	const huge = math.MaxInt64 / 2
+
+	t.Run("graduated unbounded tier product", func(t *testing.T) {
+		ladder := []plan.PriceTier{tier(0, 3, 0)}
+		got, err := ComputeOverage(ladder, huge, 0, "usd")
+		if !errors.Is(err, types.ErrOverflow) {
+			t.Fatalf("got %v, err %v, want an error wrapping types.ErrOverflow", got, err)
+		}
+	})
+
+	t.Run("volume product", func(t *testing.T) {
+		ladder := []plan.PriceTier{volumeTier(0, 3)}
+		got, err := ComputeOverage(ladder, huge, 0, "usd")
+		if !errors.Is(err, types.ErrOverflow) {
+			t.Fatalf("got %v, err %v, want an error wrapping types.ErrOverflow", got, err)
+		}
+	})
+
+	// Each tier's product fits in an int64 (6e18 and 4e18), but their sum
+	// (1e19) does not.
+	t.Run("graduated sum overflows though each product fits", func(t *testing.T) {
+		const firstTier = 3_000_000_000_000_000_000
+		const usage = 5_000_000_000_000_000_000
+		ladder := []plan.PriceTier{tier(firstTier, 2, 0), tier(0, 2, 0)}
+
+		if p := int64(firstTier) * 2; p <= 0 {
+			t.Fatalf("test setup: first product %d itself overflows", p)
+		}
+		if p := int64(usage-firstTier) * 2; p <= 0 {
+			t.Fatalf("test setup: second product %d itself overflows", p)
+		}
+
+		got, err := ComputeOverage(ladder, usage, 0, "usd")
+		if !errors.Is(err, types.ErrOverflow) {
+			t.Fatalf("got %v, err %v, want an error wrapping types.ErrOverflow", got, err)
+		}
+	})
+
+	t.Run("the largest quantity that fits still prices", func(t *testing.T) {
+		const usage = math.MaxInt64 / 3
+		ladder := []plan.PriceTier{tier(0, 3, 0)}
+		got, err := ComputeOverage(ladder, usage, 0, "usd")
+		if err != nil {
+			t.Fatalf("unexpected error %v", err)
+		}
+		if want := types.USD(usage * 3); !got.Equal(want) {
+			t.Errorf("got %v, want %v", got, want)
+		}
+
+		volume := []plan.PriceTier{volumeTier(0, 3)}
+		got, err = ComputeOverage(volume, usage, 0, "usd")
+		if err != nil {
+			t.Fatalf("volume: unexpected error %v", err)
+		}
+		if want := types.USD(usage * 3); !got.Equal(want) {
+			t.Errorf("volume: got %v, want %v", got, want)
+		}
+	})
+
+	t.Run("the error names the model", func(t *testing.T) {
+		_, err := ComputeOverage([]plan.PriceTier{tier(0, 3, 0)}, huge, 0, "usd")
+		if err == nil || !strings.Contains(err.Error(), "graduated") {
+			t.Errorf("got %v, want an error naming the graduated model", err)
+		}
+		_, err = ComputeOverage([]plan.PriceTier{volumeTier(0, 3)}, huge, 0, "usd")
+		if err == nil || !strings.Contains(err.Error(), "volume") {
+			t.Errorf("got %v, want an error naming the volume model", err)
 		}
 	})
 }

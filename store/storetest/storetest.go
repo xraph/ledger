@@ -59,6 +59,7 @@ func Run(t *testing.T, newStore func(t *testing.T) ledgerstore.Store) {
 	t.Run("IngestKeylessEventsAreAllCounted", func(t *testing.T) { testIngestKeylessEventsAreAllCounted(t, newStore(t)) })
 	t.Run("IngestDuplicateKeyIsCountedOnce", func(t *testing.T) { testIngestDuplicateKeyIsCountedOnce(t, newStore(t)) })
 	t.Run("IngestKeyedAndKeylessMix", func(t *testing.T) { testIngestKeyedAndKeylessMix(t, newStore(t)) })
+	t.Run("QueryUsageWindowIsHalfOpen", func(t *testing.T) { testQueryUsageWindowIsHalfOpen(t, newStore(t)) })
 }
 
 // uniqueSuffix returns a value that differs on every call, including across
@@ -1394,5 +1395,82 @@ func testEmptyTenantIDBehavior(t *testing.T, s ledgerstore.Store) {
 	}
 	if len(evts) != 2 {
 		t.Errorf("QueryUsage(tenantID=%q, appID=%s): got %d row(s), want exactly 2 (tenantA + tenantB)", "", appID, len(evts))
+	}
+}
+
+// testQueryUsageWindowIsHalfOpen pins down the usage window as [Start, End):
+// an event stamped exactly at Start belongs to the window, and one stamped
+// exactly at End belongs to the next. Billing periods abut, so a window that
+// is closed at both ends bills a boundary event in two consecutive invoices,
+// and one that is open at both bills it in neither.
+//
+// Timestamps are second-aligned UTC because MongoDB stores milliseconds and
+// SQLite stores text: a sub-second value would turn a boundary comparison
+// into a precision test, which is not what this pins down.
+func testQueryUsageWindowIsHalfOpen(t *testing.T, s ledgerstore.Store) {
+	ctx := context.Background()
+	appID := "app-" + uniqueSuffix()
+	tenantID := "tenant-" + uniqueSuffix()
+	featureKey := "window-" + uniqueSuffix()
+
+	start := time.Date(2026, time.March, 1, 0, 0, 0, 0, time.UTC)
+	end := start.AddDate(0, 1, 0)
+
+	at := func(ts time.Time) *meter.UsageEvent {
+		return &meter.UsageEvent{
+			ID: id.NewUsageEventID(), TenantID: tenantID, AppID: appID,
+			FeatureKey: featureKey, Quantity: 1, Timestamp: ts,
+		}
+	}
+	beforeStart := at(start.Add(-time.Second))
+	atStart := at(start)
+	afterStart := at(start.Add(time.Second))
+	beforeEnd := at(end.Add(-time.Second))
+	atEnd := at(end)
+
+	if err := s.IngestBatch(ctx, []*meter.UsageEvent{beforeStart, atStart, afterStart, beforeEnd, atEnd}); err != nil {
+		t.Fatalf("IngestBatch: %v", err)
+	}
+
+	got, err := s.QueryUsage(ctx, tenantID, appID, meter.QueryOpts{FeatureKey: featureKey, Start: start, End: end})
+	if err != nil {
+		t.Fatalf("QueryUsage: %v", err)
+	}
+
+	for _, want := range []struct {
+		name string
+		evt  *meter.UsageEvent
+	}{
+		{"the event exactly at Start", atStart},
+		{"the event a second after Start", afterStart},
+		{"the event a second before End", beforeEnd},
+	} {
+		if !hasUsageEventID(got, want.evt.ID) {
+			t.Errorf("QueryUsage[Start, End): missing %s; the window is closed at Start", want.name)
+		}
+	}
+	if hasUsageEventID(got, beforeStart.ID) {
+		t.Errorf("QueryUsage[Start, End): returned the event a second before Start")
+	}
+	if hasUsageEventID(got, atEnd.ID) {
+		t.Errorf("QueryUsage[Start, End): returned the event exactly at End; the window is open at End, "+
+			"and that event belongs to the next billing period (got %d events)", len(got))
+	}
+	if len(got) != 3 {
+		t.Errorf("QueryUsage[Start, End): got %d events, want exactly 3", len(got))
+	}
+
+	// The bounds are instants, not strings: the same window written in
+	// another zone selects the same events.
+	zone := time.FixedZone("UTC+5", 5*60*60)
+	shifted, err := s.QueryUsage(ctx, tenantID, appID, meter.QueryOpts{
+		FeatureKey: featureKey, Start: start.In(zone), End: end.In(zone),
+	})
+	if err != nil {
+		t.Fatalf("QueryUsage with bounds in another zone: %v", err)
+	}
+	if len(shifted) != 3 || !hasUsageEventID(shifted, atStart.ID) || !hasUsageEventID(shifted, afterStart.ID) ||
+		!hasUsageEventID(shifted, beforeEnd.ID) {
+		t.Errorf("QueryUsage with bounds in another zone: got %d events, want the same three as the UTC window", len(shifted))
 	}
 }

@@ -3,6 +3,7 @@ package ledger_test
 import (
 	"context"
 	"errors"
+	"math"
 	"strings"
 	"sync"
 	"testing"
@@ -1457,3 +1458,180 @@ func TestGenerateInvoiceWarnsWhenAStrategyIsNotRegistered(t *testing.T) {
 		})
 	}
 }
+
+// requireNoInvoiceStored fails when generation left an invoice behind.
+func requireNoInvoiceStored(t *testing.T, s *memory.Store, sub *subscription.Subscription) {
+	t.Helper()
+	stored, err := s.ListInvoices(context.Background(), sub.TenantID, sub.AppID, invoice.ListOpts{})
+	if err != nil {
+		t.Fatalf("ListInvoices: %v", err)
+	}
+	if len(stored) != 0 {
+		t.Errorf("got %d stored invoices after a refused generation, want none", len(stored))
+	}
+}
+
+// setBaseAmount edits the fixture plan's base price.
+func setBaseAmount(amount int64) func(*plan.Plan) {
+	return func(p *plan.Plan) { p.Pricing.BaseAmount = types.USD(amount) }
+}
+
+// A reviewer's aggregator returned MaxInt64/2. At 3c a call that used to wrap
+// to an overage line of -$46,116,860,184,273,909.07 and a Total clamped to
+// $0.00. It must be an error, and nothing may be stored.
+func TestGenerateInvoiceRefusesAnAggregatorTotalThatOverflowsPricing(t *testing.T) {
+	agg := &countingAggregator{total: math.MaxInt64 / 2}
+	l, s, sub := hookFixture(t, setFeatureMeta("aggregator", "stub-agg"), agg)
+	ingest(t, s, sub, "api_calls", 1)
+
+	inv, err := l.GenerateInvoice(context.Background(), sub.ID)
+	if !errors.Is(err, types.ErrOverflow) {
+		t.Fatalf("got invoice %v, err %v, want an error wrapping types.ErrOverflow", inv, err)
+	}
+	if inv != nil {
+		t.Errorf("got an invoice alongside the error: %+v", inv)
+	}
+	if !strings.Contains(err.Error(), `"api_calls"`) {
+		t.Errorf("error %q does not name the feature", err.Error())
+	}
+	requireNoInvoiceStored(t, s, sub)
+}
+
+func TestGenerateInvoiceRefusesASubtotalThatOverflows(t *testing.T) {
+	ctx := context.Background()
+	l, s, sub := hookFixture(t, setBaseAmount(math.MaxInt64))
+
+	// A base price at MaxInt64 plus one seat at $8.00.
+	p, err := s.GetPlan(ctx, sub.PlanID)
+	if err != nil {
+		t.Fatalf("GetPlan: %v", err)
+	}
+	p.Features = append(p.Features, plan.Feature{
+		ID: id.NewFeatureID(), Key: "seats", Name: "Team members",
+		Type: plan.FeatureSeat, Limit: 0, Period: plan.PeriodNone,
+	})
+	p.Pricing.Tiers = append(p.Pricing.Tiers, plan.PriceTier{
+		FeatureKey: "seats", Type: plan.TierGraduated, UpTo: 0, UnitAmount: types.USD(800),
+	})
+	if err := s.UpdatePlan(ctx, p); err != nil {
+		t.Fatalf("UpdatePlan: %v", err)
+	}
+	sub.Quantity = map[string]int64{"seats": 1}
+	if err := s.UpdateSubscription(ctx, sub); err != nil {
+		t.Fatalf("UpdateSubscription: %v", err)
+	}
+
+	_, err = l.GenerateInvoice(ctx, sub.ID)
+	if !errors.Is(err, types.ErrOverflow) {
+		t.Fatalf("got %v, want an error wrapping types.ErrOverflow", err)
+	}
+	if !strings.Contains(err.Error(), "subtotal") {
+		t.Errorf("error %q does not name the subtotal stage", err.Error())
+	}
+	requireNoInvoiceStored(t, s, sub)
+}
+
+func TestGenerateInvoiceRefusesAPercentageDiscountThatOverflows(t *testing.T) {
+	ctx := context.Background()
+	l, s, sub := hookFixture(t, setBaseAmount(math.MaxInt64))
+
+	if err := s.CreateCoupon(ctx, &coupon.Coupon{
+		Entity: types.NewEntity(), ID: id.NewCouponID(), Code: "HALF",
+		Type: coupon.CouponTypePercentage, Percentage: 50,
+		Currency: "usd", AppID: "app_1",
+	}); err != nil {
+		t.Fatalf("CreateCoupon: %v", err)
+	}
+	if _, err := l.ApplyCoupon(ctx, sub.ID, "HALF"); err != nil {
+		t.Fatalf("ApplyCoupon: %v", err)
+	}
+
+	_, err := l.GenerateInvoice(ctx, sub.ID)
+	if !errors.Is(err, types.ErrOverflow) {
+		t.Fatalf("got %v, want an error wrapping types.ErrOverflow", err)
+	}
+	if !strings.Contains(err.Error(), `"HALF"`) {
+		t.Errorf("error %q does not name the coupon", err.Error())
+	}
+	requireNoInvoiceStored(t, s, sub)
+}
+
+func TestGenerateInvoiceRefusesADiscountTotalThatOverflows(t *testing.T) {
+	ctx := context.Background()
+	l, s, sub := hookFixture(t, setBaseAmount(math.MaxInt64))
+
+	for _, code := range []string{"BIG1", "BIG2"} {
+		c := &coupon.Coupon{
+			Entity: types.NewEntity(), ID: id.NewCouponID(), Code: code,
+			Type: coupon.CouponTypeAmount, Amount: types.USD(math.MaxInt64/2 + 1),
+			Currency: "usd", AppID: "app_1",
+		}
+		if err := s.CreateCoupon(ctx, c); err != nil {
+			t.Fatalf("CreateCoupon: %v", err)
+		}
+		if err := s.ApplyCoupon(ctx, sub.ID, c.ID); err != nil {
+			t.Fatalf("store ApplyCoupon: %v", err)
+		}
+	}
+
+	_, err := l.GenerateInvoice(ctx, sub.ID)
+	if !errors.Is(err, types.ErrOverflow) {
+		t.Fatalf("got %v, want an error wrapping types.ErrOverflow", err)
+	}
+	if !strings.Contains(err.Error(), "discount") {
+		t.Errorf("error %q does not name the discount stage", err.Error())
+	}
+	requireNoInvoiceStored(t, s, sub)
+}
+
+func TestGenerateInvoiceRefusesATaxTotalThatOverflows(t *testing.T) {
+	half := &stubTaxCalculator{result: types.USD(math.MaxInt64/2 + 1)}
+	other := &namedTax{stubTaxCalculator: stubTaxCalculator{result: types.USD(math.MaxInt64/2 + 1)}, name: "other-tax"}
+	l, s, sub := hookFixture(t, func(*plan.Plan) {}, half, other)
+
+	_, err := l.GenerateInvoice(context.Background(), sub.ID)
+	if !errors.Is(err, types.ErrOverflow) {
+		t.Fatalf("got %v, want an error wrapping types.ErrOverflow", err)
+	}
+	if !strings.Contains(err.Error(), "tax") {
+		t.Errorf("error %q does not name the tax stage", err.Error())
+	}
+	requireNoInvoiceStored(t, s, sub)
+}
+
+func TestGenerateInvoiceRefusesATotalThatOverflows(t *testing.T) {
+	tax := &stubTaxCalculator{result: types.USD(1)}
+	l, s, sub := hookFixture(t, setBaseAmount(math.MaxInt64), tax)
+
+	_, err := l.GenerateInvoice(context.Background(), sub.ID)
+	if !errors.Is(err, types.ErrOverflow) {
+		t.Fatalf("got %v, want an error wrapping types.ErrOverflow", err)
+	}
+	if !strings.Contains(err.Error(), "total") {
+		t.Errorf("error %q does not name the total stage", err.Error())
+	}
+	requireNoInvoiceStored(t, s, sub)
+}
+
+// The largest bill that fits must still generate, so the checks refuse
+// overflow and nothing else.
+func TestGenerateInvoiceAcceptsTheLargestTotalThatFits(t *testing.T) {
+	l, _, sub := hookFixture(t, setBaseAmount(math.MaxInt64))
+
+	inv, err := l.GenerateInvoice(context.Background(), sub.ID)
+	if err != nil {
+		t.Fatalf("GenerateInvoice: %v", err)
+	}
+	if !inv.Total.Equal(types.USD(math.MaxInt64)) {
+		t.Errorf("got total %v, want %v", inv.Total, types.USD(math.MaxInt64))
+	}
+}
+
+// namedTax is a stubTaxCalculator under its own name, so two can be
+// registered at once.
+type namedTax struct {
+	stubTaxCalculator
+	name string
+}
+
+func (n *namedTax) Name() string { return n.name }

@@ -538,7 +538,9 @@ func (s *Store) QueryUsage(ctx context.Context, tenantID, appID string, opts met
 	}
 	if !opts.End.IsZero() {
 		argIdx++
-		q = q.Where(fmt.Sprintf("timestamp <= $%d", argIdx), opts.End)
+		// Half-open window, [Start, End): an event exactly at End belongs to
+		// the next billing period.
+		q = q.Where(fmt.Sprintf("timestamp < $%d", argIdx), opts.End)
 	}
 	if opts.Limit > 0 {
 		q = q.Limit(opts.Limit)

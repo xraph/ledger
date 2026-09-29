@@ -239,9 +239,19 @@ type PricingStrategy interface {
 // "aggregator". A name that is not registered falls back to the store's own
 // aggregation.
 //
-// Aggregate is called once per selected metered feature per invoice, with the
-// usage events for that tenant, app and feature that fall within the
-// subscription's billing period, CurrentPeriodStart to CurrentPeriodEnd.
+// Aggregate is called at most once per metered feature that selects the
+// aggregator, per invoice. It is not called for a metered feature whose Limit
+// is negative (an unlimited allowance can never bill), and it is not called
+// for any feature once an earlier failure has stopped generation, including a
+// feature whose price tiers fail validation.
+//
+// It receives the usage events for that tenant, app and feature that fall in
+// the subscription's billing period, the half-open window
+// [CurrentPeriodStart, CurrentPeriodEnd). An event stamped exactly at
+// CurrentPeriodStart is in the window, and one stamped exactly at
+// CurrentPeriodEnd belongs to the next period, so consecutive invoices never
+// bill the same event twice or skip it. A zero start or end leaves that side
+// unbounded.
 //
 // Each element of events is a *meter.UsageEvent. It is a pointer: asserting
 // the value type meter.UsageEvent fails, and an aggregator that ignores
