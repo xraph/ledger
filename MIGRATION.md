@@ -45,7 +45,7 @@ Navigation is htmx. Rows and buttons issue `hx-get` with `hx-target="#content"`,
 
 On success, a form renders the detail page directly in the same response. It doesn't redirect, so the URL stays on `/new` or `/edit`. On failure it re-renders the form with the error in a red card above it.
 
-Every list is capped by the contributor, not by the user. There's no pagination control anywhere:
+Every list has a fixed limit set in the contributor, and no page has a pagination control:
 
 | Call | Limit |
 |---|---|
@@ -57,7 +57,7 @@ Every list is capped by the contributor, not by the user. There's no pagination 
 
 Dates render as `Jan 02, 2006` in tables and `Jan 02, 2006 15:04` on detail pages, in whatever zone the stored time carries. Long ids and tenant ids are cut to 16 or 20 characters with `...` appended. Money renders through `types.Money.String()`.
 
-The dashboard reads tenant-scoped lists with an empty tenant id. `renderSubscriptions`, `renderInvoices`, the overview's recent invoices, the Recent Invoices widget and `fetchSubscriptionStats` all pass `""` as the tenant, and `/usage` passes whatever `?tenant_id=` holds, which is usually nothing. Every backend treats an empty tenant as "every tenant in this app" (see the known constraints below), so the old dashboard showed all tenants' subscriptions, invoices and usage for the configured app on one screen. Don't carry that into a contract a tenant-scoped caller can reach.
+The dashboard reads tenant-scoped lists with an empty tenant id. `renderSubscriptions`, `renderInvoices`, the overview's recent invoices, the Recent Invoices widget and `fetchSubscriptionStats` all pass `""` as the tenant, and `/usage` passes whatever `?tenant_id=` holds, which is usually nothing. Every backend treats an empty tenant as "every tenant in this app" (see the known constraints below), so the old dashboard showed all tenants' subscriptions, invoices and usage for the configured app on one screen. It gets wider than that. The extension's `Config.AppID` defaults to `""` (`extension/config.go`), and every store skips the app filter when the app id is empty, so a deployment that never set an app id saw every row of every app. Don't carry any of that into a contract a tenant-scoped caller can reach.
 
 ### Manifest
 
@@ -189,11 +189,13 @@ Active Coupons counts every coupon the app has, up to 1000, whatever its validit
 | Pricing tab | Base Amount in cents, Billing Period (Monthly, Yearly), then repeating tier cards with Add Pricing Tier: Feature Key (a select of the keys entered on the Features tab), Tier Type (Graduated, Volume, Flat), Up To ("0 = unlimited"), Unit Amount (cents), Flat Amount (cents), Priority. A reference block explains the three tier types |
 | Metadata tab | Repeating key/value rows with Add Metadata and remove |
 | Actions | Back to Plans, Cancel, Create Plan / Save Changes |
-| Submission | The script serialises features, tiers and metadata into hidden `features_json`, `tiers_json` and `metadata_json` inputs on `htmx:configRequest`. `ParsePlanFromFormData` rebuilds the plan. Rows with an empty key are dropped. A missing tier priority becomes the row index. Boolean features with limit 0 are saved with limit 1 |
+| Submission | `ParsePlanFromFormData` reads the hidden `features_json`, `tiers_json` and `metadata_json` inputs. The per-row inputs (`features[0].key` and so on) are posted too, and ignored. The script tries to refill the hidden inputs on `htmx:configRequest`, which is too late (see below). Rows with an empty key are dropped. A missing tier priority becomes the row index. Boolean features with limit 0 are saved with limit 1 |
 | Create | `Ledger.CreatePlan` |
 | Edit | `store.UpdatePlan` directly, not through the engine |
 
-On edit, the handler copies only `ID` and the `Entity` timestamps from the stored plan onto the one it parsed from the form. Every backend's `UpdatePlan` writes the whole record, so anything the form does not carry is saved empty: the plan's `ProviderID` and `ProviderName`, and each plan feature's `ID` and `Metadata`. Editing a plan through this form unlinks it from its payment provider and drops any `pricing_strategy` or `aggregator` a feature named in its metadata.
+As far as the code and htmx's documentation show, nothing you change on the Features, Pricing tiers or Metadata tabs ever reached the server. The hidden inputs are rendered with the stored plan's values (`plan_form.templ` lines 69 to 71), and they're empty on create. The script's listener on `htmx:configRequest` (`plan_form_script.templ` line 394) calls `syncPlanFormData`, which only assigns each hidden input's `.value` (lines 341, 369 and 388) and never touches `event.detail.parameters`. htmx documents `htmx:configRequest` as firing after it has collected the request's parameters, and the Forge dashboard shell loads htmx 2.0.4, so the fresh JSON lands in the DOM after the request body is already built. On create, that gives you a plan with no features, no tiers and no metadata (Base Amount and Billing Period are plain inputs and do get through). On edit, the stored features, tiers and metadata are posted back as they were, and every change made on those three tabs is dropped without an error. We haven't watched this happen in a browser. It follows from the code and the documented event order.
+
+On edit, the handler copies only `ID` and the `Entity` timestamps from the stored plan onto the one it parsed from the form, and every backend's `UpdatePlan` writes the whole record. Anything the form does not carry is saved empty: the plan's `ProviderID` and `ProviderName`, the pricing's `ID` and `PlanID`, and each plan feature's `ID`, `CatalogID` and `Metadata`. That last group goes because `featuresJSONValue` and `parseFeaturesJSON` carry only key, name, type, limit, period and soft limit. Plan-level `Metadata` survives, since it round-trips through `metadata_json`. So saving a plan from this form unlinks it from its payment provider, cuts each feature's link to the catalog, and drops any `pricing_strategy` or `aggregator` a feature named in its own metadata.
 
 ### Subscriptions list (`/subscriptions`)
 
@@ -293,7 +295,7 @@ There is no edit route for subscriptions. The form cannot set quantities, trial 
 | Create | `store.CreateCoupon` directly |
 | Edit | `store.UpdateCoupon` directly |
 
-The form has no inputs for `ValidFrom`, `ValidUntil` or `Metadata`. On edit the handler copies `ID`, the `Entity` timestamps and `TimesRedeemed` from the stored coupon and nothing else, and `UpdateCoupon` writes every column. Saving a coupon from this form clears its validity window and its metadata. It also writes back the `TimesRedeemed` it read when the page loaded, which is constraint 6 below in its most direct form. Nothing in the dashboard applies a coupon to a subscription.
+The form has no inputs for `ValidFrom`, `ValidUntil` or `Metadata`. On edit the handler copies `ID`, the `Entity` timestamps and `TimesRedeemed` from the stored coupon and nothing else, and `UpdateCoupon` writes every column. Saving a coupon from this form clears its validity window and its metadata. It also writes back the `TimesRedeemed` it read at the start of the same request (`renderCouponForm` re-reads the coupon on the POST), so a redemption that commits between that read and the write is undone. That's constraint 6 below in its most direct form. Nothing in the dashboard applies a coupon to a subscription.
 
 ### Features list (`/features`)
 
@@ -401,7 +403,7 @@ Each line names the commits, oldest first, from `git log --oneline 7fe72a3..HEAD
 - Task 13, the mongo fixes the conformance suite forced, plus memory's idempotency-key dedup (`11489da` to `7b4c933`).
 - Task 8, per-feature quantities on a subscription (`Subscription.Quantity`) for seat pricing (`e52dc29`).
 - Task 9, `GenerateInvoice` pricing overage, seats, discounts and tax, calling every registered `TaxCalculator` (`38e8dcd` to `06a9f6c`).
-- Task 10, `UsageAggregator` and `PricingStrategy` called during billing, chosen by a feature's `aggregator` and `pricing_strategy` metadata keys (`9cb30a4`, `a0525b4`).
+- Task 10, `UsageAggregator` and `PricingStrategy` called during billing, chosen by the `aggregator` key in a feature's metadata and by `pricing_strategy` in the feature's metadata, falling back to the plan's (`9cb30a4`, `a0525b4`).
 - Task 14, overflow-checked money arithmetic and half-open usage windows (`edbb399`).
 - Task 15, times normalised to UTC on write in every backend (`edc6224`, `4addffe`).
 
@@ -433,14 +435,14 @@ Running the same suite against all four backends turned up these. All are fixed 
 
 None of these are fixed. Read them before you assume Ledger handles the case for you.
 
-1. An empty tenant id on `ListSubscriptions`, `ListInvoices` or `QueryUsage` matches every tenant's rows for the app, on all four backends. The conformance suite pins this (`EmptyTenantIDBehavior` in `store/storetest/storetest.go`), so it can't change silently. Any caller that fails to resolve a tenant and passes `""` through leaks every tenant's data. The templ dashboard relies on it (see above). The dashboard contract layer must refuse an unresolvable tenant, because the stores won't.
+1. An empty tenant id on `ListSubscriptions`, `ListInvoices` or `QueryUsage` matches every tenant's rows for the app, on all four backends. The conformance suite pins this (`EmptyTenantIDBehavior` in `store/storetest/storetest.go`), so it can't change silently. Any caller that fails to resolve a tenant and passes `""` through leaks every tenant's data. If the app id is empty too, the stores skip the app filter as well, and the extension's `Config.AppID` defaults to empty, so a deployment with no app id leaks every row of every app. The templ dashboard relies on it (see above). The dashboard contract layer must refuse an unresolvable tenant, because the stores won't.
 2. Sub-cent unit prices can't be represented. `types.Money` holds integer minor units. A plan that needs a fraction of a cent per unit needs a scaled money type, which touches every price in the system and wants its own spec.
 3. `store.Aggregate` sums usage from the start of the current calendar period (worked out from the time of the call), not from the subscription's `CurrentPeriodStart`. A plugin `UsageAggregator` is given the subscription's own `CurrentPeriodStart` and `CurrentPeriodEnd`. The two agree only for calendar-aligned subscriptions. `Entitled()` also uses `store.Aggregate`, so a feature with a custom aggregator is counted one way for quota enforcement and another way for billing. This behaviour predates Phase A on all four backends and Phase A didn't change it.
 4. An applied coupon applies to every invoice for that subscription, indefinitely. There's no once or repeating duration. There's also no API to detach an applied coupon, so a coupon that later becomes invalid (after the plan's currency changes, for example) blocks that subscription's billing until the coupon is edited or deleted, and that edit or delete hits every subscriber who has it.
 5. `GenerateInvoice` has no per-period idempotency. Call it twice for the same period and you get two invoices.
 6. `UpdateCoupon` writes every column, `times_redeemed` included. An edit that races a redemption can roll the count back and let the cap be exceeded.
-7. `plan.Feature.CatalogID` isn't persisted by any backend. The link from a plan feature to its catalog feature is lost on write.
-8. `provider.Provider.HandleWebhook(ctx, payload)` takes no signature parameter, and `Ledger.HandleWebhook` passes the payload to the named provider without verifying anything. There is no verification step at all, weak or otherwise. Nothing in Ledger signs or hashes today, so there's no bug to fix yet, and the cost lands on whoever writes the first real payment provider. Interfaces shaped like this tend to stay that way: the first implementer verifies inside its own `HandleWebhook` instead of changing a method every other provider already implements, and the second one forgets to.
+7. The mongo store doesn't persist `plan.Feature.CatalogID`. Its `featureModel` in `store/mongo/models.go` has no field for it, so on mongo the link from a plan feature to its catalog feature is lost on write. Memory, sqlite and postgres keep it: memory holds the struct as it is, and sqlite and postgres store plan features as a JSON column where the `catalog_id` tag round-trips. The templ plan edit form drops it on every backend (see the plan form above).
+8. `provider.Provider.HandleWebhook(ctx, payload)` takes no signature parameter, and `Ledger.HandleWebhook` passes the payload to the named provider without verifying anything. Nothing in Ledger signs or hashes today, so there's no bug to fix yet, and the cost lands on whoever writes the first real payment provider. Interfaces shaped like this tend to stay that way: the first implementer verifies inside its own `HandleWebhook` instead of changing a method every other provider already implements, and the second one forgets to.
 9. Sqlite needs a busy timeout in its DSN, or concurrent coupon redemptions return a raw `database is locked` error instead of `ErrCouponExhausted`. The documented DSN in `docs/content/docs/stores/sqlite.mdx` now carries `?_pragma=busy_timeout(5000)`. If you copied the old one, add it.
 10. Mongo coupon redemption is compensating, not transactional, because Ledger doesn't assume a replica set. Between the application insert and a compensating delete, a concurrent invoice can see the application. A crash inside that window leaves it there.
 11. Rolling deploys on mongo: if an old binary runs its `Migrate` after a new one has, it recreates the old sparse index beside the new partial one, and keyless events start dropping again until a new binary migrates. Finish the rollout before you trust keyless ingestion.
