@@ -7,8 +7,10 @@ import (
 
 	dash "github.com/xraph/forge/extensions/dashboard/contract"
 
+	ledger "github.com/xraph/ledger"
 	"github.com/xraph/ledger/id"
 	"github.com/xraph/ledger/meter"
+	"github.com/xraph/ledger/provider"
 )
 
 func ingestEvent(t *testing.T, h *harness, app, tenant, key string, qty int64) {
@@ -100,9 +102,48 @@ func TestEntitlementsCheckAndInvalidate(t *testing.T) {
 
 func TestPaymentMethodsWithoutAProvider(t *testing.T) {
 	h := newHarness(t)
+	h.subscribe("app_a", "acme", h.activePlan("app_a", "pro"))
 	got := mustCall(h, "app_a", paymentMethodsList, PaymentMethodsInput{TenantID: "acme"})
 	if got.Configured || got.Methods == nil || len(got.Methods) != 0 {
 		t.Errorf("got %+v, want configured false and an empty non-nil list", got)
+	}
+}
+
+// cardProvider answers ListPaymentMethods for any tenant, which is what a real
+// provider does: its tenant namespace is not split by app.
+type cardProvider struct {
+	fakeProvider
+	asked []string
+}
+
+func (p *cardProvider) Provider() provider.Provider { return p }
+
+func (p *cardProvider) ListPaymentMethods(_ context.Context, tenantID string) ([]provider.PaymentMethod, error) {
+	p.asked = append(p.asked, tenantID)
+	return []provider.PaymentMethod{{ID: "pm_1", Type: "card", Last4: "4242", Brand: "visa"}}, nil
+}
+
+// A tenant that is only subscribed in another app must not be readable by
+// typing its id, and the provider must not even be asked.
+func TestPaymentMethodsRefuseATenantFromAnotherApp(t *testing.T) {
+	h := newHarness(t)
+	cp := &cardProvider{}
+	eng := ledger.New(h.store, ledger.WithPlugin(cp))
+	h.eng = eng
+	h.deps = Deps{Engine: func() *ledger.Ledger { return eng }}
+	h.subscribe("app_b", "globex", h.activePlan("app_b", "b1"))
+
+	_, err := call(h, "app_a", paymentMethodsList, PaymentMethodsInput{TenantID: "globex"})
+	if codeOf(err) != dash.CodeNotFound {
+		t.Fatalf("a tenant subscribed only in app_b: got %v, want NOT_FOUND", err)
+	}
+	if len(cp.asked) != 0 {
+		t.Errorf("the provider was asked about %v, want no call", cp.asked)
+	}
+
+	got := mustCall(h, "app_b", paymentMethodsList, PaymentMethodsInput{TenantID: "globex"})
+	if !got.Configured || len(got.Methods) != 1 || got.Methods[0].ID != "pm_1" {
+		t.Errorf("the owning app: got %+v, want the provider's methods", got)
 	}
 }
 

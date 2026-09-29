@@ -10,6 +10,7 @@ import (
 	"github.com/xraph/ledger/meter"
 	"github.com/xraph/ledger/plan"
 	"github.com/xraph/ledger/provider"
+	"github.com/xraph/ledger/subscription"
 )
 
 func registerUsage(b *binder) {
@@ -140,12 +141,21 @@ type PaymentMethods struct {
 	Methods    []provider.PaymentMethod `json:"methods"`
 }
 
-// paymentMethodsList ignores the app scope on purpose: a payment provider is
-// keyed by tenant alone, so its tenant namespace is shared across apps.
-func paymentMethodsList(ctx context.Context, eng *ledger.Ledger, _ scope, in PaymentMethodsInput) (PaymentMethods, error) {
+// paymentMethodsList answers only for a tenant with a subscription in the
+// caller's app. A payment provider is keyed by tenant alone, so its namespace
+// is shared across apps and the provider cannot enforce the app boundary. The
+// subscription lookup does, and it runs before the provider is consulted.
+func paymentMethodsList(ctx context.Context, eng *ledger.Ledger, sc scope, in PaymentMethodsInput) (PaymentMethods, error) {
 	tenant, err := requireTenant(in.TenantID)
 	if err != nil {
 		return PaymentMethods{}, err
+	}
+	subs, err := eng.Store().ListSubscriptions(ctx, tenant, sc.AppID, subscription.ListOpts{Limit: 1})
+	if err != nil {
+		return PaymentMethods{}, err
+	}
+	if len(subs) == 0 {
+		return PaymentMethods{}, notFound("tenant")
 	}
 	if !eng.HasProviders() {
 		return PaymentMethods{Configured: false, Methods: []provider.PaymentMethod{}}, nil
