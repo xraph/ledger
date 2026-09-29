@@ -15,7 +15,7 @@ import (
     "github.com/xraph/ledger/store/sqlite"
 )
 
-db, err := grove.Open(sqlitedriver.Open("ledger.db"))
+db, err := grove.Open(sqlitedriver.Open("file:ledger.db?_pragma=busy_timeout(5000)"))
 if err != nil {
     log.Fatal(err)
 }
@@ -32,6 +32,8 @@ if err := engine.Start(ctx); err != nil {
 }
 defer engine.Stop()
 ```
+
+Keep the `busy_timeout` pragma in your DSN: without it, concurrent coupon redemptions fail with a raw `database is locked (SQLITE_BUSY)` error instead of waiting their turn and returning `ErrCouponExhausted` when the cap is reached.
 
 Pass `":memory:"` for a fully in-process, zero-persistence store useful in tests:
 
