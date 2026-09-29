@@ -8,7 +8,6 @@ import (
 	"sync"
 	"testing"
 	"time"
-	"unsafe"
 
 	ledger "github.com/xraph/ledger"
 	"github.com/xraph/ledger/coupon"
@@ -62,10 +61,11 @@ func Run(t *testing.T, newStore func(t *testing.T) ledgerstore.Store) {
 	t.Run("IngestDuplicateKeyIsCountedOnce", func(t *testing.T) { testIngestDuplicateKeyIsCountedOnce(t, newStore(t)) })
 	t.Run("IngestKeyedAndKeylessMix", func(t *testing.T) { testIngestKeyedAndKeylessMix(t, newStore(t)) })
 	t.Run("QueryUsageWindowIsHalfOpen", func(t *testing.T) { testQueryUsageWindowIsHalfOpen(t, newStore(t)) })
-	t.Run("SubscriptionPeriodsRoundTripFromLocalTime", func(t *testing.T) {
-		testSubscriptionPeriodsRoundTripFromLocalTime(t, newStore(t))
+	t.Run("SubscriptionPeriodsRoundTripFromTimeNow", func(t *testing.T) {
+		testSubscriptionPeriodsRoundTripFromTimeNow(t, newStore(t))
 	})
-	t.Run("UsageEventRoundTripsFromLocalTime", func(t *testing.T) { testUsageEventRoundTripsFromLocalTime(t, newStore(t)) })
+	t.Run("UsageEventRoundTripsFromTimeNow", func(t *testing.T) { testUsageEventRoundTripsFromTimeNow(t, newStore(t)) })
+	t.Run("ListInvoicesBoundsAreInstants", func(t *testing.T) { testListInvoicesBoundsAreInstants(t, newStore(t)) })
 	t.Run("UsageEventNearABoundaryInALocalZone", func(t *testing.T) { testUsageEventNearABoundaryInALocalZone(t, newStore(t)) })
 }
 
@@ -1482,43 +1482,20 @@ func testQueryUsageWindowIsHalfOpen(t *testing.T, s ledgerstore.Store) {
 	}
 }
 
-// timeHeader mirrors the leading fields of time.Time's memory layout. It
-// exists only so localNow can set the location of a time.Time that still
-// carries its monotonic reading; localNow verifies the result and fails the
-// test loudly if a future Go release changes the layout.
-type timeHeader struct {
-	wall uint64
-	ext  int64
-	loc  *time.Location
-}
-
-// localNow returns time.Now() placed in a fixed UTC-5 zone with the
-// monotonic clock reading that time.Now() carries. That is what Ledger's own
-// write paths (Ledger.Meter, Ledger.CreateSubscription) hand to a store on a
-// host whose zone is not UTC: a non-UTC location and an "m=+..." suffix in
-// the default string form. The tests below must not call .UTC() or .Round(0)
-// on it, since stripping either is exactly what a store has to do for itself.
-//
-// time.Time.In, time.Time.Local and time.Time.UTC all drop the monotonic
-// reading, so the location is set directly on a copy of time.Now(). The
-// alternative, assigning to time.Local for the duration of the call, races
-// with every goroutine that calls time.Now(), including the database
-// drivers' background ones.
-func localNow(t *testing.T) time.Time {
+// nowWithMonotonic returns time.Now() untouched. That is what Ledger's own
+// write paths (Ledger.Meter, Ledger.CreateSubscription) hand to a store, and
+// it carries a monotonic clock reading on any host, whatever its zone: the
+// default string form ends in "m=+...". The tests below must not call .UTC()
+// or .Round(0) on it, since stripping the reading is exactly what a store has
+// to do for itself. (time.Time.In drops the reading, so a value moved into
+// another zone with it is a different fixture; see
+// testUsageEventNearABoundaryInALocalZone.)
+func nowWithMonotonic(t *testing.T) time.Time {
 	t.Helper()
 
-	zone := time.FixedZone("CDT", -5*3600)
 	got := time.Now()
-	(*timeHeader)(unsafe.Pointer(&got)).loc = zone
-
-	if got.Location() != zone {
-		t.Fatalf("localNow could not set the location: %q", got.String())
-	}
 	if !strings.Contains(got.String(), "m=+") {
-		t.Fatalf("localNow has no monotonic reading: %q", got.String())
-	}
-	if !strings.Contains(got.String(), "-0500 CDT") {
-		t.Fatalf("localNow is not in UTC-5: %q", got.String())
+		t.Fatalf("time.Now() has no monotonic reading: %q", got.String())
 	}
 	return got
 }
@@ -1529,20 +1506,20 @@ func sameInstantToMillisecond(a, b time.Time) bool {
 	return a.Truncate(time.Millisecond).Equal(b.Truncate(time.Millisecond))
 }
 
-// testSubscriptionPeriodsRoundTripFromLocalTime stores a subscription whose
-// period bounds and CancelAt come from time.Now() in a non-UTC zone, monotonic
-// reading intact, and reads it back. SQLite once wrote such a value as
-// "2026-09-29 15:43:04.194044 -0500 CDT m=+0.017196459" and could not scan it
-// again, so every subscription made through Ledger.CreateSubscription was
-// unreadable there.
-func testSubscriptionPeriodsRoundTripFromLocalTime(t *testing.T, s ledgerstore.Store) {
+// testSubscriptionPeriodsRoundTripFromTimeNow stores a subscription whose
+// period bounds and CancelAt come straight from time.Now(), monotonic reading
+// intact, and reads it back. SQLite once wrote such a value as
+// "2026-09-29 15:43:04.194044 -0500 CDT m=+0.017196459" (or "+0000 UTC m=+..."
+// on a UTC host) and could not scan it again, so every subscription made
+// through Ledger.CreateSubscription was unreadable there.
+func testSubscriptionPeriodsRoundTripFromTimeNow(t *testing.T, s ledgerstore.Store) {
 	ctx := context.Background()
 	appID := "app-" + uniqueSuffix()
 	tenantID := "tenant-" + uniqueSuffix()
 
-	start := localNow(t)
+	start := nowWithMonotonic(t)
 	end := start.AddDate(0, 1, 0)
-	cancelAt := localNow(t).Add(48 * time.Hour)
+	cancelAt := nowWithMonotonic(t).Add(48 * time.Hour)
 
 	sub := newTestSubscription(tenantID, appID)
 	sub.CurrentPeriodStart = start
@@ -1571,17 +1548,17 @@ func testSubscriptionPeriodsRoundTripFromLocalTime(t *testing.T, s ledgerstore.S
 	}
 }
 
-// testUsageEventRoundTripsFromLocalTime ingests an event stamped from
-// time.Now() in a non-UTC zone, monotonic reading intact, and queries it back
-// through a window written in UTC. SQLite once stored such an event in a form
-// QueryUsage could not scan.
-func testUsageEventRoundTripsFromLocalTime(t *testing.T, s ledgerstore.Store) {
+// testUsageEventRoundTripsFromTimeNow ingests an event stamped straight from
+// time.Now(), monotonic reading intact, and queries it back through a window
+// written in UTC. SQLite once stored such an event in a form QueryUsage could
+// not scan.
+func testUsageEventRoundTripsFromTimeNow(t *testing.T, s ledgerstore.Store) {
 	ctx := context.Background()
 	appID := "app-" + uniqueSuffix()
 	tenantID := "tenant-" + uniqueSuffix()
 	featureKey := "local-" + uniqueSuffix()
 
-	stamp := localNow(t)
+	stamp := nowWithMonotonic(t)
 	evt := &meter.UsageEvent{
 		ID: id.NewUsageEventID(), TenantID: tenantID, AppID: appID,
 		FeatureKey: featureKey, Quantity: 1, Timestamp: stamp,
@@ -1636,5 +1613,40 @@ func testUsageEventNearABoundaryInALocalZone(t *testing.T, s ledgerstore.Store) 
 	if len(got) != 1 || got[0].ID.String() != evt.ID.String() {
 		t.Errorf("QueryUsage[Start, End): got %d events, want the event stamped 30 minutes after Start "+
 			"(its UTC-5 wall clock is the previous evening, and a store that compares text drops it)", len(got))
+	}
+}
+
+// testListInvoicesBoundsAreInstants lists invoices with bounds written in a
+// zone other than the one the periods were stored in. The bounds are
+// instants: [2026-03-01, 2026-04-01) UTC selects the same invoice whether it
+// is spelled in UTC or in UTC-5. SQLite compares timestamps as text, so bounds
+// bound in the caller's zone once matched nothing. The neighbouring period
+// must stay out, which also pins that every backend honours Start and End.
+func testListInvoicesBoundsAreInstants(t *testing.T, s ledgerstore.Store) {
+	ctx := context.Background()
+	appID := "app-" + uniqueSuffix()
+	tenantID := "tenant-" + uniqueSuffix()
+
+	start := time.Date(2026, time.March, 1, 0, 0, 0, 0, time.UTC)
+	end := start.AddDate(0, 1, 0)
+
+	inPeriod := newTestInvoice(tenantID, appID)
+	inPeriod.PeriodStart, inPeriod.PeriodEnd = start, end
+	nextPeriod := newTestInvoice(tenantID, appID)
+	nextPeriod.PeriodStart, nextPeriod.PeriodEnd = end, end.AddDate(0, 1, 0)
+	for _, inv := range []*invoice.Invoice{inPeriod, nextPeriod} {
+		if err := s.CreateInvoice(ctx, inv); err != nil {
+			t.Fatalf("CreateInvoice: %v", err)
+		}
+	}
+
+	for name, zone := range map[string]*time.Location{"UTC": time.UTC, "UTC-5": time.FixedZone("CDT", -5*3600)} {
+		got, err := s.ListInvoices(ctx, tenantID, appID, invoice.ListOpts{Start: start.In(zone), End: end.In(zone)})
+		if err != nil {
+			t.Fatalf("ListInvoices with bounds in %s: %v", name, err)
+		}
+		if len(got) != 1 || got[0].ID.String() != inPeriod.ID.String() {
+			t.Errorf("ListInvoices with bounds in %s: got %d invoices, want exactly the invoice for [Start, End)", name, len(got))
+		}
 	}
 }

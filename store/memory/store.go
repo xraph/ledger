@@ -243,7 +243,7 @@ func (s *Store) CancelSubscription(_ context.Context, subID id.SubscriptionID, c
 		sub.CancelAt = &cancelAt
 		if time.Now().After(cancelAt) {
 			sub.Status = subscription.StatusCanceled
-			now := time.Now()
+			now := time.Now().UTC()
 			sub.CanceledAt = &now
 		}
 		return nil
@@ -431,7 +431,11 @@ func (s *Store) ListInvoices(_ context.Context, tenantID, appID string, opts inv
 	result := make([]*invoice.Invoice, 0)
 	for _, inv := range s.invoices {
 		if (tenantID == "" || inv.TenantID == tenantID) && (appID == "" || inv.AppID == appID) {
-			if opts.Status == "" || inv.Status == opts.Status {
+			// Start and End select on the period, as in the SQL and mongo
+			// stores: the invoice's period must lie within [Start, End].
+			if (opts.Status == "" || inv.Status == opts.Status) &&
+				(opts.Start.IsZero() || !inv.PeriodStart.Before(opts.Start)) &&
+				(opts.End.IsZero() || !inv.PeriodEnd.After(opts.End)) {
 				result = append(result, inv)
 			}
 		}
@@ -492,7 +496,7 @@ func (s *Store) MarkInvoiceVoided(_ context.Context, invID id.InvoiceID, reason 
 
 	if inv, ok := s.invoices[invID.String()]; ok {
 		inv.Status = invoice.StatusVoided
-		now := time.Now()
+		now := time.Now().UTC()
 		inv.VoidedAt = &now
 		inv.VoidReason = reason
 		return nil

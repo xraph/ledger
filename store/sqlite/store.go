@@ -655,10 +655,10 @@ func (s *Store) ListInvoices(ctx context.Context, tenantID, appID string, opts i
 		q = q.Where("status = ?", string(opts.Status))
 	}
 	if !opts.Start.IsZero() {
-		q = q.Where("period_start >= ?", opts.Start)
+		q = q.Where("period_start >= ?", opts.Start.UTC())
 	}
 	if !opts.End.IsZero() {
-		q = q.Where("period_end <= ?", opts.End)
+		q = q.Where("period_end <= ?", opts.End.UTC())
 	}
 	if opts.Limit > 0 {
 		q = q.Limit(opts.Limit)
