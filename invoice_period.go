@@ -25,6 +25,12 @@ type invoiceConfig struct {
 // is refused with ErrInvalidInput. A second live invoice for the same period is
 // refused with ErrAlreadyExists, as for the current period. Nothing calls this
 // on its own: Ledger never bills a period automatically.
+//
+// Only the usage is the period's own. The base fee, the seats, the coupons and
+// the prices come from the subscription and its plan as they are now, because
+// ChangePlan leaves the period alone and Ledger keeps no history of any of
+// them. A plan whose billing period changed no longer lines up with the periods
+// before the change, and those are refused.
 func ForPeriod(start, end time.Time) InvoiceOption {
 	return func(c *invoiceConfig) {
 		c.period = &subscription.Period{Start: start.UTC(), End: end.UTC()}
@@ -55,9 +61,10 @@ func namedPeriod(sub *subscription.Subscription, p *plan.Plan, opts []InvoiceOpt
 // periodBelongsTo reports whether want is a period the subscription had before
 // its current one. No history is stored, so it walks back from the current
 // period one billing period at a time, on the anchor day the clock renews on,
-// until it passes want. The period must also have started by now and ended
-// after the subscription was created. A plan billed "none", or one whose
-// period Ledger does not know, has only its current period.
+// until it reaches the period that ends where want ends. The period must also
+// have started by now and ended after the subscription was created. A plan
+// billed "none", or one whose period Ledger does not know, has only its
+// current period.
 func periodBelongsTo(sub *subscription.Subscription, period plan.Period, want subscription.Period, now time.Time) bool {
 	if !want.Start.Before(want.End) || want.Start.After(now) || !want.End.After(sub.CreatedAt) {
 		return false
@@ -71,12 +78,44 @@ func periodBelongsTo(sub *subscription.Subscription, period plan.Period, want su
 		if start.Before(want.End) {
 			return false
 		}
-		start, end = shiftMonths(start, -periodMonths(period), day), start
-		if start.Equal(want.Start) && end.Equal(want.End) {
-			return true
+		if start.Equal(want.End) {
+			if first, ok := clampedFirstStart(sub, period, want.End); ok {
+				// The anchor is lost where a year from 29 February lands on
+				// the 28th, so the walk back cannot tell 29 February to 28
+				// February from 28 to 28. The subscription's own creation
+				// day settles it: want is that first period, or it is not a
+				// period at all.
+				return want.Start.Equal(first) && reproduces(want, period, start, end)
+			}
+			return shiftMonths(start, -periodMonths(period), day).Equal(want.Start)
 		}
+		start, end = shiftMonths(start, -periodMonths(period), day), start
 	}
 	return false
+}
+
+// clampedFirstStart returns where the subscription's first period started when
+// it began on a day the month it ended in does not have: a yearly subscription
+// created on 29 February has a first period ending on the 28th. The start is
+// the subscription's creation day, one period before end, and ok is false
+// unless end is a month's last day and the creation day is later than it.
+func clampedFirstStart(sub *subscription.Subscription, period plan.Period, end time.Time) (first time.Time, ok bool) {
+	created := sub.CreatedAt.UTC()
+	if end.Day() != daysIn(end.Year(), end.Month()) || created.Day() <= end.Day() {
+		return time.Time{}, false
+	}
+	first = shiftMonths(end, -periodMonths(period), created.Day())
+	if !first.Before(end) || first.Year() != created.Year() || first.YearDay() != created.YearDay() {
+		return time.Time{}, false
+	}
+	return first, true
+}
+
+// reproduces reports whether the period after want is [nextStart, nextEnd):
+// the check that a candidate past period leads to the one the clock reached.
+func reproduces(want subscription.Period, period plan.Period, nextStart, nextEnd time.Time) bool {
+	s, e := nextPeriod(want.Start, want.End, period)
+	return s.Equal(nextStart) && e.Equal(nextEnd)
 }
 
 // usageInPeriod totals a feature's usage over the subscription's period,

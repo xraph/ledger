@@ -789,9 +789,10 @@ func addChecked(stage string, a, b types.Money) (types.Money, error) {
 // aggregateUsage).
 //
 // With ForPeriod it bills a period the subscription has already had instead
-// of its current one, with that period's own usage (see usageInPeriod).
-// Seat charges always use the subscription's seat counts as they are now:
-// Ledger keeps no seat history.
+// of its current one, with that period's own usage (see usageInPeriod). Only
+// usage is historical: the plan, its prices, the seat counts and the coupons
+// are all read as they are now, because Ledger keeps no history of them and
+// ChangePlan leaves the period alone.
 func (l *Ledger) GenerateInvoice(ctx context.Context, subID id.SubscriptionID, opts ...InvoiceOption) (*invoice.Invoice, error) {
 	sub, err := l.store.GetSubscription(ctx, subID)
 	if err != nil {

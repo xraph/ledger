@@ -138,20 +138,99 @@ func TestGenerateInvoiceForAPeriodCountsItsOwnEventsOnly(t *testing.T) {
 	}
 }
 
-// A yearly plan walks back a year at a time, on its anchor day.
+// A yearly plan walks back a year at a time, on its anchor day. One created on
+// 29 February rolls to the 28th and the store keeps no anchor, so the walk back
+// must still find the real first period (29 February to 28 February) and must
+// refuse the phantom one that starts a day early.
 func TestGenerateInvoiceForAYearlyPlansPreviousYear(t *testing.T) {
 	ctx := context.Background()
-	l, s, _, _ := lifecycleFixture(t)
+	l, s, ev, _ := lifecycleFixture(t)
 	yearly := planBilled(t, l, "annual", plan.PeriodYearly)
 	sub := seedSub(t, s, yearly, func(x *subscription.Subscription) {
 		x.CreatedAt = at(2024, 2, 29)
-		x.CurrentPeriodStart, x.CurrentPeriodEnd = at(2026, 2, 28), at(2027, 2, 28)
+		x.CurrentPeriodStart, x.CurrentPeriodEnd = at(2024, 2, 29), at(2025, 2, 28)
 	})
+	if _, err := l.Advance(ctx, at(2026, 3, 1)); err != nil {
+		t.Fatalf("Advance: %v", err)
+	}
+	if len(ev.renewals) != 1 || len(ev.renewals[0].Ended) != 2 {
+		t.Fatalf("renewals %+v, want one listing two ended years", ev.renewals)
+	}
 
-	if _, err := l.GenerateInvoice(ctx, sub.ID, ledger.ForPeriod(at(2025, 2, 28), at(2026, 2, 28))); err != nil {
-		t.Errorf("the previous year: %v", err)
+	for _, period := range ev.renewals[0].Ended {
+		if _, err := l.GenerateInvoice(ctx, sub.ID, ledger.ForPeriod(period.Start, period.End)); err != nil {
+			t.Errorf("the period the hook listed, %v to %v: %v", period.Start, period.End, err)
+		}
+	}
+	if _, err := l.GenerateInvoice(ctx, sub.ID, ledger.ForPeriod(at(2024, 2, 28), at(2025, 2, 28))); !errors.Is(err, ledger.ErrInvalidInput) {
+		t.Errorf("the first year a day early: got %v, want ErrInvalidInput", err)
 	}
 	if _, err := l.GenerateInvoice(ctx, sub.ID, ledger.ForPeriod(at(2026, 1, 28), at(2026, 2, 28))); !errors.Is(err, ledger.ErrInvalidInput) {
 		t.Errorf("a month of a yearly plan: got %v, want ErrInvalidInput", err)
+	}
+}
+
+// A subscription created mid-month has a first period the walk back reaches,
+// and its neighbours that never existed are refused.
+func TestGenerateInvoiceForAFirstPeriodStartedMidMonth(t *testing.T) {
+	ctx := context.Background()
+	l, s, _, p := lifecycleFixture(t)
+	sub := seedSub(t, s, p, func(x *subscription.Subscription) {
+		x.CreatedAt = at(2026, 1, 15)
+		x.CurrentPeriodStart, x.CurrentPeriodEnd = at(2026, 3, 15), at(2026, 4, 15)
+	})
+
+	if _, err := l.GenerateInvoice(ctx, sub.ID, ledger.ForPeriod(at(2026, 1, 15), at(2026, 2, 15))); err != nil {
+		t.Errorf("the first period: %v", err)
+	}
+	for name, want := range map[string][2]time.Time{
+		"the period before the first":     {at(2025, 12, 15), at(2026, 1, 15)},
+		"a calendar month off the anchor": {at(2026, 1, 1), at(2026, 2, 1)},
+		"two periods in one":              {at(2026, 1, 15), at(2026, 3, 15)},
+	} {
+		if _, err := l.GenerateInvoice(ctx, sub.ID, ledger.ForPeriod(want[0], want[1])); !errors.Is(err, ledger.ErrInvalidInput) {
+			t.Errorf("%s: got %v, want ErrInvalidInput", name, err)
+		}
+	}
+}
+
+// Events recorded for another app never count, even when the subscription has
+// no app of its own: QueryUsage drops its app filter then, so the engine
+// filters the events itself.
+func TestGenerateInvoiceForAPeriodSkipsOtherAppsForAnAppLessSubscription(t *testing.T) {
+	ctx := context.Background()
+	s := memory.New()
+	l := ledger.New(s)
+	p := activePlanIn(t, l, "metered", "app_1")
+	sub := seedSub(t, s, p, func(x *subscription.Subscription) {
+		x.AppID = ""
+		x.CurrentPeriodStart, x.CurrentPeriodEnd = at(2026, 4, 30), at(2026, 5, 31)
+	})
+	if err := s.IngestBatch(ctx, []*meter.UsageEvent{
+		{ID: id.NewUsageEventID(), TenantID: sub.TenantID, AppID: "", FeatureKey: "api_calls", Quantity: 1500, Timestamp: at(2026, 4, 1)},
+		{ID: id.NewUsageEventID(), TenantID: sub.TenantID, AppID: "app_2", FeatureKey: "api_calls", Quantity: 5000, Timestamp: at(2026, 4, 2)},
+	}); err != nil {
+		t.Fatalf("IngestBatch: %v", err)
+	}
+
+	inv, err := l.GenerateInvoice(ctx, sub.ID, ledger.ForPeriod(at(2026, 3, 31), at(2026, 4, 30)))
+	if err != nil {
+		t.Fatalf("GenerateInvoice: %v", err)
+	}
+	overage := lineItemsOfType(inv, invoice.LineItemOverage)
+	if len(overage) != 1 || overage[0].Quantity != 500 {
+		t.Errorf("overage %+v, want 500 over the allowance: the other app's 5000 calls are not this subscription's", overage)
+	}
+}
+
+// A period that has not started cannot be billed, even when it lines up.
+func TestGenerateInvoiceRefusesAPeriodThatHasNotStarted(t *testing.T) {
+	ctx := context.Background()
+	l, s, _, p := lifecycleFixture(t)
+	sub := seedSub(t, s, p, func(x *subscription.Subscription) {
+		x.CurrentPeriodStart, x.CurrentPeriodEnd = at(2099, 2, 28), at(2099, 3, 31)
+	})
+	if _, err := l.GenerateInvoice(ctx, sub.ID, ledger.ForPeriod(at(2099, 1, 31), at(2099, 2, 28))); !errors.Is(err, ledger.ErrInvalidInput) {
+		t.Errorf("a period that starts in the future: got %v, want ErrInvalidInput", err)
 	}
 }

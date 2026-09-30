@@ -130,7 +130,8 @@ type OnSubscriptionTrialEnded interface {
 // *subscription.Renewal: the subscription in its new period, and every period
 // that ended in the move, oldest first, catch-up periods included. Ledger bills
 // none of them; a plugin that invoices at rollover calls GenerateInvoice with
-// ledger.ForPeriod for each.
+// ledger.ForPeriod for each. After a change to a plan's billing period the
+// first rollover can list a period of the old cadence, which ForPeriod refuses.
 type OnSubscriptionRenewed interface {
 	Plugin
 	OnSubscriptionRenewed(ctx context.Context, renewal interface{}) error
