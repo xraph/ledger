@@ -74,6 +74,7 @@ func Run(t *testing.T, newStore func(t *testing.T) ledgerstore.Store) {
 	t.Run("ArchiveFeatureStoresTheArchive", func(t *testing.T) { testArchiveFeatureStoresTheArchive(t, newStore(t)) })
 	t.Run("MarkInvoicePaidStoresThePayment", func(t *testing.T) { testMarkInvoicePaidStoresThePayment(t, newStore(t)) })
 	t.Run("MarkInvoiceVoidedStoresTheVoid", func(t *testing.T) { testMarkInvoiceVoidedStoresTheVoid(t, newStore(t)) })
+	t.Run("ListFiltersCombine", func(t *testing.T) { testListFiltersCombine(t, newStore(t)) })
 	t.Run("ListInvoicesBoundsAreInstants", func(t *testing.T) { testListInvoicesBoundsAreInstants(t, newStore(t)) })
 	t.Run("UsageEventNearABoundaryInALocalZone", func(t *testing.T) { testUsageEventNearABoundaryInALocalZone(t, newStore(t)) })
 	t.Run("ListsPageInAStableOrder", func(t *testing.T) { testListsPageInAStableOrder(t, newStore(t)) })
@@ -2245,4 +2246,244 @@ func testMarkInvoiceVoidedStoresTheVoid(t *testing.T, s ledgerstore.Store) {
 	if err = s.MarkInvoiceVoided(ctx, id.NewInvoiceID(), reason); !errors.Is(err, ledger.ErrInvoiceNotFound) {
 		t.Errorf("MarkInvoiceVoided on an unknown invoice: got %v, want ErrInvoiceNotFound", err)
 	}
+}
+
+// testListFiltersCombine sets every filter each list method takes at once,
+// with a row that fails each filter on its own, so a filter that binds the
+// wrong argument, or is dropped, lets a row through or loses the one that
+// should match. On postgres the filters are conditional WHERE clauses, and
+// only a call that switches several of them on checks that their arguments
+// still line up.
+func testListFiltersCombine(t *testing.T, s ledgerstore.Store) {
+	ctx := context.Background()
+	appID := "app-" + uniqueSuffix()
+	otherApp := "app-other-" + uniqueSuffix()
+	tenantID := "tenant-" + uniqueSuffix()
+	otherTenant := "tenant-other-" + uniqueSuffix()
+
+	t.Run("ListPlans", func(t *testing.T) {
+		newPlan := func(app string, status plan.Status) *plan.Plan {
+			p := &plan.Plan{
+				Entity: types.NewEntity(), ID: id.NewPlanID(),
+				Name: "Plan", Slug: "plan-filter-" + uniqueSuffix(), Currency: "usd",
+				Status: status, AppID: app,
+				Pricing: &plan.Pricing{
+					ID: id.NewPriceID(), BaseAmount: types.USD(1000),
+					BillingPeriod: plan.PeriodMonthly,
+				},
+			}
+			if err := s.CreatePlan(ctx, p); err != nil {
+				t.Fatalf("CreatePlan: %v", err)
+			}
+			return p
+		}
+		want := newPlan(appID, plan.StatusArchived)
+		newPlan(appID, plan.StatusActive)
+		newPlan(otherApp, plan.StatusArchived)
+
+		got, err := s.ListPlans(ctx, appID, plan.ListOpts{Status: plan.StatusArchived})
+		if err != nil {
+			t.Fatalf("ListPlans: %v", err)
+		}
+		requireIDs(t, "ListPlans", planIDs(got), want.ID.String())
+	})
+
+	t.Run("ListFeatures", func(t *testing.T) {
+		newFeature := func(app string, status feature.Status) *feature.Feature {
+			f := newTestFeature(app)
+			f.Status = status
+			if err := s.CreateFeature(ctx, f); err != nil {
+				t.Fatalf("CreateFeature: %v", err)
+			}
+			return f
+		}
+		want := newFeature(appID, feature.StatusArchived)
+		newFeature(appID, feature.StatusActive)
+		newFeature(otherApp, feature.StatusArchived)
+
+		got, err := s.ListFeatures(ctx, appID, feature.ListOpts{Status: feature.StatusArchived})
+		if err != nil {
+			t.Fatalf("ListFeatures: %v", err)
+		}
+		requireIDs(t, "ListFeatures", featureIDs(got), want.ID.String())
+
+		// Global features are shared by every run against a persistent
+		// database, so this checks membership and the status of every row
+		// returned, not an exact list.
+		globalArchived := newFeature("", feature.StatusArchived)
+		globalActive := newFeature("", feature.StatusActive)
+		global, err := s.ListGlobalFeatures(ctx, feature.ListOpts{Status: feature.StatusArchived})
+		if err != nil {
+			t.Fatalf("ListGlobalFeatures: %v", err)
+		}
+		seen := map[string]bool{}
+		for _, f := range global {
+			seen[f.ID.String()] = true
+			if f.AppID != "" || f.Status != feature.StatusArchived {
+				t.Errorf("ListGlobalFeatures returned %s with app %q status %q, want global and archived", f.ID, f.AppID, f.Status)
+			}
+		}
+		if !seen[globalArchived.ID.String()] {
+			t.Errorf("ListGlobalFeatures left out the archived global feature %s", globalArchived.ID)
+		}
+		if seen[globalActive.ID.String()] || seen[want.ID.String()] {
+			t.Error("ListGlobalFeatures returned an active or app-scoped feature")
+		}
+	})
+
+	t.Run("ListSubscriptions", func(t *testing.T) {
+		newSub := func(tenant, app string, status subscription.Status) *subscription.Subscription {
+			sub := newTestSubscription(tenant, app)
+			sub.Status = status
+			if err := s.CreateSubscription(ctx, sub); err != nil {
+				t.Fatalf("CreateSubscription: %v", err)
+			}
+			return sub
+		}
+		want := newSub(tenantID, appID, subscription.StatusTrialing)
+		newSub(tenantID, appID, subscription.StatusActive)
+		newSub(otherTenant, appID, subscription.StatusTrialing)
+		newSub(tenantID, otherApp, subscription.StatusTrialing)
+
+		got, err := s.ListSubscriptions(ctx, tenantID, appID, subscription.ListOpts{Status: subscription.StatusTrialing})
+		if err != nil {
+			t.Fatalf("ListSubscriptions: %v", err)
+		}
+		requireIDs(t, "ListSubscriptions", subscriptionIDs(got), want.ID.String())
+	})
+
+	t.Run("ListInvoices", func(t *testing.T) {
+		base := time.Now().UTC().Truncate(time.Second)
+		newInv := func(tenant, app string, status invoice.Status, start time.Time) *invoice.Invoice {
+			inv := newTestInvoice(tenant, app)
+			inv.Status = status
+			inv.PeriodStart = start
+			inv.PeriodEnd = start.AddDate(0, 1, 0)
+			if err := s.CreateInvoice(ctx, inv); err != nil {
+				t.Fatalf("CreateInvoice: %v", err)
+			}
+			return inv
+		}
+		want := newInv(tenantID, appID, invoice.StatusPending, base)
+		pendingEarlier := newInv(tenantID, appID, invoice.StatusPending, base.AddDate(0, -3, 0))
+		newInv(tenantID, appID, invoice.StatusPaid, base)
+		newInv(otherTenant, appID, invoice.StatusPending, base)
+		otherAppPending := newInv(tenantID, otherApp, invoice.StatusPending, base)
+
+		got, err := s.ListInvoices(ctx, tenantID, appID, invoice.ListOpts{
+			Status: invoice.StatusPending,
+			Start:  base.Add(-time.Hour),
+			End:    base.AddDate(0, 1, 0).Add(time.Hour),
+		})
+		if err != nil {
+			t.Fatalf("ListInvoices: %v", err)
+		}
+		requireIDs(t, "ListInvoices", invoiceIDs(got), want.ID.String())
+
+		// ListPendingInvoices filters by app and status only, so the
+		// earlier period and the other tenant's invoice both come back.
+		pending, err := s.ListPendingInvoices(ctx, appID)
+		if err != nil {
+			t.Fatalf("ListPendingInvoices: %v", err)
+		}
+		ids := invoiceIDs(pending)
+		for _, inv := range []*invoice.Invoice{want, pendingEarlier} {
+			if !containsID(ids, inv.ID.String()) {
+				t.Errorf("ListPendingInvoices left out pending invoice %s", inv.ID)
+			}
+		}
+		if containsID(ids, otherAppPending.ID.String()) {
+			t.Error("ListPendingInvoices returned another app's invoice")
+		}
+		for _, inv := range pending {
+			if inv.Status != invoice.StatusPending {
+				t.Errorf("ListPendingInvoices returned %s with status %q", inv.ID, inv.Status)
+			}
+		}
+	})
+
+	t.Run("ListCoupons", func(t *testing.T) {
+		now := time.Now().UTC().Truncate(time.Second)
+		earlier, later := now.Add(-time.Hour), now.Add(time.Hour)
+		newCoupon := func(app string, from, until *time.Time) *coupon.Coupon {
+			c := newTestCoupon(app)
+			c.ValidFrom, c.ValidUntil = from, until
+			if err := s.CreateCoupon(ctx, c); err != nil {
+				t.Fatalf("CreateCoupon: %v", err)
+			}
+			return c
+		}
+		open := newCoupon(appID, nil, nil)
+		inWindow := newCoupon(appID, &earlier, &later)
+		newCoupon(appID, nil, &earlier) // expired
+		newCoupon(appID, &later, nil)   // not yet valid
+		newCoupon(otherApp, nil, nil)
+
+		got, err := s.ListCoupons(ctx, appID, coupon.ListOpts{Active: true})
+		if err != nil {
+			t.Fatalf("ListCoupons: %v", err)
+		}
+		requireIDs(t, "ListCoupons", couponIDs(got), open.ID.String(), inWindow.ID.String())
+	})
+}
+
+// requireIDs fails unless got holds exactly the want ids, in any order.
+func requireIDs(t *testing.T, what string, got []string, want ...string) {
+	t.Helper()
+	g := append([]string(nil), got...)
+	w := append([]string(nil), want...)
+	sort.Strings(g)
+	sort.Strings(w)
+	if !reflect.DeepEqual(g, w) {
+		t.Errorf("%s: got ids %v, want %v", what, g, w)
+	}
+}
+
+func containsID(ids []string, want string) bool {
+	for _, got := range ids {
+		if got == want {
+			return true
+		}
+	}
+	return false
+}
+
+func planIDs(ps []*plan.Plan) []string {
+	out := make([]string, len(ps))
+	for i, p := range ps {
+		out[i] = p.ID.String()
+	}
+	return out
+}
+
+func featureIDs(fs []*feature.Feature) []string {
+	out := make([]string, len(fs))
+	for i, f := range fs {
+		out[i] = f.ID.String()
+	}
+	return out
+}
+
+func subscriptionIDs(subs []*subscription.Subscription) []string {
+	out := make([]string, len(subs))
+	for i, sub := range subs {
+		out[i] = sub.ID.String()
+	}
+	return out
+}
+
+func invoiceIDs(invs []*invoice.Invoice) []string {
+	out := make([]string, len(invs))
+	for i, inv := range invs {
+		out[i] = inv.ID.String()
+	}
+	return out
+}
+
+func couponIDs(cs []*coupon.Coupon) []string {
+	out := make([]string, len(cs))
+	for i, c := range cs {
+		out[i] = c.ID.String()
+	}
+	return out
 }

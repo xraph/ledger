@@ -111,14 +111,11 @@ func (s *Store) ListPlans(ctx context.Context, appID string, opts plan.ListOpts)
 	var models []planModel
 	q := s.pg.NewSelect(&models)
 
-	argIdx := 0
 	if appID != "" {
-		argIdx++
-		q = q.Where(fmt.Sprintf("app_id = $%d", argIdx), appID)
+		q = q.Where("app_id = ?", appID)
 	}
 	if opts.Status != "" {
-		argIdx++
-		q = q.Where(fmt.Sprintf("status = $%d", argIdx), string(opts.Status))
+		q = q.Where("status = ?", string(opts.Status))
 	}
 	if opts.Limit > 0 {
 		q = q.Limit(opts.Limit)
@@ -241,14 +238,11 @@ func (s *Store) ListFeatures(ctx context.Context, appID string, opts feature.Lis
 	var models []featureModel
 	q := s.pg.NewSelect(&models)
 
-	argIdx := 0
 	if appID != "" {
-		argIdx++
-		q = q.Where(fmt.Sprintf("app_id = $%d", argIdx), appID)
+		q = q.Where("app_id = ?", appID)
 	}
 	if opts.Status != "" {
-		argIdx++
-		q = q.Where(fmt.Sprintf("status = $%d", argIdx), string(opts.Status))
+		q = q.Where("status = ?", string(opts.Status))
 	}
 	if opts.Limit > 0 {
 		q = q.Limit(opts.Limit)
@@ -275,12 +269,10 @@ func (s *Store) ListFeatures(ctx context.Context, appID string, opts feature.Lis
 
 func (s *Store) ListGlobalFeatures(ctx context.Context, opts feature.ListOpts) ([]*feature.Feature, error) {
 	var models []featureModel
-	q := s.pg.NewSelect(&models).Where("app_id = $1", "")
+	q := s.pg.NewSelect(&models).Where("app_id = ?", "")
 
-	argIdx := 1
 	if opts.Status != "" {
-		argIdx++
-		q = q.Where(fmt.Sprintf("status = $%d", argIdx), string(opts.Status))
+		q = q.Where("status = ?", string(opts.Status))
 	}
 	if opts.Limit > 0 {
 		q = q.Limit(opts.Limit)
@@ -403,18 +395,14 @@ func (s *Store) ListSubscriptions(ctx context.Context, tenantID, appID string, o
 	var models []subscriptionModel
 	q := s.pg.NewSelect(&models)
 
-	argIdx := 0
 	if tenantID != "" {
-		argIdx++
-		q = q.Where(fmt.Sprintf("tenant_id = $%d", argIdx), tenantID)
+		q = q.Where("tenant_id = ?", tenantID)
 	}
 	if appID != "" {
-		argIdx++
-		q = q.Where(fmt.Sprintf("app_id = $%d", argIdx), appID)
+		q = q.Where("app_id = ?", appID)
 	}
 	if opts.Status != "" {
-		argIdx++
-		q = q.Where(fmt.Sprintf("status = $%d", argIdx), string(opts.Status))
+		q = q.Where("status = ?", string(opts.Status))
 	}
 	if opts.Limit > 0 {
 		q = q.Limit(opts.Limit)
@@ -528,28 +516,22 @@ func (s *Store) QueryUsage(ctx context.Context, tenantID, appID string, opts met
 	var models []usageEventModel
 	q := s.pg.NewSelect(&models)
 
-	argIdx := 0
 	if tenantID != "" {
-		argIdx++
-		q = q.Where(fmt.Sprintf("tenant_id = $%d", argIdx), tenantID)
+		q = q.Where("tenant_id = ?", tenantID)
 	}
 	if appID != "" {
-		argIdx++
-		q = q.Where(fmt.Sprintf("app_id = $%d", argIdx), appID)
+		q = q.Where("app_id = ?", appID)
 	}
 	if opts.FeatureKey != "" {
-		argIdx++
-		q = q.Where(fmt.Sprintf("feature_key = $%d", argIdx), opts.FeatureKey)
+		q = q.Where("feature_key = ?", opts.FeatureKey)
 	}
 	if !opts.Start.IsZero() {
-		argIdx++
-		q = q.Where(fmt.Sprintf("timestamp >= $%d", argIdx), opts.Start)
+		q = q.Where("timestamp >= ?", opts.Start)
 	}
 	if !opts.End.IsZero() {
-		argIdx++
 		// Half-open window, [Start, End): an event exactly at End belongs to
 		// the next billing period.
-		q = q.Where(fmt.Sprintf("timestamp < $%d", argIdx), opts.End)
+		q = q.Where("timestamp < ?", opts.End)
 	}
 	if opts.Limit > 0 {
 		q = q.Limit(opts.Limit)
@@ -666,26 +648,20 @@ func (s *Store) ListInvoices(ctx context.Context, tenantID, appID string, opts i
 	var models []invoiceModel
 	q := s.pg.NewSelect(&models)
 
-	argIdx := 0
 	if tenantID != "" {
-		argIdx++
-		q = q.Where(fmt.Sprintf("tenant_id = $%d", argIdx), tenantID)
+		q = q.Where("tenant_id = ?", tenantID)
 	}
 	if appID != "" {
-		argIdx++
-		q = q.Where(fmt.Sprintf("app_id = $%d", argIdx), appID)
+		q = q.Where("app_id = ?", appID)
 	}
 	if opts.Status != "" {
-		argIdx++
-		q = q.Where(fmt.Sprintf("status = $%d", argIdx), string(opts.Status))
+		q = q.Where("status = ?", string(opts.Status))
 	}
 	if !opts.Start.IsZero() {
-		argIdx++
-		q = q.Where(fmt.Sprintf("period_start >= $%d", argIdx), opts.Start)
+		q = q.Where("period_start >= ?", opts.Start)
 	}
 	if !opts.End.IsZero() {
-		argIdx++
-		q = q.Where(fmt.Sprintf("period_end <= $%d", argIdx), opts.End)
+		q = q.Where("period_end <= ?", opts.End)
 	}
 	if opts.Limit > 0 {
 		q = q.Limit(opts.Limit)
@@ -738,13 +714,10 @@ func (s *Store) ListPendingInvoices(ctx context.Context, appID string) ([]*invoi
 	var models []invoiceModel
 	q := s.pg.NewSelect(&models)
 
-	argIdx := 0
 	if appID != "" {
-		argIdx++
-		q = q.Where(fmt.Sprintf("app_id = $%d", argIdx), appID)
+		q = q.Where("app_id = ?", appID)
 	}
-	argIdx++
-	q = q.Where(fmt.Sprintf("status = $%d", argIdx), string(invoice.StatusPending))
+	q = q.Where("status = ?", string(invoice.StatusPending))
 
 	err := q.OrderExpr("created_at DESC, id DESC").
 		Scan(ctx)
@@ -848,17 +821,13 @@ func (s *Store) ListCoupons(ctx context.Context, appID string, opts coupon.ListO
 	var models []couponModel
 	q := s.pg.NewSelect(&models)
 
-	argIdx := 0
 	if appID != "" {
-		argIdx++
-		q = q.Where(fmt.Sprintf("app_id = $%d", argIdx), appID)
+		q = q.Where("app_id = ?", appID)
 	}
 	if opts.Active {
 		t := time.Now().UTC()
-		argIdx++
-		q = q.Where(fmt.Sprintf("(valid_from IS NULL OR valid_from <= $%d)", argIdx), t)
-		argIdx++
-		q = q.Where(fmt.Sprintf("(valid_until IS NULL OR valid_until >= $%d)", argIdx), t)
+		q = q.Where("(valid_from IS NULL OR valid_from <= ?)", t)
+		q = q.Where("(valid_until IS NULL OR valid_until >= ?)", t)
 	}
 	if opts.Limit > 0 {
 		q = q.Limit(opts.Limit)
