@@ -77,6 +77,12 @@ func (l *Ledger) Advance(ctx context.Context, now time.Time) (LifecycleReport, e
 // follow the plan's billing period (see billingPeriod); a plan billed "none"
 // never rolls. OnSubscriptionRenewed fires once per subscription moved, with
 // every period that ended in the move.
+//
+// One catch-up walks at most maxCatchUpPeriods periods, a hundred years of
+// months. A subscription further behind than that, whose period ended before
+// any date this engine could have set, is left where it is and reported in
+// the error on every run. It needs its period set by hand in the store; the
+// clock never guesses how it got there.
 func (l *Ledger) AdvancePeriods(ctx context.Context, now time.Time) ([]id.SubscriptionID, error) {
 	now = now.UTC()
 	plans := map[string]*plan.Plan{}
@@ -142,7 +148,10 @@ func (l *Ledger) advancePeriod(ctx context.Context, sub *subscription.Subscripti
 
 // EnactCancels cancels every subscription whose cancel_at is at or before now
 // and that is not already canceled or expired, paused ones included, and sets
-// canceled_at to cancel_at. OnSubscriptionCanceled fires for each.
+// canceled_at to cancel_at. OnSubscriptionCanceled fires for each, with the
+// row read back after the write: an operator's scheduled cancel landing
+// between the list and the write moves cancel_at, and the stored canceled_at
+// is the one that counts.
 func (l *Ledger) EnactCancels(ctx context.Context, now time.Time) ([]id.SubscriptionID, error) {
 	now = now.UTC()
 	var ended []id.SubscriptionID
@@ -152,15 +161,22 @@ func (l *Ledger) EnactCancels(ctx context.Context, now time.Time) ([]id.Subscrip
 			if err != nil {
 				return false, fmt.Errorf("cancel subscription %s: %w", sub.ID, err)
 			}
-			if !changed || sub.CancelAt == nil {
-				return changed, nil
+			if !changed {
+				return false, nil
 			}
-			canceledAt := *sub.CancelAt
-			sub.Status = subscription.StatusCanceled
-			sub.CanceledAt = &canceledAt
-			sub.Touch()
-			_ = l.store.Invalidate(ctx, sub.TenantID, sub.AppID) //nolint:errcheck // best-effort cache invalidation
-			l.plugins.EmitSubscriptionCanceled(ctx, sub)
+			canceled, readErr := l.store.GetSubscription(ctx, sub.ID)
+			if readErr != nil {
+				// The cancel is written; announce it from the listed row.
+				canceled = sub
+				if sub.CancelAt != nil {
+					canceledAt := *sub.CancelAt
+					canceled.CanceledAt = &canceledAt
+				}
+				canceled.Status = subscription.StatusCanceled
+				canceled.Touch()
+			}
+			_ = l.store.Invalidate(ctx, canceled.TenantID, canceled.AppID) //nolint:errcheck // best-effort cache invalidation
+			l.plugins.EmitSubscriptionCanceled(ctx, canceled)
 			ended = append(ended, sub.ID)
 			return true, nil
 		})
@@ -271,14 +287,16 @@ func billingPeriod(p *plan.Plan) plan.Period {
 
 // firstPeriodEnd is where a new subscription's first period ends: one period
 // after start, on start's day of the month. Anything but yearly is a month,
-// which keeps the old default for a plan billed "none".
+// which keeps the old default for a plan billed "none". Days are UTC days.
 func firstPeriodEnd(start time.Time, period plan.Period) time.Time {
+	start = start.UTC()
 	return shiftMonths(start, periodMonths(period), start.Day())
 }
 
 // nextPeriod returns the period after [start, end): it starts at end and runs
-// one period on, to the subscription's anchor day.
+// one period on, to the subscription's anchor day. Days are UTC days.
 func nextPeriod(start, end time.Time, period plan.Period) (nextStart, nextEnd time.Time) {
+	start, end = start.UTC(), end.UTC()
 	return end, shiftMonths(end, periodMonths(period), anchorDay(start, end))
 }
 
@@ -286,8 +304,9 @@ func nextPeriod(start, end time.Time, period plan.Period) (nextStart, nextEnd ti
 // current period, since no anchor is stored. It is the end's day, unless the
 // end was clamped to the last day of a short month, which shows as a start on
 // a later day. So a subscription that began on the 31st goes back to the 31st
-// after February.
+// after February. Days are UTC days.
 func anchorDay(start, end time.Time) int {
+	start, end = start.UTC(), end.UTC()
 	if d := end.Day(); d == daysIn(end.Year(), end.Month()) && start.Day() > d {
 		return start.Day()
 	}

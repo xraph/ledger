@@ -336,8 +336,10 @@ func (l *Ledger) GetActiveSubscription(ctx context.Context, tenantID, appID stri
 
 // CancelSubscription cancels a subscription, now or at the end of its current
 // period. A subscription that is already canceled or expired is refused, so a
-// second cancel can neither move its cancel_at nor announce the cancellation
-// again.
+// cancel on it can neither move its cancel_at nor announce the cancellation
+// again. One that is still running can be canceled again while a scheduled
+// cancel waits: a scheduled cancel sets cancel_at to the current period end
+// once more, and an immediate one stops it now.
 //
 // OnSubscriptionCanceled fires only when the subscription stopped now. A
 // cancel dated later fires OnSubscriptionCancelScheduled, and the lifecycle

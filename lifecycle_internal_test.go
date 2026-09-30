@@ -25,6 +25,14 @@ func TestNextPeriod(t *testing.T) {
 		{"a provider's own cadence keeps its end day", day(2026, 1, 10), day(2026, 2, 9), plan.PeriodMonthly, day(2026, 3, 9)},
 		{"a leap day, yearly", day(2024, 2, 29), day(2025, 2, 28), plan.PeriodYearly, day(2026, 2, 28)},
 		{
+			// 30 January 21:00 at UTC-5 is 31 January in UTC, so the anchor is
+			// the 31st, not the 27th the local end day would suggest.
+			"days are UTC days",
+			time.Date(2026, 1, 30, 21, 0, 0, 0, time.FixedZone("UTC-5", -5*3600)),
+			time.Date(2026, 2, 27, 21, 0, 0, 0, time.FixedZone("UTC-5", -5*3600)),
+			plan.PeriodMonthly, time.Date(2026, 3, 31, 2, 0, 0, 0, time.UTC),
+		},
+		{
 			"the time of day is kept",
 			time.Date(2026, 1, 15, 13, 45, 0, 0, time.UTC), time.Date(2026, 2, 15, 13, 45, 0, 0, time.UTC),
 			plan.PeriodMonthly, time.Date(2026, 3, 15, 13, 45, 0, 0, time.UTC),
