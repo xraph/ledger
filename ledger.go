@@ -46,6 +46,7 @@ type Ledger struct {
 	meterBatchSize      int
 	meterFlushInterval  time.Duration
 	entitlementCacheTTL time.Duration
+	skipMigrate         bool
 }
 
 // New creates a new Ledger instance.
@@ -101,14 +102,24 @@ func WithEntitlementCacheTTL(ttl time.Duration) Option {
 	}
 }
 
+// WithoutMigrate makes Start skip the store migration and start only the
+// background workers, for a deployment that migrates its schema separately.
+func WithoutMigrate() Option {
+	return func(l *Ledger) {
+		l.skipMigrate = true
+	}
+}
+
 // Store returns the underlying ledger store.
 func (l *Ledger) Store() store.Store { return l.store }
 
 // Start begins background workers.
 func (l *Ledger) Start(ctx context.Context) error {
-	// Migrate database
-	if err := l.store.Migrate(ctx); err != nil {
-		return err
+	// Migrate database, unless the deployment migrates it separately
+	if !l.skipMigrate {
+		if err := l.store.Migrate(ctx); err != nil {
+			return err
+		}
 	}
 
 	// Initialize plugins

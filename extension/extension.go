@@ -128,10 +128,11 @@ func (e *Extension) Start(ctx context.Context) error {
 		return errors.New("ledger: extension not initialized")
 	}
 
-	if !e.config.DisableMigrate {
-		if err := e.engine.Start(ctx); err != nil {
-			return err
-		}
+	// The engine always starts. DisableMigrate reaches it as
+	// ledger.WithoutMigrate, which skips only the migration, so the meter
+	// flusher runs either way.
+	if err := e.engine.Start(ctx); err != nil {
+		return err
 	}
 
 	e.MarkStarted()
@@ -160,7 +161,7 @@ func (e *Extension) Health(ctx context.Context) error {
 
 // buildLedgerOpts constructs ledger.Option values from the resolved config.
 func (e *Extension) buildLedgerOpts() []ledger.Option {
-	opts := make([]ledger.Option, 0, len(e.ledgerOpts)+3)
+	opts := make([]ledger.Option, 0, len(e.ledgerOpts)+4)
 
 	// Apply config-derived options.
 	if e.config.MeterBatchSize > 0 || e.config.MeterFlushInterval > 0 {
@@ -178,6 +179,10 @@ func (e *Extension) buildLedgerOpts() []ledger.Option {
 
 	if e.config.EntitlementCacheTTL > 0 {
 		opts = append(opts, ledger.WithEntitlementCacheTTL(e.config.EntitlementCacheTTL))
+	}
+
+	if e.config.DisableMigrate {
+		opts = append(opts, ledger.WithoutMigrate())
 	}
 
 	// Append any pass-through ledger options.
