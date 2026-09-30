@@ -2,9 +2,11 @@ package contract
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"strings"
 	"testing"
+	"time"
 
 	dash "github.com/xraph/forge/extensions/dashboard/contract"
 
@@ -12,6 +14,7 @@ import (
 	"github.com/xraph/ledger/id"
 	"github.com/xraph/ledger/invoice"
 	"github.com/xraph/ledger/provider"
+	"github.com/xraph/ledger/subscription"
 	"github.com/xraph/ledger/types"
 )
 
@@ -246,4 +249,135 @@ func TestAnInvoiceWithNoLineItemsSendsAnEmptyList(t *testing.T) {
 	check("invoices.detail", wireJSON(t, mustCall(h, "app_a", invoicesDetail, IDInput{ID: inv.ID.String()})))
 	check("invoices.list", wireJSON(t, mustCall(h, "app_a", invoicesList, InvoicesListInput{})))
 	check("invoices.finalize", wireJSON(t, mustCall(h, "app_a", invoicesFinalize, IDInput{ID: inv.ID.String()})))
+}
+
+func TestInvoicesGenerateForANamedPeriod(t *testing.T) {
+	h := newHarness(t)
+	p := h.activePlan("app_a", "p")
+	utc := func(y int, m time.Month, d int) time.Time { return time.Date(y, m, d, 0, 0, 0, 0, time.UTC) }
+	at := func(y int, m time.Month, d int) *time.Time { v := utc(y, m, d); return &v }
+	sub := &subscription.Subscription{
+		Entity: types.Entity{CreatedAt: utc(2026, 1, 1), UpdatedAt: utc(2026, 1, 1)},
+		ID:     id.NewSubscriptionID(), TenantID: "acme", PlanID: p.ID, AppID: "app_a",
+		Status:             subscription.StatusActive,
+		CurrentPeriodStart: utc(2026, 3, 1), CurrentPeriodEnd: utc(2026, 4, 1),
+	}
+	if err := h.store.CreateSubscription(ctxBackground(), sub); err != nil {
+		t.Fatalf("CreateSubscription: %v", err)
+	}
+	subID := sub.ID.String()
+
+	previous := InvoiceGenerateInput{SubscriptionID: subID, PeriodStart: at(2026, 2, 1), PeriodEnd: at(2026, 3, 1)}
+	inv := mustCall(h, "app_a", invoicesGenerate, previous)
+	if !inv.PeriodStart.Equal(*previous.PeriodStart) || !inv.PeriodEnd.Equal(*previous.PeriodEnd) {
+		t.Errorf("invoice period %v to %v, want February", inv.PeriodStart, inv.PeriodEnd)
+	}
+	if _, err := call(h, "app_a", invoicesGenerate, previous); codeOf(err) != dash.CodeConflict {
+		t.Errorf("a second invoice for February: got %v, want CONFLICT", err)
+	}
+
+	for name, in := range map[string]InvoiceGenerateInput{
+		"only a start":             {SubscriptionID: subID, PeriodStart: at(2026, 2, 1)},
+		"only an end":              {SubscriptionID: subID, PeriodEnd: at(2026, 3, 1)},
+		"not a period it had":      {SubscriptionID: subID, PeriodStart: at(2026, 2, 15), PeriodEnd: at(2026, 3, 15)},
+		"after the current period": {SubscriptionID: subID, PeriodStart: at(2026, 4, 1), PeriodEnd: at(2026, 5, 1)},
+	} {
+		if _, err := call(h, "app_a", invoicesGenerate, in); codeOf(err) != dash.CodeBadRequest {
+			t.Errorf("%s: got %v, want BAD_REQUEST", name, err)
+		}
+	}
+
+	current := mustCall(h, "app_a", invoicesGenerate, InvoiceGenerateInput{SubscriptionID: subID})
+	if !current.PeriodStart.Equal(utc(2026, 3, 1)) {
+		t.Errorf("with no period: starts %v, want the current period", current.PeriodStart)
+	}
+}
+
+// TestInvoicesGenerateBadRequestMessages pins the words the operator reads.
+func TestInvoicesGenerateBadRequestMessages(t *testing.T) {
+	h := newHarness(t)
+	p := h.activePlan("app_a", "p")
+	sub := h.subscribe("app_a", "acme", p)
+	start, end := sub.CurrentPeriodStart, sub.CurrentPeriodEnd
+
+	_, err := call(h, "app_a", invoicesGenerate, InvoiceGenerateInput{SubscriptionID: sub.ID.String(), PeriodStart: &start})
+	if codeOf(err) != dash.CodeBadRequest || !strings.Contains(err.Error(), "period_start and period_end go together") {
+		t.Errorf("only a start: got %v", err)
+	}
+	_, err = call(h, "app_a", invoicesGenerate, InvoiceGenerateInput{SubscriptionID: sub.ID.String(), PeriodEnd: &end})
+	if codeOf(err) != dash.CodeBadRequest || !strings.Contains(err.Error(), "period_start and period_end go together") {
+		t.Errorf("only an end: got %v", err)
+	}
+	future := end.AddDate(0, 1, 0)
+	_, err = call(h, "app_a", invoicesGenerate, InvoiceGenerateInput{SubscriptionID: sub.ID.String(), PeriodStart: &end, PeriodEnd: &future})
+	if codeOf(err) != dash.CodeBadRequest || !strings.Contains(err.Error(), "had no billing period") {
+		t.Errorf("a period it never had: got %v", err)
+	}
+}
+
+// TestInvoicesGenerateTakesThePeriodTheEngineWrote sends periods straight back
+// from the engine's own JSON. Periods carry a sub-second time of day, so a
+// parse that dropped the fraction would refuse a period the subscription had.
+func TestInvoicesGenerateTakesThePeriodTheEngineWrote(t *testing.T) {
+	h := newHarness(t)
+	p := h.activePlan("app_a", "p")
+	t0 := time.Date(2026, 3, 1, 10, 11, 12, 123456789, time.UTC)
+	sub := &subscription.Subscription{
+		Entity: types.Entity{CreatedAt: t0.AddDate(0, -2, 0), UpdatedAt: t0},
+		ID:     id.NewSubscriptionID(), TenantID: "acme", PlanID: p.ID, AppID: "app_a",
+		Status:             subscription.StatusActive,
+		CurrentPeriodStart: t0, CurrentPeriodEnd: t0.AddDate(0, 1, 0),
+	}
+	if err := h.store.CreateSubscription(ctxBackground(), sub); err != nil {
+		t.Fatalf("CreateSubscription: %v", err)
+	}
+	subID := sub.ID.String()
+
+	// The current period, as subscriptions.detail writes it.
+	detail := mustCall(h, "app_a", subscriptionsDetail, IDInput{ID: subID})
+	raw, err := json.Marshal(detail.Subscription)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	var wire struct {
+		Start string `json:"current_period_start"`
+		End   string `json:"current_period_end"`
+	}
+	if err = json.Unmarshal(raw, &wire); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if !strings.Contains(wire.Start, ".123456789") {
+		t.Fatalf("current_period_start %q lost its nanoseconds on the wire", wire.Start)
+	}
+	var in InvoiceGenerateInput
+	body := `{"subscription_id":"` + subID + `","period_start":"` + wire.Start + `","period_end":"` + wire.End + `"}`
+	if err = json.Unmarshal([]byte(body), &in); err != nil {
+		t.Fatalf("decode input: %v", err)
+	}
+	cur := mustCall(h, "app_a", invoicesGenerate, in)
+	if !cur.PeriodStart.Equal(t0) {
+		t.Errorf("current period sent back: starts %v, want %v", cur.PeriodStart, t0)
+	}
+
+	// A previous period, taken from an invoice's JSON and sent back.
+	prevStart, prevEnd := t0.AddDate(0, -1, 0), t0
+	first := mustCall(h, "app_a", invoicesGenerate, InvoiceGenerateInput{SubscriptionID: subID, PeriodStart: &prevStart, PeriodEnd: &prevEnd})
+	raw, err = json.Marshal(first)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	var invWire struct {
+		Start string `json:"period_start"`
+		End   string `json:"period_end"`
+	}
+	if err = json.Unmarshal(raw, &invWire); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	body = `{"subscription_id":"` + subID + `","period_start":"` + invWire.Start + `","period_end":"` + invWire.End + `"}`
+	if err = json.Unmarshal([]byte(body), &in); err != nil {
+		t.Fatalf("decode input: %v", err)
+	}
+	if _, err := call(h, "app_a", invoicesGenerate, in); codeOf(err) != dash.CodeConflict {
+		t.Errorf("the invoice's own period sent back: got %v, want CONFLICT (BAD_REQUEST would mean it was not read exactly)", err)
+	}
 }

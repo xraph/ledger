@@ -3,6 +3,7 @@ package contract
 import (
 	"fmt"
 	"testing"
+	"time"
 
 	dash "github.com/xraph/forge/extensions/dashboard/contract"
 
@@ -155,5 +156,33 @@ func TestOverviewStatsReportsWhenACountHitsTheBound(t *testing.T) {
 	}
 	if got.Coupons != statsScanLimit {
 		t.Errorf("coupons = %d, want the bound %d as a lower bound", got.Coupons, statsScanLimit)
+	}
+}
+
+func TestOverviewStatsCountsPastDueInvoices(t *testing.T) {
+	h := newHarness(t)
+	ctx := ctxBackground()
+	for _, app := range []string{"app_a", "app_b"} {
+		p := h.activePlan(app, "p")
+		for i, tenant := range []string{"acme", "globex"} {
+			sub := h.subscribe(app, tenant, p)
+			inv, err := h.eng.GenerateInvoice(ctx, sub.ID)
+			if err != nil {
+				t.Fatalf("GenerateInvoice: %v", err)
+			}
+			if err := h.eng.FinalizeInvoice(ctx, inv.ID); err != nil {
+				t.Fatalf("FinalizeInvoice: %v", err)
+			}
+			if i == 0 {
+				if _, err := h.store.MarkInvoicePastDue(ctx, inv.ID, time.Now().AddDate(0, 0, 31)); err != nil {
+					t.Fatalf("MarkInvoicePastDue: %v", err)
+				}
+			}
+		}
+	}
+	got := mustCall(h, "app_a", overviewStats, struct{}{})
+	if got.PastDueInvoices != 1 || got.PendingInvoices != 1 {
+		t.Errorf("past due %d pending %d, want 1 and 1: one of app_a's two invoices is late, and app_b's are not counted",
+			got.PastDueInvoices, got.PendingInvoices)
 	}
 }

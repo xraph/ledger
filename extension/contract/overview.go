@@ -32,6 +32,7 @@ type OverviewStats struct {
 	ActivePlans           int            `json:"active_plans"`
 	SubscriptionsByStatus map[string]int `json:"subscriptions_by_status"`
 	PendingInvoices       int            `json:"pending_invoices"`
+	PastDueInvoices       int            `json:"past_due_invoices"`
 	Coupons               int            `json:"coupons"`
 	// Capped is true when a count reached the scan bound; the counts are then
 	// lower bounds and the page must say so.
@@ -82,6 +83,17 @@ func overviewStats(ctx context.Context, eng *ledger.Ledger, sc scope, _ struct{}
 	pending, capped = bounded(pending)
 	out.Capped = out.Capped || capped
 	out.PendingInvoices = len(pending)
+
+	// Past-due invoices are counted apart: the lifecycle clock moves overdue
+	// invoices out of pending, so without this they would vanish from the
+	// overview.
+	pastDue, err := st.ListInvoices(ctx, "", sc.AppID, invoice.ListOpts{Status: invoice.StatusPastDue, Limit: statsScanLimit + 1})
+	if err != nil {
+		return OverviewStats{}, err
+	}
+	pastDue, capped = bounded(pastDue)
+	out.Capped = out.Capped || capped
+	out.PastDueInvoices = len(pastDue)
 
 	coupons, err := st.ListCoupons(ctx, sc.AppID, coupon.ListOpts{Limit: statsScanLimit + 1})
 	if err != nil {

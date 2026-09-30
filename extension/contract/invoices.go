@@ -145,8 +145,12 @@ func invoicesExport(ctx context.Context, eng *ledger.Ledger, sc scope, in Invoic
 	return InvoiceExport{Format: in.Format, Filename: "invoice-" + inv.ID.String() + "." + in.Format, Content: body}, nil
 }
 
+// InvoiceGenerateInput names the subscription and, optionally, a period it has
+// already had. With no period the invoice is for the current one.
 type InvoiceGenerateInput struct {
-	SubscriptionID string `json:"subscription_id"`
+	SubscriptionID string     `json:"subscription_id"`
+	PeriodStart    *time.Time `json:"period_start,omitempty"`
+	PeriodEnd      *time.Time `json:"period_end,omitempty"`
 }
 
 func invoicesGenerate(ctx context.Context, eng *ledger.Ledger, sc scope, in InvoiceGenerateInput) (*invoice.Invoice, error) {
@@ -154,7 +158,15 @@ func invoicesGenerate(ctx context.Context, eng *ledger.Ledger, sc scope, in Invo
 	if err != nil {
 		return nil, err
 	}
-	inv, err := eng.GenerateInvoice(ctx, sub.ID)
+	var opts []ledger.InvoiceOption
+	switch {
+	case in.PeriodStart == nil && in.PeriodEnd == nil:
+	case in.PeriodStart == nil || in.PeriodEnd == nil:
+		return nil, badRequest("period_start and period_end go together")
+	default:
+		opts = append(opts, ledger.ForPeriod(*in.PeriodStart, *in.PeriodEnd))
+	}
+	inv, err := eng.GenerateInvoice(ctx, sub.ID, opts...)
 	if err != nil {
 		return nil, err
 	}
