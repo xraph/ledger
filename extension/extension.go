@@ -17,12 +17,10 @@ import (
 	dashboard "github.com/xraph/forge/extensions/dashboard"
 	"github.com/xraph/forge/extensions/dashboard/contract"
 	"github.com/xraph/forge/extensions/dashboard/contract/dispatcher"
-	"github.com/xraph/forge/extensions/dashboard/contributor"
 	"github.com/xraph/grove"
 	"github.com/xraph/vessel"
 
 	ledger "github.com/xraph/ledger"
-	ledgerdash "github.com/xraph/ledger/dashboard"
 	ledgercontract "github.com/xraph/ledger/extension/contract"
 	"github.com/xraph/ledger/plugin"
 	"github.com/xraph/ledger/store"
@@ -41,11 +39,10 @@ const ExtensionDescription = "Composable usage-based billing engine"
 // ExtensionVersion is the semantic version.
 const ExtensionVersion = "0.1.0"
 
-// Ensure Extension implements forge.Extension, dashboard.DashboardAware and
+// Ensure Extension implements forge.Extension and
 // dashboard.ContractContributorAware at compile time.
 var (
 	_ forge.Extension                    = (*Extension)(nil)
-	_ dashboard.DashboardAware           = (*Extension)(nil)
 	_ dashboard.ContractContributorAware = (*Extension)(nil)
 )
 
@@ -337,19 +334,6 @@ func (e *Extension) resolveGroveDB(fapp forge.App) (*grove.DB, error) {
 		return nil, fmt.Errorf("default grove database not found in container: %w", err)
 	}
 	return db, nil
-}
-
-// DashboardContributor implements dashboard.DashboardAware. It returns a
-// LocalContributor that renders ledger pages, widgets, and settings in the
-// Forge dashboard using templ + ForgeUI.
-func (e *Extension) DashboardContributor() contributor.LocalContributor {
-	return ledgerdash.New(
-		ledgerdash.NewManifest(e.engine, e.plugins),
-		e.engine,
-		e.store,
-		e.plugins,
-		e.config.AppID,
-	)
 }
 
 // buildStoreFromGroveDB constructs the appropriate store backend

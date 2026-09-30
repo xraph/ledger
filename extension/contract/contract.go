@@ -1,8 +1,7 @@
 // Package contract wires Ledger into the Forge dashboard's contract path. It
 // declares the `ledger` contributor and its intents, and binds the typed
 // handlers that answer them. The React plugin in forge-dashboard
-// (packages/plugin-ledger) reads these intents. The templ contributor in
-// ../../dashboard is separate, and is retired on its own schedule.
+// (packages/plugin-ledger) reads these intents.
 package contract
 
 import (

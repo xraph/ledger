@@ -3,10 +3,8 @@ module github.com/xraph/ledger
 go 1.26.0
 
 require (
-	github.com/a-h/templ v0.3.1001
 	github.com/jackc/pgx/v5 v5.10.0
 	github.com/xraph/forge v1.10.0
-	github.com/xraph/forgeui v1.4.1
 	github.com/xraph/go-utils v1.2.2
 	github.com/xraph/grove v1.6.3
 	github.com/xraph/grove/drivers/mongodriver v1.6.3
@@ -21,6 +19,7 @@ require (
 require (
 	github.com/BurntSushi/toml v1.6.0 // indirect
 	github.com/Oudwins/tailwind-merge-go v0.2.1 // indirect
+	github.com/a-h/templ v0.3.1001 // indirect
 	github.com/armon/go-metrics v0.4.1 // indirect
 	github.com/beorn7/perks v1.0.1 // indirect
 	github.com/cenkalti/backoff/v5 v5.0.3 // indirect
@@ -100,6 +99,7 @@ require (
 	github.com/xdg-go/scram v1.2.0 // indirect
 	github.com/xdg-go/stringprep v1.0.4 // indirect
 	github.com/xraph/confy v1.0.2 // indirect
+	github.com/xraph/forgeui v1.4.1 // indirect
 	github.com/youmark/pkcs8 v0.0.0-20240726163527-a2c0da244d78 // indirect
 	go.opentelemetry.io/auto/sdk v1.2.1 // indirect
 	go.opentelemetry.io/otel v1.44.0 // indirect
