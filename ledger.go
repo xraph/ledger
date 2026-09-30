@@ -35,6 +35,13 @@ type Ledger struct {
 	stopChan    chan struct{}
 	wg          sync.WaitGroup
 
+	// importMu serialises the four provider imports from their duplicate check
+	// through their store write, so one process never stores a second row for
+	// a repeated import. It does not reach across replicas: with more than one,
+	// two imports of the same record can still race, and the dashboard's
+	// disabled button while a request is pending is what keeps that rare.
+	importMu sync.Mutex
+
 	// Configuration
 	meterBatchSize      int
 	meterFlushInterval  time.Duration

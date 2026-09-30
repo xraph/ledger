@@ -31,7 +31,8 @@ type importConfig struct {
 // no per-app scoping and several apps can share one provider account, so the
 // caller names the app. A record the provider itself files under a different
 // app is refused with that entity's not-found error, and nothing is stored. An
-// empty appID is the shared feature catalog.
+// empty appID is the shared catalog for a feature, and the no-app scope for a
+// plan, a subscription or an invoice.
 func ImportInto(appID string) ImportOption {
 	return func(c *importConfig) {
 		c.appID = appID
@@ -48,6 +49,16 @@ func newImportConfig(providerID string, opts []ImportOption) (importConfig, erro
 		return c, fmt.Errorf("%w: a provider id is required", ErrInvalidInput)
 	}
 	return c, nil
+}
+
+// underImportLock runs the part of an import that checks for a duplicate and
+// then writes, so a second import of the same record in this process waits for
+// the first and then finds it. It does not cover a second replica, which still
+// relies on the dashboard disabling its button while a request is pending.
+func (l *Ledger) underImportLock(fn func() error) error {
+	l.importMu.Lock()
+	defer l.importMu.Unlock()
+	return fn()
 }
 
 // app picks the app an imported record is filed under. Without ImportInto it
@@ -106,7 +117,7 @@ func (l *Ledger) ImportPlanFromProvider(ctx context.Context, providerName, provi
 	p.AppID = app
 	p.ProviderID = providerID
 	p.ProviderName = prov.Name()
-	if err := l.CreatePlan(ctx, p); err != nil {
+	if err := l.underImportLock(func() error { return l.CreatePlan(ctx, p) }); err != nil {
 		return nil, err
 	}
 
@@ -134,25 +145,32 @@ func (l *Ledger) ImportFeatureFromProvider(ctx context.Context, providerName, pr
 	}
 
 	f.Key = strings.TrimSpace(f.Key)
-	if f.Key == "" {
-		return nil, fmt.Errorf("%w: the provider's feature %q has no key", ErrInvalidInput, providerID)
-	}
-	existing, err := l.store.GetFeatureByKey(ctx, f.Key, app)
-	switch {
-	case err == nil && existing != nil:
-		return nil, fmt.Errorf("%w: feature key %q is already used by %s", ErrAlreadyExists, f.Key, existing.ID)
-	case err != nil && !errors.Is(err, ErrFeatureNotFound):
+	err = ValidateFeature(f)
+	if err != nil {
 		return nil, err
 	}
 	if f.Status == "" {
 		f.Status = feature.StatusActive
+	}
+	if f.Status != feature.StatusActive && f.Status != feature.StatusArchived {
+		return nil, fmt.Errorf("%w: unknown feature status %q", ErrInvalidInput, f.Status)
 	}
 
 	f.ID = id.NewFeatureID()
 	f.AppID = app
 	f.ProviderID = providerID
 	f.ProviderName = prov.Name()
-	if err := l.CreateFeature(ctx, f); err != nil {
+	err = l.underImportLock(func() error {
+		existing, getErr := l.store.GetFeatureByKey(ctx, f.Key, app)
+		switch {
+		case getErr == nil && existing != nil:
+			return fmt.Errorf("%w: feature key %q is already used by %s", ErrAlreadyExists, f.Key, existing.ID)
+		case getErr != nil && !errors.Is(getErr, ErrFeatureNotFound):
+			return getErr
+		}
+		return l.CreateFeature(ctx, f)
+	})
+	if err != nil {
 		return nil, err
 	}
 
@@ -183,6 +201,7 @@ func (l *Ledger) ImportSubscriptionFromProvider(ctx context.Context, providerNam
 	if !importableSubscriptionStatus(s.Status) {
 		return nil, fmt.Errorf("%w: unknown subscription status %q", ErrInvalidInput, s.Status)
 	}
+	s.TenantID = strings.TrimSpace(s.TenantID)
 	if s.TenantID == "" {
 		return nil, fmt.Errorf("%w: the provider's subscription %q has no tenant id", ErrInvalidInput, providerID)
 	}
@@ -190,19 +209,22 @@ func (l *Ledger) ImportSubscriptionFromProvider(ctx context.Context, providerNam
 	if err != nil {
 		return nil, err
 	}
-	dup, err := l.storedSubscriptionFor(ctx, s.TenantID, app, prov.Name(), providerID)
-	if err != nil {
-		return nil, err
-	}
-	if dup != nil {
-		return nil, fmt.Errorf("%w: provider subscription %q is already stored as %s", ErrAlreadyExists, providerID, dup.ID)
-	}
 
 	s.ID = id.NewSubscriptionID()
 	s.AppID = app
 	s.ProviderID = providerID
 	s.ProviderName = prov.Name()
-	if err := l.CreateSubscription(ctx, s); err != nil {
+	err = l.underImportLock(func() error {
+		dup, dupErr := l.storedSubscriptionFor(ctx, s.TenantID, app, prov.Name(), providerID)
+		if dupErr != nil {
+			return dupErr
+		}
+		if dup != nil {
+			return fmt.Errorf("%w: provider subscription %q is already stored as %s", ErrAlreadyExists, providerID, dup.ID)
+		}
+		return l.CreateSubscription(ctx, s)
+	})
+	if err != nil {
 		return nil, err
 	}
 
@@ -237,6 +259,7 @@ func (l *Ledger) ImportInvoiceFromProvider(ctx context.Context, providerName, pr
 	if !importableInvoiceStatus(inv.Status) {
 		return nil, fmt.Errorf("%w: unknown invoice status %q", ErrInvalidInput, inv.Status)
 	}
+	inv.TenantID = strings.TrimSpace(inv.TenantID)
 	if inv.TenantID == "" {
 		return nil, fmt.Errorf("%w: the provider's invoice %q has no tenant id", ErrInvalidInput, providerID)
 	}
@@ -244,7 +267,12 @@ func (l *Ledger) ImportInvoiceFromProvider(ctx context.Context, providerName, pr
 	if err != nil {
 		return nil, err
 	}
-	if err := l.refuseStoredInvoice(ctx, inv, sub, app, prov.Name(), providerID); err != nil {
+	p, err := l.store.GetPlan(ctx, sub.PlanID)
+	if err != nil {
+		return nil, err
+	}
+	err = validateImportedInvoice(inv, p)
+	if err != nil {
 		return nil, err
 	}
 
@@ -261,7 +289,13 @@ func (l *Ledger) ImportInvoiceFromProvider(ctx context.Context, providerName, pr
 		}
 		inv.LineItems[i].InvoiceID = inv.ID
 	}
-	if err := l.store.CreateInvoice(ctx, inv); err != nil {
+	err = l.underImportLock(func() error {
+		if refuseErr := l.refuseStoredInvoice(ctx, inv, sub, app, prov.Name(), providerID); refuseErr != nil {
+			return refuseErr
+		}
+		return l.store.CreateInvoice(ctx, inv)
+	})
+	if err != nil {
 		return nil, err
 	}
 
@@ -272,7 +306,9 @@ func (l *Ledger) ImportInvoiceFromProvider(ctx context.Context, providerName, pr
 
 // importedPlanInApp refuses a subscription whose plan is missing or belongs to
 // another app, with one message for both, so the refusal says nothing about
-// another app's plans.
+// another app's plans. It also refuses a plan that is not active, naming the
+// plan so the operator knows what to activate. CreateSubscription refuses the
+// same plan through subscribablePlan; this only words it for an import.
 func (l *Ledger) importedPlanInApp(ctx context.Context, planID id.PlanID, app string) error {
 	if planID.IsNil() {
 		return fmt.Errorf("%w: the provider's subscription names no plan", ErrInvalidInput)
@@ -286,6 +322,9 @@ func (l *Ledger) importedPlanInApp(ctx context.Context, planID id.PlanID, app st
 		return err
 	case p.AppID != app:
 		return notHere
+	case p.Status != plan.StatusActive:
+		return fmt.Errorf("%w: plan %q is %s, not active; activate plan %s before importing its subscriptions",
+			ErrInvalidInput, p.Slug, p.Status, p.Slug)
 	}
 	return nil
 }
@@ -299,7 +338,7 @@ func (l *Ledger) storedSubscriptionFor(ctx context.Context, tenantID, app, provi
 		return nil, err
 	}
 	for _, s := range subs {
-		if s.ProviderName == providerName && s.ProviderID == providerID {
+		if s.AppID == app && s.ProviderName == providerName && s.ProviderID == providerID {
 			return s, nil
 		}
 	}
@@ -336,6 +375,9 @@ func (l *Ledger) refuseStoredInvoice(ctx context.Context, inv *invoice.Invoice, 
 		return err
 	}
 	for _, s := range stored {
+		if s.AppID != app {
+			continue
+		}
 		if s.ProviderName == providerName && s.ProviderID == providerID {
 			return fmt.Errorf("%w: provider invoice %q is already stored as %s", ErrAlreadyExists, providerID, s.ID)
 		}
@@ -362,4 +404,97 @@ func importableInvoiceStatus(s invoice.Status) bool {
 		return true
 	}
 	return false
+}
+
+// validateImportedInvoice refuses a provider invoice the engine would never
+// have written, so a bad figure cannot reach the books through an import. It
+// follows GenerateInvoice's own arithmetic rather than the plain reading of
+// "line items sum to the subtotal": the engine's line items include discount
+// lines (negative) and tax lines (positive) beside the charges, so the charge
+// lines (everything else) sum to Subtotal, any discount lines sum to minus
+// DiscountAmount, any tax lines sum to TaxAmount, and Total is the net amount
+// clamped at zero, plus tax. A provider that sends no discount or tax lines
+// and only a figure for them is still accepted, since those lines are
+// optional there.
+func validateImportedInvoice(inv *invoice.Invoice, p *plan.Plan) error {
+	bad := func(format string, args ...any) error {
+		return fmt.Errorf("%w: the provider's invoice %s", ErrInvalidInput, fmt.Sprintf(format, args...))
+	}
+	currency := strings.ToLower(p.Currency)
+	if inv.Currency != currency {
+		return bad("is in %q, but plan %q bills in lowercase %q", inv.Currency, p.Slug, currency)
+	}
+	for _, f := range []struct {
+		name string
+		m    types.Money
+	}{{"subtotal", inv.Subtotal}, {"tax amount", inv.TaxAmount}, {"discount amount", inv.DiscountAmount}, {"total", inv.Total}} {
+		if f.m.Currency != currency {
+			return bad("has its %s in %q, want %q", f.name, f.m.Currency, currency)
+		}
+		if f.m.IsNegative() {
+			return bad("has a negative %s %v", f.name, f.m)
+		}
+	}
+
+	charges, discounts, taxes := types.Zero(currency), types.Zero(currency), types.Zero(currency)
+	var hasDiscount, hasTax bool
+	for i, li := range inv.LineItems {
+		if li.Amount.Currency != currency || li.UnitAmount.Currency != currency {
+			return bad("has line item %d in %q and %q, want %q", i+1, li.Amount.Currency, li.UnitAmount.Currency, currency)
+		}
+		sum := &charges
+		switch li.Type {
+		case invoice.LineItemDiscount:
+			sum, hasDiscount = &discounts, true
+		case invoice.LineItemTax:
+			sum, hasTax = &taxes, true
+		}
+		next, err := sum.CheckedAdd(li.Amount)
+		if err != nil {
+			return bad("has line items that overflow: %v", err)
+		}
+		*sum = next
+	}
+	if !charges.Equal(inv.Subtotal) {
+		return bad("has line items charging %v but a subtotal of %v", charges, inv.Subtotal)
+	}
+	if hasDiscount && !discounts.Negate().Equal(inv.DiscountAmount) {
+		return bad("has discount lines of %v but a discount amount of %v", discounts.Negate(), inv.DiscountAmount)
+	}
+	if hasTax && !taxes.Equal(inv.TaxAmount) {
+		return bad("has tax lines of %v but a tax amount of %v", taxes, inv.TaxAmount)
+	}
+
+	net, err := inv.Subtotal.CheckedSubtract(inv.DiscountAmount)
+	if err != nil {
+		return bad("has a subtotal and discount that overflow: %v", err)
+	}
+	if net.IsNegative() {
+		net = types.Zero(currency)
+	}
+	want, err := net.CheckedAdd(inv.TaxAmount)
+	if err != nil {
+		return bad("has a total that overflows: %v", err)
+	}
+	if !want.Equal(inv.Total) {
+		return bad("has a total of %v, but its subtotal, discount and tax make %v", inv.Total, want)
+	}
+
+	if inv.PeriodStart.IsZero() || inv.PeriodEnd.IsZero() {
+		return bad("needs both a period start and a period end")
+	}
+	if !inv.PeriodEnd.After(inv.PeriodStart) {
+		return bad("ends its period before it starts")
+	}
+	switch inv.Status {
+	case invoice.StatusPaid:
+		if inv.PaidAt == nil {
+			return bad("is paid but has no paid-at time")
+		}
+	case invoice.StatusPending, invoice.StatusPastDue:
+		if inv.DueDate == nil {
+			return bad("is %s but has no due date", inv.Status)
+		}
+	}
+	return nil
 }

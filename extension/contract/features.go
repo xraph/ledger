@@ -97,25 +97,16 @@ type FeatureCreateInput struct {
 }
 
 // validFeatureShape checks what the engine's feature writes do not: the engine
-// stores whatever it is given.
+// stores whatever it is given. The rules live in ledger.ValidateFeature, which
+// the provider imports share; this only words a refusal as a BAD_REQUEST.
 func validFeatureShape(key, typ, period string, limit int64) error {
-	if strings.TrimSpace(key) == "" {
-		return badRequest("a feature needs a key")
+	err := ledger.ValidateFeature(&feature.Feature{
+		Key: key, Type: feature.FeatureType(typ), Period: feature.Period(period), DefaultLimit: limit,
+	})
+	if err == nil {
+		return nil
 	}
-	switch feature.FeatureType(typ) {
-	case feature.FeatureMetered, feature.FeatureBoolean, feature.FeatureSeat:
-	default:
-		return badRequest("unknown feature type %q", typ)
-	}
-	switch feature.Period(period) {
-	case "", feature.PeriodMonthly, feature.PeriodYearly, feature.PeriodNone:
-	default:
-		return badRequest("unknown feature period %q", period)
-	}
-	if limit < -1 {
-		return badRequest("default_limit %d is below -1; use -1 for unlimited", limit)
-	}
-	return nil
+	return badRequest("%s", strings.TrimPrefix(err.Error(), ledger.ErrInvalidInput.Error()+": "))
 }
 
 func featuresCreate(ctx context.Context, eng *ledger.Ledger, sc scope, in FeatureCreateInput) (*feature.Feature, error) {
