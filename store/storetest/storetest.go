@@ -77,6 +77,7 @@ func Run(t *testing.T, newStore func(t *testing.T) ledgerstore.Store) {
 	t.Run("MarkInvoiceVoidedStoresTheVoid", func(t *testing.T) { testMarkInvoiceVoidedStoresTheVoid(t, newStore(t)) })
 	t.Run("ListFiltersCombine", func(t *testing.T) { testListFiltersCombine(t, newStore(t)) })
 	t.Run("LookupsMatchEveryArgument", func(t *testing.T) { testLookupsMatchEveryArgument(t, newStore(t)) })
+	t.Run("UpdateOfAMissingRowReportsIt", func(t *testing.T) { testUpdateOfAMissingRowReportsIt(t, newStore(t)) })
 	t.Run("ListInvoicesBoundsAreInstants", func(t *testing.T) { testListInvoicesBoundsAreInstants(t, newStore(t)) })
 	t.Run("UsageEventNearABoundaryInALocalZone", func(t *testing.T) { testUsageEventNearABoundaryInALocalZone(t, newStore(t)) })
 	t.Run("ListsPageInAStableOrder", func(t *testing.T) { testListsPageInAStableOrder(t, newStore(t)) })
@@ -2761,5 +2762,125 @@ func testLookupsMatchEveryArgument(t *testing.T, s ledgerstore.Store) {
 			ids[i] = e.ID.String()
 		}
 		requireIDs(t, "QueryUsage after PurgeUsage", ids, recent.ID.String())
+	})
+}
+
+// testUpdateOfAMissingRowReportsIt pins the whole-row updates to one rule:
+// an id that isn't stored is refused with the entity's not-found error, and
+// nothing is written. An update that would succeed on nothing hides a caller
+// holding a stale or mistyped id, and memory once inserted the row instead.
+//
+// Each update is also run twenty times on a row that does exist. Every write
+// stamps updated_at, but mongo keeps only milliseconds, so some of those
+// writes land in the same millisecond as the one before and change nothing.
+// A backend that counted modified rows, not matched ones, would call those
+// not found. The guard rests on timing: with twenty writes it caught that
+// mistake in 39 of 40 runs against a local mongo.
+func testUpdateOfAMissingRowReportsIt(t *testing.T, s ledgerstore.Store) {
+	ctx := context.Background()
+	appID := "app-" + uniqueSuffix()
+	tenantID := "tenant-" + uniqueSuffix()
+
+	// check runs update on a row that was never created, then twenty times on
+	// one that was, and uses get to confirm the missing row is still missing.
+	check := func(t *testing.T, notFound error, update func(existing bool) error, get func() error) {
+		t.Helper()
+		if err := update(false); !errors.Is(err, notFound) {
+			t.Errorf("update of a missing row: got %v, want %v", err, notFound)
+		}
+		if err := get(); !errors.Is(err, notFound) {
+			t.Errorf("read after updating a missing row: got %v, want %v, so the update wrote it", err, notFound)
+		}
+		for i := 0; i < 20; i++ {
+			if err := update(true); err != nil {
+				t.Errorf("update %d of a stored row: %v", i+1, err)
+			}
+		}
+	}
+
+	t.Run("UpdatePlan", func(t *testing.T) {
+		newPlan := func() *plan.Plan {
+			return &plan.Plan{
+				Entity: types.NewEntity(), ID: id.NewPlanID(),
+				Name: "Plan", Slug: "plan-update-" + uniqueSuffix(), Currency: "usd",
+				Status: plan.StatusActive, AppID: appID,
+				Pricing: &plan.Pricing{
+					ID: id.NewPriceID(), BaseAmount: types.USD(1000),
+					BillingPeriod: plan.PeriodMonthly,
+				},
+			}
+		}
+		stored, missing := newPlan(), newPlan()
+		if err := s.CreatePlan(ctx, stored); err != nil {
+			t.Fatalf("CreatePlan: %v", err)
+		}
+		check(t, ledger.ErrPlanNotFound,
+			func(existing bool) error {
+				if existing {
+					return s.UpdatePlan(ctx, stored)
+				}
+				return s.UpdatePlan(ctx, missing)
+			},
+			func() error { _, err := s.GetPlan(ctx, missing.ID); return err })
+	})
+
+	t.Run("UpdateFeature", func(t *testing.T) {
+		stored, missing := newTestFeature(appID), newTestFeature(appID)
+		if err := s.CreateFeature(ctx, stored); err != nil {
+			t.Fatalf("CreateFeature: %v", err)
+		}
+		check(t, ledger.ErrFeatureNotFound,
+			func(existing bool) error {
+				if existing {
+					return s.UpdateFeature(ctx, stored)
+				}
+				return s.UpdateFeature(ctx, missing)
+			},
+			func() error { _, err := s.GetFeature(ctx, missing.ID); return err })
+	})
+
+	t.Run("UpdateSubscription", func(t *testing.T) {
+		stored, missing := newTestSubscription(tenantID, appID), newTestSubscription(tenantID, appID)
+		if err := s.CreateSubscription(ctx, stored); err != nil {
+			t.Fatalf("CreateSubscription: %v", err)
+		}
+		check(t, ledger.ErrSubscriptionNotFound,
+			func(existing bool) error {
+				if existing {
+					return s.UpdateSubscription(ctx, stored)
+				}
+				return s.UpdateSubscription(ctx, missing)
+			},
+			func() error { _, err := s.GetSubscription(ctx, missing.ID); return err })
+	})
+
+	t.Run("UpdateInvoice", func(t *testing.T) {
+		stored, missing := newTestInvoice(tenantID, appID), newTestInvoice(tenantID, appID)
+		if err := s.CreateInvoice(ctx, stored); err != nil {
+			t.Fatalf("CreateInvoice: %v", err)
+		}
+		check(t, ledger.ErrInvoiceNotFound,
+			func(existing bool) error {
+				if existing {
+					return s.UpdateInvoice(ctx, stored)
+				}
+				return s.UpdateInvoice(ctx, missing)
+			},
+			func() error { _, err := s.GetInvoice(ctx, missing.ID); return err })
+	})
+
+	t.Run("UpdateCoupon", func(t *testing.T) {
+		stored, missing := newTestCoupon(appID), newTestCoupon(appID)
+		if err := s.CreateCoupon(ctx, stored); err != nil {
+			t.Fatalf("CreateCoupon: %v", err)
+		}
+		check(t, ledger.ErrCouponNotFound,
+			func(existing bool) error {
+				if existing {
+					return s.UpdateCoupon(ctx, stored)
+				}
+				return s.UpdateCoupon(ctx, missing)
+			},
+			func() error { _, err := s.GetCouponByID(ctx, missing.ID); return err })
 	})
 }

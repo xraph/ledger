@@ -424,8 +424,18 @@ func (s *Store) ListSubscriptions(ctx context.Context, tenantID, appID string, o
 func (s *Store) UpdateSubscription(ctx context.Context, sub *subscription.Subscription) error {
 	m := toSubscriptionModel(sub)
 	m.UpdatedAt = now()
-	_, err := s.sdb.NewUpdate(m).WherePK().Exec(ctx)
-	return err
+	res, err := s.sdb.NewUpdate(m).WherePK().Exec(ctx)
+	if err != nil {
+		return err
+	}
+	rows, err := res.RowsAffected()
+	if err != nil {
+		return err
+	}
+	if rows == 0 {
+		return ledger.ErrSubscriptionNotFound
+	}
+	return nil
 }
 
 func (s *Store) CancelSubscription(ctx context.Context, subID id.SubscriptionID, cancelAt time.Time) error {
@@ -686,8 +696,18 @@ func (s *Store) ListInvoices(ctx context.Context, tenantID, appID string, opts i
 func (s *Store) UpdateInvoice(ctx context.Context, inv *invoice.Invoice) error {
 	m := toInvoiceModel(inv)
 	m.UpdatedAt = now()
-	_, err := s.sdb.NewUpdate(m).WherePK().Exec(ctx)
-	return err
+	res, err := s.sdb.NewUpdate(m).WherePK().Exec(ctx)
+	if err != nil {
+		return err
+	}
+	rows, err := res.RowsAffected()
+	if err != nil {
+		return err
+	}
+	if rows == 0 {
+		return ledger.ErrInvoiceNotFound
+	}
+	return nil
 }
 
 func (s *Store) GetInvoiceByPeriod(ctx context.Context, tenantID, appID string, periodStart, periodEnd time.Time) (*invoice.Invoice, error) {
@@ -862,8 +882,18 @@ var couponUpdateColumns = []string{
 func (s *Store) UpdateCoupon(ctx context.Context, c *coupon.Coupon) error {
 	m := toCouponModel(c)
 	m.UpdatedAt = now()
-	_, err := s.sdb.NewUpdate(m).Column(couponUpdateColumns...).WherePK().Exec(ctx)
-	return err
+	res, err := s.sdb.NewUpdate(m).Column(couponUpdateColumns...).WherePK().Exec(ctx)
+	if err != nil {
+		return err
+	}
+	rows, err := res.RowsAffected()
+	if err != nil {
+		return err
+	}
+	if rows == 0 {
+		return ledger.ErrCouponNotFound
+	}
+	return nil
 }
 
 func (s *Store) DeleteCoupon(ctx context.Context, couponID id.CouponID) error {

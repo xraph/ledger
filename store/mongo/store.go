@@ -394,11 +394,14 @@ func (s *Store) UpdateSubscription(ctx context.Context, sub *subscription.Subscr
 	m := toSubscriptionModel(sub)
 	m.UpdatedAt = now()
 
-	_, err := s.mdb.NewUpdate(m).
+	res, err := s.mdb.NewUpdate(m).
 		Filter(bson.M{"_id": m.ID}).
 		Exec(ctx)
 	if err != nil {
 		return fmt.Errorf("ledger/mongo: update subscription: %w", err)
+	}
+	if res.MatchedCount() == 0 {
+		return ledger.ErrSubscriptionNotFound
 	}
 	return nil
 }
@@ -715,11 +718,14 @@ func (s *Store) UpdateInvoice(ctx context.Context, inv *invoice.Invoice) error {
 	m := toInvoiceModel(inv)
 	m.UpdatedAt = now()
 
-	_, err := s.mdb.NewUpdate(m).
+	res, err := s.mdb.NewUpdate(m).
 		Filter(bson.M{"_id": m.ID}).
 		Exec(ctx)
 	if err != nil {
 		return fmt.Errorf("ledger/mongo: update invoice: %w", err)
+	}
+	if res.MatchedCount() == 0 {
+		return ledger.ErrInvoiceNotFound
 	}
 	return nil
 }
@@ -902,7 +908,7 @@ func (s *Store) UpdateCoupon(ctx context.Context, c *coupon.Coupon) error {
 	// RedeemCoupon and IncrementCouponRedemptions, so a stale copy of the
 	// coupon cannot roll it back. A nil validity bound is written as null,
 	// which is how an edit clears it.
-	_, err := s.mdb.NewUpdate(m).
+	res, err := s.mdb.NewUpdate(m).
 		Filter(bson.M{"_id": m.ID}).
 		SetUpdate(bson.M{"$set": bson.M{
 			"code":            m.Code,
@@ -923,6 +929,9 @@ func (s *Store) UpdateCoupon(ctx context.Context, c *coupon.Coupon) error {
 		Exec(ctx)
 	if err != nil {
 		return fmt.Errorf("ledger/mongo: update coupon: %w", err)
+	}
+	if res.MatchedCount() == 0 {
+		return ledger.ErrCouponNotFound
 	}
 	return nil
 }

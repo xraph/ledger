@@ -348,6 +348,9 @@ func (s *Store) UpdateSubscription(_ context.Context, sub *subscription.Subscrip
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
+	if _, ok := s.subscriptions[sub.ID.String()]; !ok {
+		return ledger.ErrSubscriptionNotFound
+	}
 	s.subscriptions[sub.ID.String()] = copySubscription(sub)
 	return nil
 }
@@ -566,6 +569,9 @@ func (s *Store) UpdateInvoice(_ context.Context, inv *invoice.Invoice) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
+	if _, ok := s.invoices[inv.ID.String()]; !ok {
+		return ledger.ErrInvoiceNotFound
+	}
 	s.invoices[inv.ID.String()] = inv
 	return nil
 }
@@ -709,12 +715,14 @@ func (s *Store) UpdateCoupon(_ context.Context, c *coupon.Coupon) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
+	current, ok := s.coupons[c.ID.String()]
+	if !ok {
+		return ledger.ErrCouponNotFound
+	}
 	stored := *c
 	// The redemption count belongs to RedeemCoupon. Keep whatever is stored,
 	// whatever the caller's copy carries.
-	if current, ok := s.coupons[c.ID.String()]; ok {
-		stored.TimesRedeemed = current.TimesRedeemed
-	}
+	stored.TimesRedeemed = current.TimesRedeemed
 	s.coupons[c.ID.String()] = &stored
 	return nil
 }
