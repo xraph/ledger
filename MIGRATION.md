@@ -469,11 +469,12 @@ An SDK caller will notice these, because the contract needed the engine to refus
 - `CreateCoupon` and `UpdateCoupon` validate the coupon the same way `ApplyCoupon` does. A coupon's code, type, value, currency and app are fixed once it exists, because applied coupons are priced from them on every later invoice. `UpdateCoupon` never writes the redemption count, on any backend, which closes the rollback race that used to be known constraint 6.
 - `ExportInvoice` and `InvoiceFormats` give invoice formatters their first caller, and `ProviderNames` lists the registered payment providers. Entitlements can be inspected without touching the cache or firing plugin events.
 
-One engine bug got fixed along the way.
+Two store bugs got fixed along the way.
 
 - An immediate cancel didn't always end the subscription. All four stores (memory, sqlite, postgres and mongo) decided whether a cancel had taken effect with `time.Now().After(cancelAt)`. An immediate cancel passes `cancelAt = time.Now()`, and when both readings land in the same instant that comparison is false, so the subscription stayed active. The check is now `!cancelAt.After(time.Now())` in all four (`4e82954`). If you write a new store, treat "now" as already reached.
 
   Postgres had a second fault underneath that one, and an immediate cancel there failed every time until `75997b9`. The update used literal `$n` placeholders, but the query builder binds every SET before the WHERE, so the two SETs an immediate cancel adds were handed the subscription id and postgres refused to parse it as a timestamp. The store now writes `?` and lets the builder number them. The conformance suite cancels at `time.Now()` on every backend (`CancelSubscriptionAtNowEndsIt`) and checks the stored status, so you'll see it fail if either fault comes back.
+- The memory store never touched `updated_at` in `ArchivePlan`, `ArchiveFeature`, `MarkInvoicePaid` or `MarkInvoiceVoided`. It wrote the status and the other columns, but the row kept its old `updated_at`. Sqlite, postgres and mongo have always stamped it. Memory does too since `8ebdecc`, so if you have tests on the memory store that expect `UpdatedAt` to stay put after one of those calls, they'll need changing. The conformance suite now has a subtest per method (`ArchivePlanStoresTheArchive` and the three next to it) that reads the row back and checks every column the update writes, on every backend. Those subtests also guard the postgres versions of the four updates, which now use `?` placeholders like the cancel fix above.
 
 ## Bugs the conformance suite found in the existing backends
 
