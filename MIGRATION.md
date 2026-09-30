@@ -8,30 +8,35 @@ The whole templ dashboard is wired in at one place: `Extension.DashboardContribu
 
 ## Status per surface
 
-One row per templ page or widget. A surface is migrated when a contract-backed page replaces it, dropped when we decide nobody needs it, and blocked until it has a contract. Phase B gave every page a contract, so no row is blocked any more. "Contract ready, React page pending" means the intents below answer everything the templ page showed and more, and nobody has built the React page yet. The templ page stays in place until they do.
+One row per templ page or widget. A surface is migrated when a contract-backed page replaces it, dropped when we decide nobody needs it, and blocked until it has a contract. Phase B gave every page a contract, and the React plugin in forge-dashboard, `plugin-ledger`, now builds a page for every row that had a page to replace. It mounts as the Billing scope at `/@ledger`, so every route in the Status column sits under that prefix, and the intents are the ones the page calls.
+
+Three rows have no React counterpart and say so. The settings panel and the two widgets have nowhere to live in the React shell, and the Settings and Overview pages already show everything they did. The four list pages for plans, features, subscriptions and invoices also carry an "Import from provider" button over the matching `*.importFromProvider` intent. The templ pages never had one, so operators can now import from the provider as well as sync to it.
+
+The templ pages keep working until the `dashboard/` directory is deleted. You can switch them off once the ledger extension's React pages are in your shell.
 
 | Surface | Route or ID | Status |
 |---|---|---|
-| Overview | `/` | contract ready, React page pending: `overview.stats`, `overview.recentInvoices` |
-| Plans list | `/plans` | contract ready, React page pending: `plans.list` |
-| Plan detail and provider sync | `/plans/detail`, `/plans/sync` | contract ready, React page pending: `plans.detail`, `plans.syncToProvider`, `plans.activate`, `plans.archive`, `plans.delete` |
-| Plan form | `/plans/new`, `/plans/edit` | contract ready, React page pending: `plans.create`, `plans.update` |
-| Subscriptions list | `/subscriptions` | contract ready, React page pending: `subscriptions.list` |
-| Subscription detail and provider sync | `/subscriptions/detail`, `/subscriptions/sync` | contract ready, React page pending: `subscriptions.detail`, `subscriptions.usage`, `subscriptions.syncToProvider`, `subscriptions.changePlan`, `subscriptions.pause`, `subscriptions.resume`, `subscriptions.cancel` |
-| Subscription form | `/subscriptions/new` | contract ready, React page pending: `subscriptions.create` |
-| Invoices list | `/invoices` | contract ready, React page pending: `invoices.list`, `invoices.pending` |
-| Invoice detail and provider sync | `/invoices/detail`, `/invoices/sync` | contract ready, React page pending: `invoices.detail`, `invoices.export`, `invoices.syncToProvider`, `invoices.generate`, `invoices.finalize`, `invoices.markPaid`, `invoices.void` |
-| Coupons list | `/coupons` | contract ready, React page pending: `coupons.list` |
-| Coupon detail | `/coupons/detail` | contract ready, React page pending: `coupons.detail`, `coupons.apply`, `coupons.delete` |
-| Coupon form | `/coupons/new`, `/coupons/edit` | contract ready, React page pending: `coupons.create`, `coupons.update` |
-| Features list | `/features` | contract ready, React page pending: `features.list` |
-| Feature detail and provider sync | `/features/detail`, `/features/sync` | contract ready, React page pending: `features.detail`, `features.syncToProvider`, `features.archive`, `features.delete` |
-| Feature form | `/features/new`, `/features/edit` | contract ready, React page pending: `features.create`, `features.update` |
-| Usage events | `/usage` | contract ready, React page pending: `usage.events`, `usage.aggregate`, `entitlements.check`, `entitlements.invalidate` |
-| Payment methods | `/payment-methods` | contract ready, React page pending: `paymentMethods.list` |
-| Settings page and settings panel | `/settings`, settings ID `ledger-config` | contract ready, React page pending: `settings.detail` |
-| Billing Stats widget | widget ID `ledger-stats` | contract ready, React page pending: `overview.stats` |
-| Recent Invoices widget | widget ID `ledger-recent-invoices` | contract ready, React page pending: `overview.recentInvoices` |
+| Overview | `/` | React page in forge-dashboard `plugin-ledger`: `/@ledger/`. Intents: `overview.stats`, `overview.recentInvoices`. |
+| Plans list | `/plans` | React page in forge-dashboard `plugin-ledger`: `/@ledger/plans`. Intents: `plans.list`, `plans.importFromProvider`. |
+| Plan detail and provider sync | `/plans/detail`, `/plans/sync` | React page in forge-dashboard `plugin-ledger`: `/@ledger/plans/:id`. Intents: `plans.detail`, `plans.syncToProvider`, `plans.activate`, `plans.archive`, `plans.delete`. |
+| Plan form | `/plans/new`, `/plans/edit` | React page in forge-dashboard `plugin-ledger`: `/@ledger/plans/new` and `/@ledger/plans/:id/edit`. Intents: `plans.create`, `plans.update`. |
+| Subscriptions list | `/subscriptions` | React page in forge-dashboard `plugin-ledger`: `/@ledger/subscriptions`. Intents: `subscriptions.list`, `subscriptions.importFromProvider`. |
+| Subscription detail and provider sync | `/subscriptions/detail`, `/subscriptions/sync` | React page in forge-dashboard `plugin-ledger`: `/@ledger/subscriptions/:id`. Intents: `subscriptions.detail`, `subscriptions.usage`, `subscriptions.syncToProvider`, `subscriptions.changePlan`, `subscriptions.pause`, `subscriptions.resume`, `subscriptions.cancel`. |
+| Subscription form | `/subscriptions/new` | React page in forge-dashboard `plugin-ledger`: `/@ledger/subscriptions/new`. Intents: `subscriptions.create`. |
+| Invoices list | `/invoices` | React page in forge-dashboard `plugin-ledger`: `/@ledger/invoices`. Intents: `invoices.list`, `invoices.pending`, `invoices.importFromProvider`. |
+| Invoice detail and provider sync | `/invoices/detail`, `/invoices/sync` | React page in forge-dashboard `plugin-ledger`: `/@ledger/invoices/:id`. Intents: `invoices.detail`, `invoices.export`, `invoices.syncToProvider`, `invoices.generate`, `invoices.finalize`, `invoices.markPaid`, `invoices.void`. |
+| Coupons list | `/coupons` | React page in forge-dashboard `plugin-ledger`: `/@ledger/coupons`. Intents: `coupons.list`. |
+| Coupon detail | `/coupons/detail` | React page in forge-dashboard `plugin-ledger`: `/@ledger/coupons/:id`. Intents: `coupons.detail`, `coupons.apply`, `coupons.delete`. |
+| Coupon form | `/coupons/new`, `/coupons/edit` | React page in forge-dashboard `plugin-ledger`: `/@ledger/coupons/new` and `/@ledger/coupons/:id/edit`. Intents: `coupons.create`, `coupons.update`. |
+| Features list | `/features` | React page in forge-dashboard `plugin-ledger`: `/@ledger/features`. Intents: `features.list`, `features.importFromProvider`. |
+| Feature detail and provider sync | `/features/detail`, `/features/sync` | React page in forge-dashboard `plugin-ledger`: `/@ledger/features/:id`. Intents: `features.detail`, `features.syncToProvider`, `features.archive`, `features.delete`. |
+| Feature form | `/features/new`, `/features/edit` | React page in forge-dashboard `plugin-ledger`: `/@ledger/features/new` and `/@ledger/features/:id/edit`. Intents: `features.create`, `features.update`. |
+| Usage events | `/usage` | React page in forge-dashboard `plugin-ledger`: `/@ledger/usage`. Intents: `usage.events`, `usage.aggregate`, `entitlements.check`, `entitlements.invalidate`. |
+| Payment methods | `/payment-methods` | React page in forge-dashboard `plugin-ledger`: `/@ledger/payment-methods`. Intents: `paymentMethods.list`. |
+| Settings page | `/settings` | React page in forge-dashboard `plugin-ledger`: `/@ledger/settings`. Intents: `settings.detail`. |
+| Settings panel | settings ID `ledger-config` | No React counterpart. The Settings page shows the same values, and there is no panel. Intent: `settings.detail`. |
+| Billing Stats widget | widget ID `ledger-stats` | No React counterpart. The Overview page shows the same counts, and there is no widget. Intent: `overview.stats`. |
+| Recent Invoices widget | widget ID `ledger-recent-invoices` | No React counterpart. The Overview page lists the same invoices, and there is no widget. Intent: `overview.recentInvoices`. |
 
 ## The dashboard contract
 
@@ -521,3 +526,5 @@ None of these are fixed. Read them before you assume Ledger handles the case for
 18. On mongo, invoice line items must carry ids. `ImportInvoiceFromProvider` now fills in a missing one, but a caller that writes an invoice straight to the store still has to set them.
 19. A provider has no idea which app a record belongs to unless it says so in `app_id`, and several apps can share one provider account. `ImportInto` files every import under the app that asked, and refuses a record the provider files under another app. A record the provider files under no app can be imported by any app that knows its id. For subscriptions and invoices that's bounded, because the plan or subscription they point at has to be in the importing app already. For plans and catalog features it isn't: if the provider account is shared and you have the id, you can copy another app's plan definition. Nothing in Ledger ships a real provider yet, so every import path is tested against a fake one.
 20. Imports are serialised inside one process, not across replicas. With several replicas, two concurrent imports of the same plan or feature can both pass the duplicate check and then hit a store unique index, and the loser surfaces as `INTERNAL` where you'd want `CONFLICT`. The follow-up is a store-level mapping from the unique violation to `ErrAlreadyExists`. Until then, the dashboard's disabled button while a request is pending is the only guard between replicas.
+21. Nothing in the engine enacts `cancel_at`. A period-end cancel calls `CancelSubscription(ctx, id, false)`, which passes the period end to the store (`ledger.go:349-359`). The store writes `cancel_at` and stops there: only a cancel whose date is already reached changes the status (`store/memory/store.go:364`, `store/postgres/store.go:458`, `store/mongo/store.go:416`, `store/sqlite/store.go:448`). Nothing reads `cancel_at` against the clock afterwards, no job or invoice run ends the subscription, and `subscription.StatusExpired` is never assigned outside tests. `GetActiveSubscription` counts active and trialing rows (`store/memory/store.go:320`), so a period-end cancel leaves the subscription active, with its entitlements, until something else ends it. `EmitSubscriptionCanceled` fires when the cancel is scheduled (`ledger.go:361`), not when it takes effect, so a plugin told "canceled" has heard about an intention. The React dashboard says "Scheduled to cancel" with the date, and flags one that has passed. If you need the cancel to land at the period end, you have to call `CancelSubscription(ctx, id, true)` yourself once the date arrives.
+22. Usage periods open in the ledger server's local time zone. `getStartOfPeriod` builds the first of the month or year with `t.Location()`, and every store calls it with `time.Now()`, which carries the server's zone (`store/memory/store.go:412` and `:1018`, `store/postgres/store.go:500` and `:1127`, `store/sqlite/store.go:493` and `:1123`, `store/mongo/store.go:458` and `:1341`). Sqlite converts the result with `.UTC()` afterwards, which changes the representation and not the instant, so the window still opens at local midnight. Billing periods are cut in UTC (`ledger.go:290-298`), an invoice takes its period from the subscription (`ledger.go:798-799`), and usage event timestamps are UTC too (`ledger.go:385`). Quota windows therefore shift with the server's zone: the month a quota counts can start hours away from the UTC month an invoice bills. The fix is one line per store: call `getStartOfPeriod(time.Now().UTC(), period)`, or put `.UTC()` on the time it is given. The dashboard labels the month total "the ledger server's time zone" for this reason.
