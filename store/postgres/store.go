@@ -444,36 +444,35 @@ func (s *Store) UpdateSubscription(ctx context.Context, sub *subscription.Subscr
 	return nil
 }
 
-func (s *Store) CancelSubscription(ctx context.Context, subID id.SubscriptionID, cancelAt time.Time) error {
-	// "?" placeholders, not literal $n: the builder numbers them in the order
-	// it writes the SQL, every SET before the WHERE. With literal $n the two
-	// conditional SETs below were bound to the WHERE's argument, and every
-	// immediate cancel failed with a timestamp parse error.
+func (s *Store) CancelSubscription(ctx context.Context, subID id.SubscriptionID, immediately bool) (time.Time, error) {
 	t := now()
-	updates := s.pg.NewUpdate((*subscriptionModel)(nil)).
-		Set("cancel_at = ?", cancelAt).
-		Set("updated_at = ?", t).
-		Where("id = ?", subID.String()).
-		Where("status NOT IN (?, ?)", string(subscription.StatusCanceled), string(subscription.StatusExpired))
-
-	if !cancelAt.After(time.Now()) {
+	updates := s.pg.NewUpdate((*subscriptionModel)(nil))
+	if immediately {
 		updates = updates.
+			Set("cancel_at = ?", t).
 			Set("status = ?", string(subscription.StatusCanceled)).
 			Set("canceled_at = ?", t)
+	} else {
+		// The end of the period current when this statement runs, read by
+		// the statement itself: a period the clock advanced since the
+		// caller's read is the one that ends.
+		updates = updates.Set("cancel_at = current_period_end")
 	}
 
-	res, err := updates.Exec(ctx)
+	var cancelAt time.Time
+	err := updates.
+		Set("updated_at = ?", t).
+		Where("id = ?", subID.String()).
+		Where("status NOT IN (?, ?)", string(subscription.StatusCanceled), string(subscription.StatusExpired)).
+		Returning("cancel_at").
+		Scan(ctx, &cancelAt)
+	if isNoRows(err) {
+		return time.Time{}, s.cancelMissed(ctx, subID)
+	}
 	if err != nil {
-		return err
+		return time.Time{}, err
 	}
-	rows, err := res.RowsAffected()
-	if err != nil {
-		return err
-	}
-	if rows == 0 {
-		return s.cancelMissed(ctx, subID)
-	}
-	return nil
+	return cancelAt.UTC(), nil
 }
 
 // ==================== Meter Store ====================

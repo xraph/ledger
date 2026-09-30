@@ -355,26 +355,33 @@ func (s *Store) UpdateSubscription(_ context.Context, sub *subscription.Subscrip
 	return nil
 }
 
-func (s *Store) CancelSubscription(_ context.Context, subID id.SubscriptionID, cancelAt time.Time) error {
+func (s *Store) CancelSubscription(_ context.Context, subID id.SubscriptionID, immediately bool) (time.Time, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	if sub, exists := s.subscriptions[subID.String()]; exists {
-		switch sub.Status {
-		case subscription.StatusCanceled:
-			return ledger.ErrSubscriptionCanceled
-		case subscription.StatusExpired:
-			return ledger.ErrSubscriptionExpired
-		}
-		sub.CancelAt = &cancelAt
-		if !cancelAt.After(time.Now()) {
-			sub.Status = subscription.StatusCanceled
-			now := time.Now().UTC()
-			sub.CanceledAt = &now
-		}
-		return nil
+	sub, exists := s.subscriptions[subID.String()]
+	if !exists {
+		return time.Time{}, ledger.ErrSubscriptionNotFound
 	}
-	return ledger.ErrSubscriptionNotFound
+	switch sub.Status {
+	case subscription.StatusCanceled:
+		return time.Time{}, ledger.ErrSubscriptionCanceled
+	case subscription.StatusExpired:
+		return time.Time{}, ledger.ErrSubscriptionExpired
+	}
+	now := time.Now().UTC()
+	// A scheduled cancel ends the period current now, read under the lock.
+	cancelAt := sub.CurrentPeriodEnd.UTC()
+	if immediately {
+		cancelAt = now
+		canceledAt := now
+		sub.Status = subscription.StatusCanceled
+		sub.CanceledAt = &canceledAt
+	}
+	stored := cancelAt
+	sub.CancelAt = &stored
+	sub.UpdatedAt = now
+	return cancelAt, nil
 }
 
 // Meter Store implementation

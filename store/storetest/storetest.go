@@ -87,7 +87,7 @@ func Run(t *testing.T, newStore func(t *testing.T) ledgerstore.Store) {
 	t.Run("ListOverdueInvoices", func(t *testing.T) { testListOverdueInvoices(t, newStore(t)) })
 	t.Run("LifecycleTransitionsAreConditional", func(t *testing.T) { testLifecycleTransitionsAreConditional(t, newStore(t)) })
 	t.Run("LifecycleTransitionsApplyOnce", func(t *testing.T) { testLifecycleTransitionsApplyOnce(t, newStore(t)) })
-	t.Run("LifecycleAdvanceKeepsARacingCancel", func(t *testing.T) { testLifecycleAdvanceKeepsARacingCancel(t, newStore(t)) })
+	t.Run("LifecycleScheduledCancelRacesTheAdvance", func(t *testing.T) { testLifecycleScheduledCancelRacesTheAdvance(t, newStore(t)) })
 	t.Run("OperatorWritesAreConditional", func(t *testing.T) { testOperatorWritesAreConditional(t, newStore(t)) })
 	t.Run("OperatorWritesRaceTheClock", func(t *testing.T) { testOperatorWritesRaceTheClock(t, newStore(t)) })
 }
@@ -2024,12 +2024,12 @@ func testSharedListPages(t *testing.T, list func(limit, offset int) ([]string, e
 	}
 }
 
-// testCancelSubscriptionAtNowEndsIt pins the boundary of an immediate cancel.
-// Ledger.CancelSubscription passes cancelAt = time.Now() for one, and a store
-// must treat an instant that has already been reached as reached: the
-// subscription is canceled at once, not left active until some later read.
-// Every backend once asked time.Now().After(cancelAt), which is false when
-// both readings land on the same instant.
+// testCancelSubscriptionAtNowEndsIt pins both kinds of cancel and the date
+// each returns. An immediate cancel ends the subscription at once, with
+// cancel_at and canceled_at set to the moment of the write. A scheduled one
+// copies the stored current_period_end into cancel_at and leaves the
+// subscription running; the lifecycle clock ends it once that date passes.
+// Both return the cancel_at they stored.
 func testCancelSubscriptionAtNowEndsIt(t *testing.T, s ledgerstore.Store) {
 	ctx := context.Background()
 	appID := "app-" + uniqueSuffix()
@@ -2039,39 +2039,49 @@ func testCancelSubscriptionAtNowEndsIt(t *testing.T, s ledgerstore.Store) {
 	if err := s.CreateSubscription(ctx, sub); err != nil {
 		t.Fatalf("CreateSubscription: %v", err)
 	}
-	if err := s.CancelSubscription(ctx, sub.ID, time.Now()); err != nil {
+	before := time.Now()
+	returned, err := s.CancelSubscription(ctx, sub.ID, true)
+	after := time.Now()
+	if err != nil {
 		t.Fatalf("CancelSubscription: %v", err)
 	}
+	requireStampedDuring(t, "the returned cancel_at", returned, before, after)
 
 	got, err := s.GetSubscription(ctx, sub.ID)
 	if err != nil {
 		t.Fatalf("GetSubscription: %v", err)
 	}
 	if got.Status != subscription.StatusCanceled {
-		t.Errorf("status after a cancel at now: got %q, want %q", got.Status, subscription.StatusCanceled)
+		t.Errorf("status after an immediate cancel: got %q, want %q", got.Status, subscription.StatusCanceled)
 	}
-	if got.CancelAt == nil {
-		t.Error("cancel_at was not stored")
+	if got.CancelAt == nil || !sameInstantToMillisecond(*got.CancelAt, returned) {
+		t.Errorf("cancel_at %v, want the returned %v", got.CancelAt, returned)
 	}
-	if got.CanceledAt == nil {
-		t.Error("canceled_at was not stored")
+	if got.CanceledAt == nil || !sameInstantToMillisecond(*got.CanceledAt, returned) {
+		t.Errorf("canceled_at %v, want the returned %v", got.CanceledAt, returned)
 	}
 
-	// A cancel dated in the future only schedules the end: the subscription
-	// stays active until then.
+	// A scheduled cancel only schedules the end, at the stored period end:
+	// the subscription stays active until the clock enacts it.
 	later := newTestSubscription(tenantID, appID)
 	if err = s.CreateSubscription(ctx, later); err != nil {
 		t.Fatalf("CreateSubscription: %v", err)
 	}
-	if err = s.CancelSubscription(ctx, later.ID, time.Now().Add(24*time.Hour)); err != nil {
-		t.Fatalf("CancelSubscription (future): %v", err)
+	returned, err = s.CancelSubscription(ctx, later.ID, false)
+	if err != nil {
+		t.Fatalf("CancelSubscription (scheduled): %v", err)
+	}
+	if !sameInstantToMillisecond(returned, later.CurrentPeriodEnd) {
+		t.Errorf("a scheduled cancel returned %v, want the period end %v", returned, later.CurrentPeriodEnd)
 	}
 	gotLater, err := s.GetSubscription(ctx, later.ID)
 	if err != nil {
-		t.Fatalf("GetSubscription (future): %v", err)
+		t.Fatalf("GetSubscription (scheduled): %v", err)
 	}
-	if gotLater.Status != subscription.StatusActive || gotLater.CancelAt == nil {
-		t.Errorf("a future cancel: status %q cancel_at %v, want active with cancel_at set", gotLater.Status, gotLater.CancelAt)
+	if gotLater.Status != subscription.StatusActive || gotLater.CanceledAt != nil ||
+		gotLater.CancelAt == nil || !sameInstantToMillisecond(*gotLater.CancelAt, later.CurrentPeriodEnd) {
+		t.Errorf("a scheduled cancel: status %q cancel_at %v canceled_at %v, want active, the period end %v, and none",
+			gotLater.Status, gotLater.CancelAt, gotLater.CanceledAt, later.CurrentPeriodEnd)
 	}
 }
 

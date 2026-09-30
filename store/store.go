@@ -43,13 +43,19 @@ type Store interface {
 	GetActiveSubscription(ctx context.Context, tenantID string, appID string) (*subscription.Subscription, error)
 	ListSubscriptions(ctx context.Context, tenantID string, appID string, opts subscription.ListOpts) ([]*subscription.Subscription, error)
 	UpdateSubscription(ctx context.Context, s *subscription.Subscription) error
-	// CancelSubscription sets cancel_at, and when cancelAt is not after now
-	// also cancels the subscription and stamps canceled_at. It refuses a
-	// subscription that is already canceled or expired, with
-	// ledger.ErrSubscriptionCanceled or ledger.ErrSubscriptionExpired, in
-	// the same conditional write, so an operator's cancel racing the
-	// lifecycle clock's enactment never cancels a subscription twice.
-	CancelSubscription(ctx context.Context, subID id.SubscriptionID, cancelAt time.Time) error
+	// CancelSubscription cancels a subscription and returns the cancel_at it
+	// stored, in UTC. Immediately, it sets cancel_at and canceled_at to now
+	// and the status to canceled. Otherwise it schedules the cancel for the
+	// end of the period that is current when the write lands: the statement
+	// copies current_period_end into cancel_at from the row itself, never a
+	// value the caller read, so a period the lifecycle clock advanced in
+	// between is the one that ends. A scheduled cancel never changes the
+	// status; the clock's EnactSubscriptionCancel does, once cancel_at has
+	// passed. Both refuse a subscription that is already canceled or expired,
+	// with ledger.ErrSubscriptionCanceled or ledger.ErrSubscriptionExpired, in
+	// the same conditional write, so an operator's cancel racing the clock's
+	// enactment never cancels a subscription twice.
+	CancelSubscription(ctx context.Context, subID id.SubscriptionID, immediately bool) (time.Time, error)
 
 	// Operator writes that can race the lifecycle clock. Each one writes only
 	// the columns it names in one conditional statement whose WHERE repeats

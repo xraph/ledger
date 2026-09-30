@@ -438,32 +438,35 @@ func (s *Store) UpdateSubscription(ctx context.Context, sub *subscription.Subscr
 	return nil
 }
 
-func (s *Store) CancelSubscription(ctx context.Context, subID id.SubscriptionID, cancelAt time.Time) error {
+func (s *Store) CancelSubscription(ctx context.Context, subID id.SubscriptionID, immediately bool) (time.Time, error) {
 	t := now()
-	updates := s.sdb.NewUpdate((*subscriptionModel)(nil)).
-		Set("cancel_at = ?", cancelAt.UTC()).
-		Set("updated_at = ?", t).
-		Where("id = ?", subID.String()).
-		Where("status NOT IN (?, ?)", string(subscription.StatusCanceled), string(subscription.StatusExpired))
-
-	if !cancelAt.After(time.Now()) {
+	updates := s.sdb.NewUpdate((*subscriptionModel)(nil))
+	if immediately {
 		updates = updates.
+			Set("cancel_at = ?", t).
 			Set("status = ?", string(subscription.StatusCanceled)).
 			Set("canceled_at = ?", t)
+	} else {
+		// The end of the period current when this statement runs, read by
+		// the statement itself: a period the clock advanced since the
+		// caller's read is the one that ends.
+		updates = updates.Set("cancel_at = current_period_end")
 	}
 
-	res, err := updates.Exec(ctx)
+	var cancelAt textTime
+	err := updates.
+		Set("updated_at = ?", t).
+		Where("id = ?", subID.String()).
+		Where("status NOT IN (?, ?)", string(subscription.StatusCanceled), string(subscription.StatusExpired)).
+		Returning("cancel_at").
+		Scan(ctx, &cancelAt)
+	if isNoRows(err) {
+		return time.Time{}, s.cancelMissed(ctx, subID)
+	}
 	if err != nil {
-		return err
+		return time.Time{}, err
 	}
-	rows, err := res.RowsAffected()
-	if err != nil {
-		return err
-	}
-	if rows == 0 {
-		return s.cancelMissed(ctx, subID)
-	}
-	return nil
+	return cancelAt.t.UTC(), nil
 }
 
 // ==================== Meter Store ====================
@@ -1118,6 +1121,43 @@ func (s *Store) RedeemCoupon(ctx context.Context, subID id.SubscriptionID, coupo
 // now returns the current UTC time.
 func now() time.Time {
 	return time.Now().UTC()
+}
+
+// textTime scans a timestamp column read by a raw Scan, such as a RETURNING
+// clause. SQLite stores these columns as TEXT and the driver hands them back
+// as strings, which database/sql will not put into a time.Time; model scans
+// go through grove's converter instead. The layouts are the ones grove tries,
+// in its order: the first is time.Time.String(), the form the driver writes.
+type textTime struct{ t time.Time }
+
+var textTimeLayouts = []string{
+	"2006-01-02 15:04:05.999999999 -0700 MST",
+	time.RFC3339Nano,
+	"2006-01-02 15:04:05.999999999-07:00",
+	time.DateTime,
+	time.DateOnly,
+}
+
+func (d *textTime) Scan(src any) error {
+	var text string
+	switch v := src.(type) {
+	case time.Time:
+		d.t = v
+		return nil
+	case string:
+		text = v
+	case []byte:
+		text = string(v)
+	default:
+		return fmt.Errorf("ledger/sqlite: cannot read %T as a timestamp", src)
+	}
+	for _, layout := range textTimeLayouts {
+		if t, err := time.Parse(layout, text); err == nil {
+			d.t = t
+			return nil
+		}
+	}
+	return fmt.Errorf("ledger/sqlite: cannot parse %q as a timestamp", text)
 }
 
 // getStartOfPeriod returns the start of the calendar month or year that

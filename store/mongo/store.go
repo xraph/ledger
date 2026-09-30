@@ -406,30 +406,52 @@ func (s *Store) UpdateSubscription(ctx context.Context, sub *subscription.Subscr
 	return nil
 }
 
-func (s *Store) CancelSubscription(ctx context.Context, subID id.SubscriptionID, cancelAt time.Time) error {
+// CancelSubscription writes through the driver's collection and not grove's
+// update builder: a scheduled cancel copies current_period_end into cancel_at
+// with a pipeline update, which the builder cannot express, and
+// FindOneAndUpdate hands back the stored cancel_at in the same operation. So
+// grove's operation hooks do not see this write, as with
+// EnactSubscriptionCancel.
+func (s *Store) CancelSubscription(ctx context.Context, subID id.SubscriptionID, immediately bool) (time.Time, error) {
 	t := now()
-	update := s.mdb.NewUpdate((*subscriptionModel)(nil)).
-		Filter(bson.M{
+	var update any
+	if immediately {
+		update = bson.M{"$set": bson.M{
+			"cancel_at":   t,
+			"status":      string(subscription.StatusCanceled),
+			"canceled_at": t,
+			"updated_at":  t,
+		}}
+	} else {
+		// The end of the period current when this update runs, read by the
+		// update itself: a period the clock advanced since the caller's read
+		// is the one that ends.
+		update = mongo.Pipeline{{{Key: "$set", Value: bson.D{
+			{Key: "cancel_at", Value: "$current_period_end"},
+			{Key: "updated_at", Value: t},
+		}}}}
+	}
+
+	var stored struct {
+		CancelAt time.Time `bson:"cancel_at"`
+	}
+	err := s.mdb.Collection(colSubscriptions).FindOneAndUpdate(ctx,
+		bson.M{
 			"_id":    subID.String(),
 			"status": bson.M{"$nin": []string{string(subscription.StatusCanceled), string(subscription.StatusExpired)}},
-		}).
-		Set("cancel_at", cancelAt).
-		Set("updated_at", t)
-
-	if !cancelAt.After(time.Now()) {
-		update = update.
-			Set("status", string(subscription.StatusCanceled)).
-			Set("canceled_at", t)
+		},
+		update,
+		options.FindOneAndUpdate().
+			SetReturnDocument(options.After).
+			SetProjection(bson.M{"cancel_at": 1}),
+	).Decode(&stored)
+	if isNoDocuments(err) {
+		return time.Time{}, s.cancelMissed(ctx, subID)
 	}
-
-	res, err := update.Exec(ctx)
 	if err != nil {
-		return fmt.Errorf("ledger/mongo: cancel subscription: %w", err)
+		return time.Time{}, fmt.Errorf("ledger/mongo: cancel subscription: %w", err)
 	}
-	if res.MatchedCount() == 0 {
-		return s.cancelMissed(ctx, subID)
-	}
-	return nil
+	return stored.CancelAt.UTC(), nil
 }
 
 // ==================== Meter Store ====================

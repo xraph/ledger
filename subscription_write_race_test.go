@@ -28,9 +28,9 @@ func (c *clockBetween) run() {
 	}
 }
 
-func (c *clockBetween) CancelSubscription(ctx context.Context, subID id.SubscriptionID, cancelAt time.Time) error {
+func (c *clockBetween) CancelSubscription(ctx context.Context, subID id.SubscriptionID, immediately bool) (time.Time, error) {
 	c.run()
-	return c.Store.CancelSubscription(ctx, subID, cancelAt)
+	return c.Store.CancelSubscription(ctx, subID, immediately)
 }
 
 func (c *clockBetween) PauseSubscription(ctx context.Context, subID id.SubscriptionID) (bool, error) {
@@ -191,5 +191,55 @@ func TestCancelRefusesASubscriptionTheClockCanceled(t *testing.T) {
 	got := storedSub(t, st, sub.ID)
 	if got.Status != subscription.StatusCanceled || got.CanceledAt == nil || !got.CanceledAt.Equal(past) {
 		t.Errorf("status %q canceled_at %v, want canceled at the clock's %v", got.Status, got.CanceledAt, past)
+	}
+}
+
+func TestScheduledCancelEndsThePeriodCurrentWhenItLands(t *testing.T) {
+	ctx := context.Background()
+	now := time.Now().UTC()
+	past := now.Add(-time.Hour)
+	next := past.AddDate(0, 1, 0)
+	l, st, sub := clockFixture(t, func(x *subscription.Subscription) {
+		x.CurrentPeriodStart, x.CurrentPeriodEnd = past.AddDate(0, -1, 0), past
+	})
+	// The engine reads the ended period; the clock advances it before the
+	// cancel's write lands.
+	st.clock = func() {
+		if ok, err := st.AdvanceSubscriptionPeriod(ctx, sub.ID, past, next, now); err != nil || !ok {
+			t.Fatalf("AdvanceSubscriptionPeriod: %v, %v", ok, err)
+		}
+	}
+
+	if err := l.CancelSubscription(ctx, sub.ID, false); err != nil {
+		t.Fatalf("CancelSubscription: %v", err)
+	}
+	got := storedSub(t, st, sub.ID)
+	if got.Status != subscription.StatusActive || got.CanceledAt != nil {
+		t.Errorf("status %q canceled_at %v, want still active: the old end had passed, but it is not the one that ends", got.Status, got.CanceledAt)
+	}
+	if got.CancelAt == nil || !got.CancelAt.Equal(next) {
+		t.Errorf("cancel_at %v, want the advanced period end %v", got.CancelAt, next)
+	}
+}
+
+func TestScheduledCancelOfAnEndedPeriodWaitsForTheClock(t *testing.T) {
+	ctx := context.Background()
+	past := time.Now().UTC().Add(-time.Hour)
+	l, st, sub := clockFixture(t, func(x *subscription.Subscription) {
+		x.CurrentPeriodStart, x.CurrentPeriodEnd = past.AddDate(0, -1, 0), past
+	})
+
+	if err := l.CancelSubscription(ctx, sub.ID, false); err != nil {
+		t.Fatalf("CancelSubscription: %v", err)
+	}
+	got := storedSub(t, st, sub.ID)
+	if got.Status != subscription.StatusActive || got.CancelAt == nil || !got.CancelAt.Equal(past) {
+		t.Errorf("status %q cancel_at %v, want active with cancel_at on the ended period %v, for the clock to enact", got.Status, got.CancelAt, past)
+	}
+	if ok, err := st.EnactSubscriptionCancel(ctx, sub.ID, time.Now()); err != nil || !ok {
+		t.Fatalf("EnactSubscriptionCancel: %v, %v", ok, err)
+	}
+	if got := storedSub(t, st, sub.ID); got.Status != subscription.StatusCanceled || got.CanceledAt == nil || !got.CanceledAt.Equal(past) {
+		t.Errorf("after the clock: status %q canceled_at %v, want canceled at %v", got.Status, got.CanceledAt, past)
 	}
 }

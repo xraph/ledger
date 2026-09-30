@@ -346,13 +346,18 @@ func (l *Ledger) CancelSubscription(ctx context.Context, subID id.SubscriptionID
 		return ErrSubscriptionExpired
 	}
 
-	cancelAt := sub.CurrentPeriodEnd
-	if immediately {
-		cancelAt = time.Now().UTC()
-	}
-
-	if err := l.store.CancelSubscription(ctx, subID, cancelAt); err != nil {
+	// The store picks the date: now, or for a scheduled cancel the period end
+	// current when its write lands, which is later than the one read above
+	// if the lifecycle clock advanced the period in between.
+	cancelAt, err := l.store.CancelSubscription(ctx, subID, immediately)
+	if err != nil {
 		return err
+	}
+	sub.CancelAt = &cancelAt
+	if immediately {
+		canceledAt := cancelAt
+		sub.Status = subscription.StatusCanceled
+		sub.CanceledAt = &canceledAt
 	}
 
 	// Invalidate entitlement cache

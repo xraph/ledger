@@ -155,16 +155,20 @@ func testOperatorWritesAreConditional(t *testing.T, s ledgerstore.Store) {
 			subscription.StatusCanceled: ledger.ErrSubscriptionCanceled,
 			subscription.StatusExpired:  ledger.ErrSubscriptionExpired,
 		} {
-			sub := withStatus(st)
-			if err := s.CancelSubscription(ctx, sub.ID, now.Add(time.Hour)); !errors.Is(err, want) {
-				t.Errorf("cancel a %s subscription: got %v, want %v", st, err, want)
-			}
-			if got := reread(t, s, sub); got.CancelAt != nil {
-				t.Errorf("a refused cancel set cancel_at on a %s subscription to %v", st, got.CancelAt)
+			for _, immediately := range []bool{false, true} {
+				sub := withStatus(st)
+				if _, err := s.CancelSubscription(ctx, sub.ID, immediately); !errors.Is(err, want) {
+					t.Errorf("cancel a %s subscription (immediately=%v): got %v, want %v", st, immediately, err, want)
+				}
+				if got := reread(t, s, sub); got.CancelAt != nil {
+					t.Errorf("a refused cancel set cancel_at on a %s subscription to %v", st, got.CancelAt)
+				}
 			}
 		}
-		if err := s.CancelSubscription(ctx, id.NewSubscriptionID(), now); !errors.Is(err, ledger.ErrSubscriptionNotFound) {
-			t.Errorf("cancel an unknown subscription: got %v, want ErrSubscriptionNotFound", err)
+		for _, immediately := range []bool{false, true} {
+			if _, err := s.CancelSubscription(ctx, id.NewSubscriptionID(), immediately); !errors.Is(err, ledger.ErrSubscriptionNotFound) {
+				t.Errorf("cancel an unknown subscription (immediately=%v): got %v, want ErrSubscriptionNotFound", immediately, err)
+			}
 		}
 	})
 
@@ -337,7 +341,7 @@ func testOperatorWritesRaceTheClock(t *testing.T, s ledgerstore.Store) {
 		}
 		raceEach(subs,
 			func(sub *subscription.Subscription) {
-				err := s.CancelSubscription(ctx, sub.ID, now)
+				_, err := s.CancelSubscription(ctx, sub.ID, true)
 				switch {
 				case err == nil:
 					win(sub)

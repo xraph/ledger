@@ -440,17 +440,20 @@ func testLifecycleTransitionsApplyOnce(t *testing.T, s ledgerstore.Store) {
 	}
 }
 
-// testLifecycleAdvanceKeepsARacingCancel races a scheduled cancel against the
-// period advance on fifty ended subscriptions. The two write different
-// columns, so every row must end with both: the new period and the cancel_at.
-// A write that put back a whole row it had read would lose one of them.
-func testLifecycleAdvanceKeepsARacingCancel(t *testing.T, s ledgerstore.Store) {
+// testLifecycleScheduledCancelRacesTheAdvance races a scheduled cancel
+// against the period advance on fifty ended subscriptions. The cancel copies
+// the stored period end into cancel_at, and the advance refuses a row whose
+// cancel falls at or before its current end, so either order ends with
+// cancel_at on the period end current after both writes: the old end when the
+// cancel landed first and the advance then refused, the new end when the
+// advance landed first. Never a passed end under a newer period, and never a
+// subscription canceled on the spot: the clock enacts the cancel later.
+func testLifecycleScheduledCancelRacesTheAdvance(t *testing.T, s ledgerstore.Store) {
 	ctx := context.Background()
 	appID := "app-" + uniqueSuffix()
 	now := lifecycleNow()
 	past := now.Add(-time.Hour)
 	next := past.AddDate(0, 1, 0)
-	cancelAt := next.Add(time.Hour)
 
 	const rows = 50
 	subs := make([]*subscription.Subscription, rows)
@@ -461,50 +464,56 @@ func testLifecycleAdvanceKeepsARacingCancel(t *testing.T, s ledgerstore.Store) {
 	}
 
 	var (
-		wg   sync.WaitGroup
-		mu   sync.Mutex
-		errs []error
-		miss []string
+		wg       sync.WaitGroup
+		mu       sync.Mutex
+		errs     []error
+		returned = map[string]time.Time{}
+		advanced = map[string]bool{}
 	)
-	record := func(err error) {
-		mu.Lock()
-		defer mu.Unlock()
-		errs = append(errs, err)
-	}
 	for _, sub := range subs {
 		wg.Add(2)
 		go func() {
 			defer wg.Done()
-			record(s.CancelSubscription(ctx, sub.ID, cancelAt))
+			cancelAt, err := s.CancelSubscription(ctx, sub.ID, false)
+			mu.Lock()
+			defer mu.Unlock()
+			errs = append(errs, err)
+			returned[sub.ID.String()] = cancelAt
 		}()
 		go func() {
 			defer wg.Done()
-			advanced, err := s.AdvanceSubscriptionPeriod(ctx, sub.ID, past, next, now)
-			record(err)
-			if !advanced {
-				mu.Lock()
-				defer mu.Unlock()
-				miss = append(miss, sub.ID.String())
-			}
+			ok, err := s.AdvanceSubscriptionPeriod(ctx, sub.ID, past, next, now)
+			mu.Lock()
+			defer mu.Unlock()
+			errs = append(errs, err)
+			advanced[sub.ID.String()] = ok
 		}()
 	}
 	wg.Wait()
 	if err := errors.Join(errs...); err != nil {
 		t.Fatalf("racing writes: %v", err)
 	}
-	if len(miss) > 0 {
-		t.Errorf("%d advances did not match, though a cancel after the new end never blocks one: %v", len(miss), miss)
-	}
+	orders := map[bool]int{}
 	for _, sub := range subs {
 		got := reread(t, s, sub)
-		if !sameInstantToMillisecond(got.CurrentPeriodStart, past) || !sameInstantToMillisecond(got.CurrentPeriodEnd, next) {
-			t.Errorf("%s: period %v to %v, want %v to %v", sub.ID, got.CurrentPeriodStart, got.CurrentPeriodEnd, past, next)
+		key := sub.ID.String()
+		orders[advanced[key]]++
+		wantEnd := past
+		if advanced[key] {
+			wantEnd = next
 		}
-		if got.CancelAt == nil || !sameInstantToMillisecond(*got.CancelAt, cancelAt) {
-			t.Errorf("%s: cancel_at %v, want %v", sub.ID, got.CancelAt, cancelAt)
+		if !sameInstantToMillisecond(got.CurrentPeriodEnd, wantEnd) {
+			t.Errorf("%s: period ends %v, want %v (advance matched: %v)", key, got.CurrentPeriodEnd, wantEnd, advanced[key])
 		}
-		if got.Status != subscription.StatusActive {
-			t.Errorf("%s: status %q, want active", sub.ID, got.Status)
+		if got.CancelAt == nil || !sameInstantToMillisecond(*got.CancelAt, got.CurrentPeriodEnd) {
+			t.Errorf("%s: cancel_at %v, want the current period end %v", key, got.CancelAt, got.CurrentPeriodEnd)
+		}
+		if !sameInstantToMillisecond(returned[key], wantEnd) {
+			t.Errorf("%s: the cancel returned %v, want the stored %v", key, returned[key], wantEnd)
+		}
+		if got.Status != subscription.StatusActive || got.CanceledAt != nil {
+			t.Errorf("%s: status %q canceled_at %v, want still active: a scheduled cancel never ends it on the spot", key, got.Status, got.CanceledAt)
 		}
 	}
+	t.Logf("advance first on %d rows, cancel first on %d", orders[true], orders[false])
 }
