@@ -170,6 +170,19 @@ func testListDueSubscriptions(t *testing.T, s ledgerstore.Store) {
 	if _, err := s.ListDueSubscriptions(ctx, subscription.DueOpts{Field: "created_at", Before: now}); !errors.Is(err, ledger.ErrInvalidInput) {
 		t.Errorf("an unknown due field: got %v, want ErrInvalidInput", err)
 	}
+
+	// A cancel half a second after a whole second, kept at that precision.
+	// SQLite compares these timestamps as text, so this pins that a fraction
+	// sorts after the whole second it follows and before the next one.
+	fractionApp := "app-" + uniqueSuffix()
+	half := now.Add(500 * time.Millisecond)
+	fraction := storedSubscription(t, s, fractionApp, func(x *subscription.Subscription) { x.CancelAt = &half })
+	if got := list(subscription.DueOpts{Field: subscription.DueCancel, Before: now, Statuses: liveStatuses, AppID: fractionApp}); len(got) != 0 {
+		t.Errorf("a cancel at %v listed as due at %v: %v", half, now, got)
+	}
+	if got, want := list(subscription.DueOpts{Field: subscription.DueCancel, Before: now.Add(time.Second), Statuses: liveStatuses, AppID: fractionApp}), subscriptionIDs([]*subscription.Subscription{fraction}); !reflect.DeepEqual(got, want) {
+		t.Errorf("a cancel at %v at %v: got %v, want %v", half, now.Add(time.Second), got, want)
+	}
 }
 
 func testListOverdueInvoices(t *testing.T, s ledgerstore.Store) {
@@ -245,12 +258,18 @@ func testLifecycleTransitionsAreConditional(t *testing.T, s ledgerstore.Store) {
 	})
 
 	t.Run("cancel", func(t *testing.T) {
-		due := storedSubscription(t, s, appID, func(x *subscription.Subscription) { x.CancelAt = at(-time.Hour) })
+		due := storedSubscription(t, s, appID, func(x *subscription.Subscription) {
+			backdate(&x.Entity)
+			x.CancelAt = at(-time.Hour)
+		})
+		before := time.Now()
 		expectChanged(t, "a cancel that is due", true)(s.EnactSubscriptionCancel(ctx, due.ID, now))
+		after := time.Now()
 		got := reread(t, s, due)
 		if got.Status != subscription.StatusCanceled {
 			t.Errorf("status %q, want canceled", got.Status)
 		}
+		requireStampedDuring(t, "updated_at", got.UpdatedAt, before, after)
 		if got.CanceledAt == nil || !sameInstantToMillisecond(*got.CanceledAt, *due.CancelAt) {
 			t.Errorf("canceled_at %v, want cancel_at %v", got.CanceledAt, *due.CancelAt)
 		}
@@ -270,6 +289,12 @@ func testLifecycleTransitionsAreConditional(t *testing.T, s ledgerstore.Store) {
 		expectChanged(t, "a cancel dated later", false)(s.EnactSubscriptionCancel(ctx, later.ID, now))
 		none := storedSubscription(t, s, appID, func(*subscription.Subscription) {})
 		expectChanged(t, "no cancel at all", false)(s.EnactSubscriptionCancel(ctx, none.ID, now))
+		fraction := storedSubscription(t, s, appID, func(x *subscription.Subscription) {
+			c := now.Add(500 * time.Millisecond)
+			x.CancelAt = &c
+		})
+		expectChanged(t, "a cancel half a second after now", false)(s.EnactSubscriptionCancel(ctx, fraction.ID, now))
+		expectChanged(t, "the same cancel a second later", true)(s.EnactSubscriptionCancel(ctx, fraction.ID, now.Add(time.Second)))
 		if got := reread(t, s, none); got.Status != subscription.StatusActive || got.CanceledAt != nil {
 			t.Errorf("a subscription with no cancel became %q with canceled_at %v", got.Status, got.CanceledAt)
 		}
@@ -286,11 +311,15 @@ func testLifecycleTransitionsAreConditional(t *testing.T, s ledgerstore.Store) {
 		}
 
 		due := ended(func(x *subscription.Subscription) {
+			backdate(&x.Entity)
 			x.Quantity = map[string]int64{"seats": 3}
 			x.Metadata = map[string]string{"note": "kept"}
 		})
+		before := time.Now()
 		expectChanged(t, "an ended period", true)(s.AdvanceSubscriptionPeriod(ctx, due.ID, past, next, now))
+		after := time.Now()
 		got := reread(t, s, due)
+		requireStampedDuring(t, "updated_at", got.UpdatedAt, before, after)
 		if !sameInstantToMillisecond(got.CurrentPeriodStart, past) || !sameInstantToMillisecond(got.CurrentPeriodEnd, next) {
 			t.Errorf("period %v to %v, want %v to %v", got.CurrentPeriodStart, got.CurrentPeriodEnd, past, next)
 		}
@@ -350,15 +379,24 @@ func testLifecycleTransitionsAreConditional(t *testing.T, s ledgerstore.Store) {
 	})
 }
 
-// testLifecycleTransitionsApplyOnce races eight callers on one due cancel and
-// one overdue invoice, as replicas running the clock at once would. Exactly
-// one caller may see each change.
+// testLifecycleTransitionsApplyOnce races eight callers on one row per
+// transition, as replicas running the clock at once would: a due cancel, an
+// ended trial, an ended period and an overdue invoice. Exactly one caller may
+// see each change.
 func testLifecycleTransitionsApplyOnce(t *testing.T, s ledgerstore.Store) {
 	ctx := context.Background()
 	appID := "app-" + uniqueSuffix()
 	now := lifecycleNow()
 	past := now.Add(-time.Hour)
+	next := past.AddDate(0, 1, 0)
 	sub := storedSubscription(t, s, appID, func(x *subscription.Subscription) { c := past; x.CancelAt = &c })
+	trial := storedSubscription(t, s, appID, func(x *subscription.Subscription) {
+		x.Status = subscription.StatusTrialing
+		x.TrialEnd = &past
+	})
+	ended := storedSubscription(t, s, appID, func(x *subscription.Subscription) {
+		x.CurrentPeriodStart, x.CurrentPeriodEnd = past.AddDate(0, -1, 0), past
+	})
 	inv := storedInvoice(t, s, appID, invoice.StatusPending, &past)
 
 	const racers = 8
@@ -366,6 +404,8 @@ func testLifecycleTransitionsApplyOnce(t *testing.T, s ledgerstore.Store) {
 		wg       sync.WaitGroup
 		mu       sync.Mutex
 		cancels  int
+		trials   int
+		advances int
 		pastDues int
 		errs     []error
 	)
@@ -374,23 +414,97 @@ func testLifecycleTransitionsApplyOnce(t *testing.T, s ledgerstore.Store) {
 		go func() {
 			defer wg.Done()
 			canceled, cancelErr := s.EnactSubscriptionCancel(ctx, sub.ID, now)
+			trialEnded, trialErr := s.EndSubscriptionTrial(ctx, trial.ID, now)
+			advanced, advanceErr := s.AdvanceSubscriptionPeriod(ctx, ended.ID, past, next, now)
 			marked, markErr := s.MarkInvoicePastDue(ctx, inv.ID, now)
 			mu.Lock()
 			defer mu.Unlock()
-			if canceled {
-				cancels++
+			for _, c := range []struct {
+				changed bool
+				count   *int
+			}{{canceled, &cancels}, {trialEnded, &trials}, {advanced, &advances}, {marked, &pastDues}} {
+				if c.changed {
+					*c.count++
+				}
 			}
-			if marked {
-				pastDues++
-			}
-			errs = append(errs, cancelErr, markErr)
+			errs = append(errs, cancelErr, trialErr, advanceErr, markErr)
 		}()
 	}
 	wg.Wait()
 	if err := errors.Join(errs...); err != nil {
 		t.Fatalf("racing transitions: %v", err)
 	}
-	if cancels != 1 || pastDues != 1 {
-		t.Errorf("%d racers: %d saw the cancel and %d saw the invoice go past due, want 1 each", racers, cancels, pastDues)
+	if cancels != 1 || trials != 1 || advances != 1 || pastDues != 1 {
+		t.Errorf("%d racers saw %d cancels, %d trial ends, %d period advances and %d invoices go past due, want 1 each",
+			racers, cancels, trials, advances, pastDues)
+	}
+}
+
+// testLifecycleAdvanceKeepsARacingCancel races a scheduled cancel against the
+// period advance on fifty ended subscriptions. The two write different
+// columns, so every row must end with both: the new period and the cancel_at.
+// A write that put back a whole row it had read would lose one of them.
+func testLifecycleAdvanceKeepsARacingCancel(t *testing.T, s ledgerstore.Store) {
+	ctx := context.Background()
+	appID := "app-" + uniqueSuffix()
+	now := lifecycleNow()
+	past := now.Add(-time.Hour)
+	next := past.AddDate(0, 1, 0)
+	cancelAt := next.Add(time.Hour)
+
+	const rows = 50
+	subs := make([]*subscription.Subscription, rows)
+	for i := range subs {
+		subs[i] = storedSubscription(t, s, appID, func(x *subscription.Subscription) {
+			x.CurrentPeriodStart, x.CurrentPeriodEnd = past.AddDate(0, -1, 0), past
+		})
+	}
+
+	var (
+		wg   sync.WaitGroup
+		mu   sync.Mutex
+		errs []error
+		miss []string
+	)
+	record := func(err error) {
+		mu.Lock()
+		defer mu.Unlock()
+		errs = append(errs, err)
+	}
+	for _, sub := range subs {
+		wg.Add(2)
+		go func() {
+			defer wg.Done()
+			record(s.CancelSubscription(ctx, sub.ID, cancelAt))
+		}()
+		go func() {
+			defer wg.Done()
+			advanced, err := s.AdvanceSubscriptionPeriod(ctx, sub.ID, past, next, now)
+			record(err)
+			if !advanced {
+				mu.Lock()
+				defer mu.Unlock()
+				miss = append(miss, sub.ID.String())
+			}
+		}()
+	}
+	wg.Wait()
+	if err := errors.Join(errs...); err != nil {
+		t.Fatalf("racing writes: %v", err)
+	}
+	if len(miss) > 0 {
+		t.Errorf("%d advances did not match, though a cancel after the new end never blocks one: %v", len(miss), miss)
+	}
+	for _, sub := range subs {
+		got := reread(t, s, sub)
+		if !sameInstantToMillisecond(got.CurrentPeriodStart, past) || !sameInstantToMillisecond(got.CurrentPeriodEnd, next) {
+			t.Errorf("%s: period %v to %v, want %v to %v", sub.ID, got.CurrentPeriodStart, got.CurrentPeriodEnd, past, next)
+		}
+		if got.CancelAt == nil || !sameInstantToMillisecond(*got.CancelAt, cancelAt) {
+			t.Errorf("%s: cancel_at %v, want %v", sub.ID, got.CancelAt, cancelAt)
+		}
+		if got.Status != subscription.StatusActive {
+			t.Errorf("%s: status %q, want active", sub.ID, got.Status)
+		}
 	}
 }
