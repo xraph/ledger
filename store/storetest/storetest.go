@@ -83,6 +83,10 @@ func Run(t *testing.T, newStore func(t *testing.T) ledgerstore.Store) {
 	t.Run("ListsPageInAStableOrder", func(t *testing.T) { testListsPageInAStableOrder(t, newStore(t)) })
 	t.Run("ListsPageStablyOnEqualTimestamps", func(t *testing.T) { testListsPageStablyOnEqualTimestamps(t, newStore(t)) })
 	t.Run("AggregateOpensPeriodsInUTC", func(t *testing.T) { testAggregateOpensPeriodsInUTC(t, newStore(t)) })
+	t.Run("ListDueSubscriptions", func(t *testing.T) { testListDueSubscriptions(t, newStore(t)) })
+	t.Run("ListOverdueInvoices", func(t *testing.T) { testListOverdueInvoices(t, newStore(t)) })
+	t.Run("LifecycleTransitionsAreConditional", func(t *testing.T) { testLifecycleTransitionsAreConditional(t, newStore(t)) })
+	t.Run("LifecycleTransitionsApplyOnce", func(t *testing.T) { testLifecycleTransitionsApplyOnce(t, newStore(t)) })
 }
 
 // uniqueSuffix returns a value that differs on every call, including across

@@ -320,5 +320,39 @@ func init() {
 				return nil
 			},
 		},
+		&migrate.Migration{
+			// Indexes for the lifecycle clock's queries. Store.Migrate builds
+			// the same ones through migrationIndexes; keep the two in step.
+			Name:    "add_lifecycle_indexes",
+			Version: "20240101000010",
+			Up: func(ctx context.Context, exec migrate.Executor) error {
+				mexec, ok := exec.(*mongomigrate.Executor)
+				if !ok {
+					return fmt.Errorf("expected mongomigrate executor, got %T", exec)
+				}
+				if err := mexec.CreateIndexes(ctx, colSubscriptions, lifecycleSubscriptionIndexes()); err != nil {
+					return err
+				}
+				return mexec.CreateIndexes(ctx, colInvoices, lifecycleInvoiceIndexes())
+			},
+			Down: func(ctx context.Context, exec migrate.Executor) error {
+				mexec, ok := exec.(*mongomigrate.Executor)
+				if !ok {
+					return fmt.Errorf("expected mongomigrate executor, got %T", exec)
+				}
+				drops := map[string][]string{
+					colSubscriptions: {"cancel_at_1", "status_1_trial_end_1", "status_1_current_period_end_1"},
+					colInvoices:      {"status_1_due_date_1"},
+				}
+				for col, names := range drops {
+					for _, name := range names {
+						if err := mexec.DB().Collection(col).Indexes().DropOne(ctx, name); err != nil && !isIndexNotFound(err) {
+							return fmt.Errorf("drop %s index %s: %w", col, name, err)
+						}
+					}
+				}
+				return nil
+			},
+		},
 	)
 }

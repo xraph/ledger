@@ -308,5 +308,27 @@ ALTER TABLE ledger_subscriptions ADD COLUMN quantity TEXT NOT NULL DEFAULT '{}';
 				return nil
 			},
 		},
+		&migrate.Migration{
+			Name:    "add_lifecycle_indexes",
+			Version: "20240101000011",
+			Up: func(ctx context.Context, exec migrate.Executor) error {
+				_, err := exec.Exec(ctx, `
+CREATE INDEX IF NOT EXISTS idx_ledger_subs_cancel_at ON ledger_subscriptions (cancel_at);
+CREATE INDEX IF NOT EXISTS idx_ledger_subs_status_trial_end ON ledger_subscriptions (status, trial_end);
+CREATE INDEX IF NOT EXISTS idx_ledger_subs_status_period_end ON ledger_subscriptions (status, current_period_end);
+CREATE INDEX IF NOT EXISTS idx_ledger_invoices_status_due ON ledger_invoices (status, due_date);
+`)
+				return err
+			},
+			Down: func(ctx context.Context, exec migrate.Executor) error {
+				_, err := exec.Exec(ctx, `
+DROP INDEX IF EXISTS idx_ledger_subs_cancel_at;
+DROP INDEX IF EXISTS idx_ledger_subs_status_trial_end;
+DROP INDEX IF EXISTS idx_ledger_subs_status_period_end;
+DROP INDEX IF EXISTS idx_ledger_invoices_status_due;
+`)
+				return err
+			},
+		},
 	)
 }

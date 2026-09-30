@@ -90,6 +90,31 @@ type Store interface {
 	// unlimited on every backend.
 	RedeemCoupon(ctx context.Context, subID id.SubscriptionID, couponID id.CouponID) error
 
+	// Lifecycle clock methods. The two List methods find the rows a clock
+	// step has to visit, across every app when AppID is empty. Each
+	// transition changes one row in a single conditional write that repeats
+	// its precondition, touches only the columns it names, and reports
+	// whether a row matched, so two replicas running the clock at once never
+	// apply a transition twice and never overwrite an operator's concurrent
+	// write to other columns. A missing row is false with no error.
+	ListDueSubscriptions(ctx context.Context, opts subscription.DueOpts) ([]*subscription.Subscription, error)
+	ListOverdueInvoices(ctx context.Context, opts invoice.OverdueOpts) ([]*invoice.Invoice, error)
+	// EndSubscriptionTrial makes a trialing subscription whose trial_end is at
+	// or before now active.
+	EndSubscriptionTrial(ctx context.Context, subID id.SubscriptionID, now time.Time) (bool, error)
+	// EnactSubscriptionCancel cancels a subscription whose cancel_at is at or
+	// before now and that is not already canceled or expired, and sets
+	// canceled_at to cancel_at, the moment the cancellation took effect.
+	EnactSubscriptionCancel(ctx context.Context, subID id.SubscriptionID, now time.Time) (bool, error)
+	// AdvanceSubscriptionPeriod sets the current period to [start, end) when
+	// the subscription is active, trialing or past due, its current period
+	// ended at or before now, end is later than that current end, and no
+	// cancellation falls at or before the current end.
+	AdvanceSubscriptionPeriod(ctx context.Context, subID id.SubscriptionID, start, end, now time.Time) (bool, error)
+	// MarkInvoicePastDue moves a pending invoice whose due_date is before now
+	// to past_due.
+	MarkInvoicePastDue(ctx context.Context, invID id.InvoiceID, now time.Time) (bool, error)
+
 	// Core methods
 	Migrate(ctx context.Context) error
 	Ping(ctx context.Context) error

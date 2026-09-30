@@ -1410,11 +1410,11 @@ func migrationIndexes() map[string][]mongo.IndexModel {
 			{Keys: bson.D{{Key: "app_id", Value: 1}, {Key: "status", Value: 1}}},
 			{Keys: bson.D{{Key: "app_id", Value: 1}, {Key: "created_at", Value: 1}}},
 		},
-		colSubscriptions: {
+		colSubscriptions: append([]mongo.IndexModel{
 			{Keys: bson.D{{Key: "tenant_id", Value: 1}, {Key: "app_id", Value: 1}, {Key: "status", Value: 1}}},
 			{Keys: bson.D{{Key: "tenant_id", Value: 1}, {Key: "app_id", Value: 1}, {Key: "created_at", Value: -1}}},
 			{Keys: bson.D{{Key: "plan_id", Value: 1}}},
-		},
+		}, lifecycleSubscriptionIndexes()...),
 		colUsageEvents: {
 			{Keys: bson.D{{Key: "tenant_id", Value: 1}, {Key: "app_id", Value: 1}, {Key: "feature_key", Value: 1}, {Key: "timestamp", Value: -1}}},
 			{Keys: bson.D{{Key: "timestamp", Value: -1}}},
@@ -1425,12 +1425,12 @@ func migrationIndexes() map[string][]mongo.IndexModel {
 			{Keys: bson.D{{Key: "tenant_id", Value: 1}, {Key: "app_id", Value: 1}}},
 			{Keys: bson.D{{Key: "expires_at", Value: 1}}},
 		},
-		colInvoices: {
+		colInvoices: append([]mongo.IndexModel{
 			{Keys: bson.D{{Key: "tenant_id", Value: 1}, {Key: "app_id", Value: 1}, {Key: "created_at", Value: -1}}},
 			{Keys: bson.D{{Key: "app_id", Value: 1}, {Key: "status", Value: 1}}},
 			{Keys: bson.D{{Key: "tenant_id", Value: 1}, {Key: "app_id", Value: 1}, {Key: "period_start", Value: 1}, {Key: "period_end", Value: 1}}},
 			{Keys: bson.D{{Key: "subscription_id", Value: 1}}},
-		},
+		}, lifecycleInvoiceIndexes()...),
 		colCoupons: {
 			{
 				Keys:    bson.D{{Key: "code", Value: 1}, {Key: "app_id", Value: 1}},

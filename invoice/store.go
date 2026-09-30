@@ -25,3 +25,12 @@ type ListOpts struct {
 	Limit  int
 	Offset int
 }
+
+// OverdueOpts selects pending invoices whose due date is before Before,
+// earliest due date first, ties broken by id. An empty AppID means every app.
+type OverdueOpts struct {
+	Before time.Time
+	AppID  string
+	Limit  int
+	Offset int
+}
