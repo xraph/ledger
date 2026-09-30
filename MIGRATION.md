@@ -1,10 +1,10 @@
 # Migrating off the templ dashboard
 
-Ledger's templ dashboard is being retired. The pages under `dashboard/` will be replaced by contract-driven surfaces in the Forge dashboard, and the directory itself gets deleted in a later phase. This file is the record of what those pages did and what changed in the engine underneath them.
+Ledger's templ dashboard is gone. The pages that lived under `dashboard/` now run as contract-driven surfaces in the Forge dashboard, and the directory has been deleted. This file is the record of what those pages did and what changed in the engine underneath them.
 
-This is written for you if you're the one switching the templ dashboard off, or if you run Ledger in production and want to know what the engine does now. If you're doing the migration work itself, the plans live elsewhere. This file is what's left once they're done.
+This is written for you if you used to run the templ dashboard, or if you run Ledger in production and want to know what the engine does now. The migration plans live elsewhere. This file is what's left now that they're done.
 
-The whole templ dashboard is wired in at one place: `Extension.DashboardContributor` in `extension/extension.go`, which builds `dashboard.New(dashboard.NewManifest(...), ...)`. Remove that and the pages are gone.
+The whole templ dashboard was wired in at one place: `Extension.DashboardContributor` in `extension/extension.go`, which built `dashboard.New(dashboard.NewManifest(...), ...)`. That method is deleted, and the extension now registers only its contract contributor.
 
 ## Status per surface
 
@@ -12,7 +12,7 @@ One row per templ page or widget. A surface is migrated when a contract-backed p
 
 Three rows have no React counterpart and say so. The settings panel and the two widgets have nowhere to live in the React shell, and the Settings and Overview pages already show everything they did. The four list pages for plans, features, subscriptions and invoices also carry an "Import from provider" button over the matching `*.importFromProvider` intent. The templ pages never had one, so operators can now import from the provider as well as sync to it.
 
-The templ pages keep working until the `dashboard/` directory is deleted. You can switch them off once the ledger extension's React pages are in your shell.
+The templ pages are gone. If you still mounted them, you need the ledger extension's React pages in your shell, because nothing else serves these routes any more. The table below stays as the record of where each surface went.
 
 | Surface | Route or ID | Status |
 |---|---|---|
@@ -38,9 +38,13 @@ The templ pages keep working until the `dashboard/` directory is deleted. You ca
 | Billing Stats widget | widget ID `ledger-stats` | No React counterpart. The Overview page shows the same counts, and there is no widget. Intent: `overview.stats`. |
 | Recent Invoices widget | widget ID `ledger-recent-invoices` | No React counterpart. The Overview page lists the same invoices, and there is no widget. Intent: `overview.recentInvoices`. |
 
+## The plugin extension point is gone
+
+`DashboardPlugin`, `PluginWidget` and `PluginPage` were the public way for a Ledger plugin to add templ UI to the dashboard. They went with the package, and there is no replacement. If you wrote a plugin that contributed widgets, a settings panel or pages, it no longer shows up anywhere. A plugin that wants dashboard UI now builds a React sub-plugin against the `ledger` contract. Nothing else in the forgery tree implemented the old interfaces, so this only reaches you if you wrote one yourself.
+
 ## The dashboard contract
 
-The `ledger` contributor lives in `extension/contract/`. It declares 51 intents in `manifest.yaml` and binds a typed handler to each. They cover plans, features, subscriptions, invoices, coupons, usage, entitlements, payment methods, the overview and settings. The React plugin in forge-dashboard reads these intents. The templ contributor in `dashboard/` is a separate thing and keeps working until it's deleted.
+The `ledger` contributor lives in `extension/contract/`. It declares 51 intents in `manifest.yaml` and binds a typed handler to each. They cover plans, features, subscriptions, invoices, coupons, usage, entitlements, payment methods, the overview and settings. The React plugin in forge-dashboard reads these intents. The templ contributor that used to sit beside it is gone.
 
 The four `*.importFromProvider` intents reverse Phase B correction 4, which had dropped them, at the owner's request of 2026-09-30.
 
@@ -74,7 +78,7 @@ What comes back over the wire:
 
 ## The templ dashboard, as it was
 
-Everything below was read from the templ sources and from `dashboard/contributor.go`, `dashboard/data.go`, `dashboard/manifest.go`, `dashboard/plugin_iface.go` and `dashboard/pages/stubs.go` at the end of Phase A. There are 30 `.templ` files: 19 under `pages/` (`plan_form_script.templ` is the plan form's inline JavaScript, not a page of its own), 9 under `components/` and 2 under `widgets/`. When the directory is deleted this section is the only description left, so it errs on the side of detail.
+Everything below was read from the templ sources and from `dashboard/contributor.go`, `dashboard/data.go`, `dashboard/manifest.go`, `dashboard/plugin_iface.go` and `dashboard/pages/stubs.go` at the end of Phase A. There were 30 `.templ` files: 19 under `pages/` (`plan_form_script.templ` is the plan form's inline JavaScript, not a page of its own), 9 under `components/` and 2 under `widgets/`. The directory is deleted, so this section is the only description left, and it errs on the side of detail. The sources are still in git history, at commit bd84ac1 and earlier.
 
 ### How it was put together
 
@@ -134,7 +138,7 @@ The dashboard reads tenant-scoped lists with an empty tenant id. `renderSubscrip
 | `SubscriptionDetailContributor` | A section at the bottom of the subscription detail page |
 | `InvoiceDetailContributor` | A section at the bottom of the invoice detail page |
 
-Nothing in this repository implements any of them. They're built on `templ.Component`, so they die with the package, and there's no replacement for them in Phase A.
+Nothing in this repository implemented any of them. They were built on `templ.Component`, so they went with the package, and nothing replaces them. See the note after the status table.
 
 ### Shared components
 
@@ -504,7 +508,7 @@ Running the same suite against all four backends turned up these. All are fixed 
 
 None of these are fixed. Read them before you assume Ledger handles the case for you.
 
-1. An empty tenant id on `ListSubscriptions`, `ListInvoices` or `QueryUsage` matches every tenant's rows for the app, on all four backends. The conformance suite pins this (`EmptyTenantIDBehavior` in `store/storetest/storetest.go`), so it can't change silently. Any caller that fails to resolve a tenant and passes `""` through leaks every tenant's data. If the app id is empty too, the stores skip the app filter as well, and the extension's `Config.AppID` defaults to empty, so a deployment with no app id leaks every row of every app. The templ dashboard relies on it (see above). The dashboard contract layer must refuse an unresolvable tenant, because the stores won't.
+1. An empty tenant id on `ListSubscriptions`, `ListInvoices` or `QueryUsage` matches every tenant's rows for the app, on all four backends. The conformance suite pins this (`EmptyTenantIDBehavior` in `store/storetest/storetest.go`), so it can't change silently. Any caller that fails to resolve a tenant and passes `""` through leaks every tenant's data. If the app id is empty too, the stores skip the app filter as well, and the extension's `Config.AppID` defaults to empty, so a deployment with no app id leaks every row of every app. The templ dashboard relied on it (see above). The dashboard contract layer must refuse an unresolvable tenant, because the stores won't.
 
    The engine now refuses one in two places. `GenerateInvoice` and `CreateSubscription` return an error wrapping `ErrInvalidInput` for a subscription with an empty tenant id, and nothing is stored. Before this, a subscription with no tenant whose feature named a plugin aggregator was billed for every tenant's usage in its app: the aggregator reads events through `QueryUsage`, and the final review billed 10 calls from one tenant plus 20 from another as 30 on a third invoice. The aggregator path also refuses an empty app id, since `QueryUsage` drops the app filter the same way. Nothing else does. `store.Aggregate` matches the app id exactly, and a deployment that never set an app id still invoices its base fee. The stores haven't changed, so everything above still holds for any other caller.
 2. Sub-cent unit prices can't be represented. `types.Money` holds integer minor units. A plan that needs a fraction of a cent per unit needs a scaled money type, which touches every price in the system and wants its own spec.
@@ -512,7 +516,7 @@ None of these are fixed. Read them before you assume Ledger handles the case for
 4. An applied coupon applies to every invoice for that subscription, indefinitely. There's no once or repeating duration. There's also no API to detach an applied coupon, so a coupon that later becomes invalid (after the plan's currency changes, for example) blocks that subscription's billing until the coupon is edited or deleted, and that edit or delete hits every subscriber who has it.
 5. `GenerateInvoice` refuses a second invoice for a subscription's period unless every earlier one for that subscription and exact period is voided (see the contract phase above). It doesn't make the call idempotent: the second call is an error, and it returns no invoice.
 6. Fixed in the contract phase. `UpdateCoupon` no longer writes `times_redeemed` on any backend, so an edit that races a redemption can't roll the count back and let the cap be exceeded.
-7. The mongo store doesn't persist `plan.Feature.CatalogID`. Its `featureModel` in `store/mongo/models.go` has no field for it, so on mongo the link from a plan feature to its catalog feature is lost on write. Memory, sqlite and postgres keep it: memory holds the struct as it is, and sqlite and postgres store plan features as a JSON column where the `catalog_id` tag round-trips. The templ plan edit form drops it on every backend (see the plan form above).
+7. The mongo store doesn't persist `plan.Feature.CatalogID`. Its `featureModel` in `store/mongo/models.go` has no field for it, so on mongo the link from a plan feature to its catalog feature is lost on write. Memory, sqlite and postgres keep it: memory holds the struct as it is, and sqlite and postgres store plan features as a JSON column where the `catalog_id` tag round-trips. The templ plan edit form dropped it on every backend (see the plan form above).
 8. `provider.Provider.HandleWebhook(ctx, payload)` takes no signature parameter, and `Ledger.HandleWebhook` passes the payload to the named provider without verifying anything. Nothing in Ledger signs or hashes today, so there's no bug to fix yet, and the cost lands on whoever writes the first real payment provider. Interfaces shaped like this tend to stay that way: the first implementer verifies inside its own `HandleWebhook` instead of changing a method every other provider already implements, and the second one forgets to.
 9. Sqlite needs a busy timeout in its DSN, or concurrent coupon redemptions return a raw `database is locked` error instead of `ErrCouponExhausted`. The documented DSN in `docs/content/docs/stores/sqlite.mdx` now carries `?_pragma=busy_timeout(5000)`. If you copied the old one, add it.
 10. Mongo coupon redemption is compensating, not transactional, because Ledger doesn't assume a replica set. Between the application insert and a compensating delete, a concurrent invoice can see the application. A crash inside that window leaves it there. The increment can also land on the server and still come back as a failure (a connection dropped after the write, say). The application row is then deleted as compensation, and the coupon's count ends one higher than its application rows.
