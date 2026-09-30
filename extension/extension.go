@@ -14,7 +14,6 @@ import (
 	"fmt"
 
 	"github.com/xraph/forge"
-	dashboard "github.com/xraph/forge/extensions/dashboard"
 	"github.com/xraph/forge/extensions/dashboard/contract"
 	"github.com/xraph/forge/extensions/dashboard/contract/dispatcher"
 	"github.com/xraph/grove"
@@ -39,12 +38,11 @@ const ExtensionDescription = "Composable usage-based billing engine"
 // ExtensionVersion is the semantic version.
 const ExtensionVersion = "0.1.0"
 
-// Ensure Extension implements forge.Extension and
-// dashboard.ContractContributorAware at compile time.
-var (
-	_ forge.Extension                    = (*Extension)(nil)
-	_ dashboard.ContractContributorAware = (*Extension)(nil)
-)
+// Ensure Extension implements forge.Extension at compile time. The check
+// against dashboard.ContractContributorAware lives in a test file: the
+// dashboard finds contributors by type assertion at runtime, and importing
+// its root package here would pull forge's own templ UI into every build.
+var _ forge.Extension = (*Extension)(nil)
 
 // Extension adapts Ledger as a Forge extension.
 type Extension struct {
