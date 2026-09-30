@@ -11,14 +11,15 @@ import (
 	ledgerstore "github.com/xraph/ledger/store"
 )
 
-// testAggregateOpensPeriodsInUTC pins that a usage window opens at midnight
-// UTC, whatever zone the server runs in. It moves time.Local to UTC+14 for the
-// two Aggregate calls only. A start built in the local zone opened the month
-// fourteen hours early, or late in a UTC month in the next month altogether,
-// so either the event a second before the UTC start was counted or the one on
-// it was not. Moving time.Local is safe because Run never runs its subtests in
-// parallel. If the UTC month turns between the fixture and the calls
-// (midnight on the 1st), run it again.
+// testAggregateOpensPeriodsInUTC pins, end to end through each store, that a
+// usage window opens at midnight UTC: an event a second before the UTC month
+// or year start belongs to the period before, and one on it is counted. The
+// arithmetic itself is pinned without a database by each store's unit test of
+// getStartOfPeriod, which feeds it explicit UTC+14 times. This subtest does
+// not move time.Local to reproduce a server zone: that write races every
+// goroutine reading the clock, the mongo driver's monitors among them, and
+// fails the suite under -race. If the UTC month turns between the fixture and
+// the calls (midnight on the 1st), run it again.
 func testAggregateOpensPeriodsInUTC(t *testing.T, s ledgerstore.Store) {
 	ctx := context.Background()
 	appID := "app-" + uniqueSuffix()
@@ -42,12 +43,8 @@ func testAggregateOpensPeriodsInUTC(t *testing.T, s ledgerstore.Store) {
 		t.Fatalf("IngestBatch: %v", err)
 	}
 
-	saved := time.Local
-	t.Cleanup(func() { time.Local = saved })
-	time.Local = time.FixedZone("UTC+14", 14*60*60)
 	gotMonth, errMonth := s.Aggregate(ctx, tenantID, appID, monthly, plan.PeriodMonthly)
 	gotYear, errYear := s.Aggregate(ctx, tenantID, appID, yearly, plan.PeriodYearly)
-	time.Local = saved
 
 	if errMonth != nil || errYear != nil {
 		t.Fatalf("Aggregate: monthly %v, yearly %v", errMonth, errYear)
