@@ -15,6 +15,10 @@ func notFound(what string) error {
 	return &dash.Error{Code: dash.CodeNotFound, Message: what + " not found"}
 }
 
+func permissionDenied(format string, args ...any) error {
+	return &dash.Error{Code: dash.CodePermissionDenied, Message: fmt.Sprintf(format, args...)}
+}
+
 func badRequest(format string, args ...any) error {
 	return &dash.Error{Code: dash.CodeBadRequest, Message: fmt.Sprintf(format, args...)}
 }

@@ -666,3 +666,122 @@ func TestImportedInvoiceRulesAcrossAppsAndTenants(t *testing.T) {
 		t.Errorf("a padded tenant: %+v, %v; want it trimmed to acme", inv, err)
 	}
 }
+
+func TestImportedInvoiceRefusesALineItemOfAnUnknownType(t *testing.T) {
+	ctx := context.Background()
+	src := &importSource{}
+	l, st := newImportLedger(src)
+	p := activePlanIn(t, l, "pro", "app_1")
+	sub := &subscription.Subscription{TenantID: "acme", PlanID: p.ID, AppID: "app_1"}
+	if err := l.CreateSubscription(ctx, sub); err != nil {
+		t.Fatalf("CreateSubscription: %v", err)
+	}
+
+	// The second line is the odd one out, so the message also pins the
+	// one-based position. Its amount makes the charges add up, which means
+	// nothing but the type check can refuse it.
+	src.invoices = map[string]func() *invoice.Invoice{}
+	for _, typ := range []invoice.LineItemType{"", "subscription", "invoiceitem", "Base"} {
+		pid := "in_" + string(typ)
+		src.invoices[pid] = func() *invoice.Invoice {
+			inv := importedBill("acme", sub.ID)
+			inv.LineItems[0].Amount, inv.LineItems[0].UnitAmount = types.USD(4000), types.USD(4000)
+			inv.LineItems = append(inv.LineItems, invoice.LineItem{Description: "Other", Quantity: 1, UnitAmount: types.USD(900), Amount: types.USD(900), Type: typ})
+			return inv
+		}
+		_, err := l.ImportInvoiceFromProvider(ctx, "", pid, ledger.ImportInto("app_1"))
+		want := fmt.Sprintf("ledger: invalid input: the provider's invoice has line item 2 of unknown type %q", typ)
+		if !errors.Is(err, ledger.ErrInvalidInput) || err.Error() != want {
+			t.Errorf("type %q: got %v, want %q", typ, err, want)
+		}
+	}
+	if rows, _ := st.ListInvoices(ctx, "acme", "app_1", invoice.ListOpts{}); len(rows) != 0 {
+		t.Errorf("%d invoices stored after refused imports, want 0", len(rows))
+	}
+
+	// All six types the engine writes still import.
+	src.invoices["in_all"] = func() *invoice.Invoice {
+		inv := importedBill("acme", sub.ID)
+		line := func(typ invoice.LineItemType, cents int64) invoice.LineItem {
+			return invoice.LineItem{Description: string(typ), Quantity: 1, UnitAmount: types.USD(cents), Amount: types.USD(cents), Type: typ}
+		}
+		inv.LineItems = []invoice.LineItem{
+			line(invoice.LineItemBase, 2000), line(invoice.LineItemUsage, 1000), line(invoice.LineItemOverage, 900),
+			line(invoice.LineItemSeat, 1000), line(invoice.LineItemDiscount, -500), line(invoice.LineItemTax, 300),
+		}
+		inv.DiscountAmount, inv.TaxAmount, inv.Total = types.USD(500), types.USD(300), types.USD(4700)
+		return inv
+	}
+	if _, err := l.ImportInvoiceFromProvider(ctx, "", "in_all", ledger.ImportInto("app_1")); err != nil {
+		t.Errorf("an invoice using all six line item types: %v", err)
+	}
+}
+
+func TestImportedSubscriptionPeriodIsValidated(t *testing.T) {
+	ctx := context.Background()
+	src := &importSource{}
+	l, st := newImportLedger(src)
+	p := activePlanIn(t, l, "pro", "app_1")
+	start := time.Date(2026, 10, 1, 0, 0, 0, 0, time.UTC)
+	withPeriod := func(from, to time.Time) func() *subscription.Subscription {
+		return func() *subscription.Subscription {
+			return &subscription.Subscription{
+				TenantID: "acme", PlanID: p.ID, Status: subscription.StatusActive,
+				CurrentPeriodStart: from, CurrentPeriodEnd: to,
+			}
+		}
+	}
+	src.subs = map[string]func() *subscription.Subscription{
+		"sub_no_end":   withPeriod(start, time.Time{}),
+		"sub_no_start": withPeriod(time.Time{}, start.AddDate(0, 1, 0)),
+		"sub_backward": withPeriod(start, start.Add(-time.Hour)),
+		"sub_empty":    withPeriod(start, start),
+		"sub_ok":       withPeriod(start, start.AddDate(0, 1, 0)),
+	}
+
+	for pid, want := range map[string]string{
+		"sub_no_end":   `ledger: invalid input: the provider's subscription "sub_no_end" needs both a period start and a period end`,
+		"sub_no_start": `ledger: invalid input: the provider's subscription "sub_no_start" needs both a period start and a period end`,
+		"sub_backward": `ledger: invalid input: the provider's subscription "sub_backward" ends its period before it starts`,
+		"sub_empty":    `ledger: invalid input: the provider's subscription "sub_empty" ends its period before it starts`,
+	} {
+		_, err := l.ImportSubscriptionFromProvider(ctx, "", pid, ledger.ImportInto("app_1"))
+		if !errors.Is(err, ledger.ErrInvalidInput) || err.Error() != want {
+			t.Errorf("%s: got %v, want %q", pid, err, want)
+		}
+	}
+	if rows, _ := st.ListSubscriptions(ctx, "acme", "app_1", subscription.ListOpts{}); len(rows) != 0 {
+		t.Errorf("%d subscriptions stored after refused imports, want 0", len(rows))
+	}
+
+	ok, err := l.ImportSubscriptionFromProvider(ctx, "", "sub_ok", ledger.ImportInto("app_1"))
+	if err != nil || !ok.CurrentPeriodStart.Equal(start) || !ok.CurrentPeriodEnd.Equal(start.AddDate(0, 1, 0)) {
+		t.Errorf("a whole period: %+v, %v; want it kept as sent", ok, err)
+	}
+	// A provider that sends no period at all still gets the engine's default.
+	src.subs["sub_none"] = withPeriod(time.Time{}, time.Time{})
+	none, err := l.ImportSubscriptionFromProvider(ctx, "", "sub_none", ledger.ImportInto("app_1"))
+	if err != nil || none.CurrentPeriodStart.IsZero() || !none.CurrentPeriodEnd.After(none.CurrentPeriodStart) {
+		t.Errorf("no period sent: %+v, %v; want the engine's default period", none, err)
+	}
+}
+
+func TestImportedDraftFeatureIsRefusedInPlainWords(t *testing.T) {
+	ctx := context.Background()
+	src := &importSource{features: map[string]func() *feature.Feature{
+		"mtr_draft": func() *feature.Feature {
+			return &feature.Feature{Key: "d", Name: "D", Type: feature.FeatureBoolean, Status: feature.StatusDraft}
+		},
+		"mtr_odd": func() *feature.Feature {
+			return &feature.Feature{Key: "o", Name: "O", Type: feature.FeatureBoolean, Status: "retired"}
+		},
+	}}
+	l, _ := newImportLedger(src)
+	for pid, status := range map[string]string{"mtr_draft": "draft", "mtr_odd": "retired"} {
+		_, err := l.ImportFeatureFromProvider(ctx, "", pid, ledger.ImportInto("app_1"))
+		want := fmt.Sprintf("ledger: invalid input: a feature imports as active or archived, not %q", status)
+		if !errors.Is(err, ledger.ErrInvalidInput) || err.Error() != want {
+			t.Errorf("%s: got %v, want %q", pid, err, want)
+		}
+	}
+}

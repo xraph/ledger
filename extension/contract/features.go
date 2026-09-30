@@ -60,7 +60,10 @@ func featuresList(ctx context.Context, eng *ledger.Ledger, sc scope, in Features
 
 // loadFeature loads a feature this scope may read, or write when write is true.
 // A global feature (empty app id) is readable from every app but writable only
-// from an empty scope, so an app that tries to change one is told NOT_FOUND.
+// from an empty scope. An app that tries to change one is told
+// PERMISSION_DENIED, since the same caller can read the feature and its
+// existence is no secret. A feature that belongs to another app stays
+// NOT_FOUND.
 func loadFeature(ctx context.Context, eng *ledger.Ledger, sc scope, raw string, write bool) (*feature.Feature, error) {
 	featureID, err := parseID("id", raw, id.ParseFeatureID)
 	if err != nil {
@@ -73,6 +76,9 @@ func loadFeature(ctx context.Context, eng *ledger.Ledger, sc scope, raw string, 
 	allowed := sc.canRead(f.AppID)
 	if write {
 		allowed = sc.owns(f.AppID)
+		if !allowed && f.AppID == "" {
+			return nil, permissionDenied("shared features can be changed only with no app selected")
+		}
 	}
 	if !allowed {
 		return nil, notFound("feature")

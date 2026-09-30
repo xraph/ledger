@@ -85,17 +85,72 @@ func TestGlobalFeaturesAreReadableButNotWritableFromAnApp(t *testing.T) {
 	}
 
 	name := "Renamed"
-	if _, err := call(h, "app_a", featuresUpdate, FeatureUpdateInput{ID: global.ID.String(), Name: &name}); codeOf(err) != dash.CodeNotFound {
-		t.Errorf("an app writing a global feature: got %v, want NOT_FOUND", err)
-	}
-	if _, err := call(h, "app_a", featuresDelete, IDInput{ID: global.ID.String()}); codeOf(err) != dash.CodeNotFound {
-		t.Errorf("an app deleting a global feature: got %v, want NOT_FOUND", err)
-	}
-	if _, err := call(h, "app_a", featuresArchive, IDInput{ID: global.ID.String()}); codeOf(err) != dash.CodeNotFound {
-		t.Errorf("an app archiving a global feature: got %v, want NOT_FOUND", err)
+	ref := IDInput{ID: global.ID.String()}
+	for label, err := range map[string]error{
+		"update":  second(call(h, "app_a", featuresUpdate, FeatureUpdateInput{ID: global.ID.String(), Name: &name})),
+		"delete":  second(call(h, "app_a", featuresDelete, ref)),
+		"archive": second(call(h, "app_a", featuresArchive, ref)),
+		"sync":    second(call(h, "app_a", featuresSync, ref)),
+	} {
+		assertSharedWriteDenied(t, label, err)
 	}
 	if stored, _ := h.eng.GetFeature(ctxBackground(), global.ID); stored == nil || stored.Name != "sso" || stored.Status != feature.StatusActive {
 		t.Errorf("a refused write changed the global feature: %+v", stored)
+	}
+}
+
+// second drops a call's result, so a table can hold the errors of calls that
+// return different types.
+func second[T any](_ T, err error) error { return err }
+
+func assertSharedWriteDenied(t *testing.T, label string, err error) {
+	t.Helper()
+	var ce *dash.Error
+	if !errors.As(err, &ce) || ce.Code != dash.CodePermissionDenied || ce.Message != "shared features can be changed only with no app selected" {
+		t.Errorf("an app's %s of a shared feature: got %v, want PERMISSION_DENIED with the shared-feature message", label, err)
+	}
+}
+
+func TestAnotherAppsFeatureStaysNotFoundForEveryWrite(t *testing.T) {
+	h := newHarness(t)
+	h.withFeatureProvider(&featureProvider{syncID: "feat_x"})
+	foreign := mustCall(h, "app_b", featuresCreate, newFeatureInput("theirs"))
+	name := "Renamed"
+	in := IDInput{ID: foreign.ID.String()}
+	for label, err := range map[string]error{
+		"update":  second(call(h, "app_a", featuresUpdate, FeatureUpdateInput{ID: foreign.ID.String(), Name: &name})),
+		"delete":  second(call(h, "app_a", featuresDelete, in)),
+		"archive": second(call(h, "app_a", featuresArchive, in)),
+		"sync":    second(call(h, "app_a", featuresSync, in)),
+	} {
+		var ce *dash.Error
+		if !errors.As(err, &ce) || ce.Code != dash.CodeNotFound || ce.Message != "feature not found" {
+			t.Errorf("an app's %s of another app's feature: got %v, want NOT_FOUND feature not found", label, err)
+		}
+	}
+	if stored, _ := h.eng.GetFeature(ctxBackground(), foreign.ID); stored == nil || stored.Name != "theirs" || stored.Status != feature.StatusActive || stored.ProviderID != "" {
+		t.Errorf("a refused write changed the other app's feature: %+v", stored)
+	}
+}
+
+func TestAnAppWritesItsOwnFeatureAndEveryWriteWorks(t *testing.T) {
+	h := newHarness(t)
+	h.withFeatureProvider(&featureProvider{syncID: "feat_own"})
+	own := mustCall(h, "app_a", featuresCreate, newFeatureInput("mine"))
+	name := "Renamed"
+	if got := mustCall(h, "app_a", featuresUpdate, FeatureUpdateInput{ID: own.ID.String(), Name: &name}); got.Name != "Renamed" {
+		t.Errorf("update: got %+v", got)
+	}
+	if got := mustCall(h, "app_a", featuresSync, IDInput{ID: own.ID.String()}); !got.Success || got.ProviderID != "feat_own" {
+		t.Errorf("sync: got %+v", got)
+	}
+	mustCall(h, "app_a", featuresArchive, IDInput{ID: own.ID.String()})
+	if stored, _ := h.eng.GetFeature(ctxBackground(), own.ID); stored == nil || stored.Status != feature.StatusArchived {
+		t.Errorf("archive: got %+v", stored)
+	}
+	mustCall(h, "app_a", featuresDelete, IDInput{ID: own.ID.String()})
+	if _, err := call(h, "app_a", featuresDetail, IDInput{ID: own.ID.String()}); codeOf(err) != dash.CodeNotFound {
+		t.Errorf("delete: detail after delete got %v, want NOT_FOUND", err)
 	}
 }
 

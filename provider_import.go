@@ -153,7 +153,7 @@ func (l *Ledger) ImportFeatureFromProvider(ctx context.Context, providerName, pr
 		f.Status = feature.StatusActive
 	}
 	if f.Status != feature.StatusActive && f.Status != feature.StatusArchived {
-		return nil, fmt.Errorf("%w: unknown feature status %q", ErrInvalidInput, f.Status)
+		return nil, fmt.Errorf("%w: a feature imports as active or archived, not %q", ErrInvalidInput, f.Status)
 	}
 
 	f.ID = id.NewFeatureID()
@@ -204,6 +204,10 @@ func (l *Ledger) ImportSubscriptionFromProvider(ctx context.Context, providerNam
 	s.TenantID = strings.TrimSpace(s.TenantID)
 	if s.TenantID == "" {
 		return nil, fmt.Errorf("%w: the provider's subscription %q has no tenant id", ErrInvalidInput, providerID)
+	}
+	err = validateImportedSubscriptionPeriod(s, providerID)
+	if err != nil {
+		return nil, err
 	}
 	err = l.importedPlanInApp(ctx, s.PlanID, app)
 	if err != nil {
@@ -406,16 +410,36 @@ func importableInvoiceStatus(s invoice.Status) bool {
 	return false
 }
 
+// validateImportedSubscriptionPeriod refuses a provider subscription whose
+// billing period is half filled or runs backwards. A subscription that sends no
+// period at all is fine: CreateSubscription opens one at the moment of import.
+// A start without an end would otherwise be stored with a zero end date, and
+// the next GenerateInvoice would cut a nonsensical period from it.
+func validateImportedSubscriptionPeriod(s *subscription.Subscription, providerID string) error {
+	if s.CurrentPeriodStart.IsZero() && s.CurrentPeriodEnd.IsZero() {
+		return nil
+	}
+	if s.CurrentPeriodStart.IsZero() || s.CurrentPeriodEnd.IsZero() {
+		return fmt.Errorf("%w: the provider's subscription %q needs both a period start and a period end", ErrInvalidInput, providerID)
+	}
+	if !s.CurrentPeriodEnd.After(s.CurrentPeriodStart) {
+		return fmt.Errorf("%w: the provider's subscription %q ends its period before it starts", ErrInvalidInput, providerID)
+	}
+	return nil
+}
+
 // validateImportedInvoice refuses a provider invoice the engine would never
 // have written, so a bad figure cannot reach the books through an import. It
 // follows GenerateInvoice's own arithmetic rather than the plain reading of
 // "line items sum to the subtotal": the engine's line items include discount
 // lines (negative) and tax lines (positive) beside the charges, so the charge
-// lines (everything else) sum to Subtotal, any discount lines sum to minus
-// DiscountAmount, any tax lines sum to TaxAmount, and Total is the net amount
-// clamped at zero, plus tax. A provider that sends no discount or tax lines
+// lines (base, usage, overage and seat) sum to Subtotal, any discount lines
+// sum to minus DiscountAmount, any tax lines sum to TaxAmount, and Total is the
+// net amount clamped at zero, plus tax. A provider that sends no discount or tax lines
 // and only a figure for them is still accepted, since those lines are
-// optional there.
+// optional there. A line of any other type is refused: the dashboard groups
+// lines by these six types, so a line outside them would count toward the
+// subtotal and appear on no page.
 func validateImportedInvoice(inv *invoice.Invoice, p *plan.Plan) error {
 	bad := func(format string, args ...any) error {
 		return fmt.Errorf("%w: the provider's invoice %s", ErrInvalidInput, fmt.Sprintf(format, args...))
@@ -444,10 +468,13 @@ func validateImportedInvoice(inv *invoice.Invoice, p *plan.Plan) error {
 		}
 		sum := &charges
 		switch li.Type {
+		case invoice.LineItemBase, invoice.LineItemUsage, invoice.LineItemOverage, invoice.LineItemSeat:
 		case invoice.LineItemDiscount:
 			sum, hasDiscount = &discounts, true
 		case invoice.LineItemTax:
 			sum, hasTax = &taxes, true
+		default:
+			return bad("has line item %d of unknown type %q", i+1, li.Type)
 		}
 		next, err := sum.CheckedAdd(li.Amount)
 		if err != nil {
