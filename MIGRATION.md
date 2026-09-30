@@ -37,6 +37,8 @@ One row per templ page or widget. A surface is migrated when a contract-backed p
 
 The `ledger` contributor lives in `extension/contract/`. It declares 51 intents in `manifest.yaml` and binds a typed handler to each. They cover plans, features, subscriptions, invoices, coupons, usage, entitlements, payment methods, the overview and settings. The React plugin in forge-dashboard reads these intents. The templ contributor in `dashboard/` is a separate thing and keeps working until it's deleted.
 
+The four `*.importFromProvider` intents reverse Phase B correction 4, which had dropped them, at the owner's request of 2026-09-30.
+
 `extension/contract/completeness_test.go` fails if the manifest and the registrations disagree, so the number 51 is checked on every test run and not just written here.
 
 How a request is scoped, since this is the part you'll trip over in a real deployment:

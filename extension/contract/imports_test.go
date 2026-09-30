@@ -137,7 +137,7 @@ func TestPlansImportFromProvider(t *testing.T) {
 	t.Run("the plan lands in the caller's app, in the detail shape", func(t *testing.T) {
 		h := newHarness(t)
 		h.withImports(src())
-		got := mustCall(h, "app_a", plansImport, ImportInput{ProviderName: "fake", ProviderID: " prod_growth "})
+		got := mustCall(h, "app_a", plansImport, ImportInput{ProviderName: " fake ", ProviderID: " prod_growth "})
 		if got.AppID != "app_a" || got.ProviderID != "prod_growth" || got.ProviderName != "fake" || got.Slug != "growth" {
 			t.Errorf("imported %+v", got)
 		}
@@ -155,8 +155,9 @@ func TestPlansImportFromProvider(t *testing.T) {
 		h := newHarness(t)
 		h.withImports(src())
 		mustCall(h, "app_a", plansImport, ImportInput{ProviderID: "prod_growth"})
-		if _, err := call(h, "app_a", plansImport, ImportInput{ProviderID: "prod_growth"}); codeOf(err) != dash.CodeConflict {
-			t.Errorf("got %v, want CONFLICT", err)
+		_, err := call(h, "app_a", plansImport, ImportInput{ProviderID: "prod_growth"})
+		if codeOf(err) != dash.CodeConflict || !strings.Contains(messageOf(err), `"growth"`) {
+			t.Errorf("got %v, want CONFLICT naming the slug", err)
 		}
 	})
 
@@ -199,8 +200,29 @@ func TestFeaturesImportFromProvider(t *testing.T) {
 			t.Errorf("imported %+v", got)
 		}
 		mustCallPlatform(h, "app_a", featuresDetail, IDInput{ID: got.ID.String()})
-		if _, err := callPlatform(h, "app_a", featuresImport, ImportInput{ProviderID: "mtr_exports"}); codeOf(err) != dash.CodeConflict {
-			t.Errorf("a key the app uses: got %v, want CONFLICT", err)
+		_, err := callPlatform(h, "app_a", featuresImport, ImportInput{ProviderID: "mtr_exports"})
+		if codeOf(err) != dash.CodeConflict || !strings.Contains(messageOf(err), got.ID.String()) {
+			t.Errorf("a key the app uses: got %v, want CONFLICT naming %s", err, got.ID)
+		}
+	})
+
+	t.Run("a feature the provider files under another app is not found, and nothing is stored", func(t *testing.T) {
+		h := newHarness(t)
+		h.withImports(&importingProvider{features: map[string]func() *feature.Feature{
+			"mtr_theirs": func() *feature.Feature {
+				return &feature.Feature{Key: "theirs", Name: "Theirs", Type: feature.FeatureMetered, AppID: "app_b"}
+			},
+		}})
+		if _, err := callPlatform(h, "app_a", featuresImport, ImportInput{ProviderID: "mtr_theirs"}); codeOf(err) != dash.CodeNotFound {
+			t.Errorf("got %v, want NOT_FOUND", err)
+		}
+		for _, app := range []string{"app_a", "app_b"} {
+			if l := mustCallPlatform(h, app, featuresList, FeaturesListInput{}); len(l.Items) != 0 {
+				t.Errorf("%s lists %d features after a refused import, want 0", app, len(l.Items))
+			}
+		}
+		if l := mustCallPlatform(h, "app_a", featuresList, FeaturesListInput{Global: true}); len(l.Items) != 0 {
+			t.Errorf("the shared catalog lists %d features after a refused import, want 0", len(l.Items))
 		}
 	})
 
@@ -224,7 +246,8 @@ func TestFeaturesImportFromProvider(t *testing.T) {
 func TestSubscriptionsImportFromProvider(t *testing.T) {
 	h := newHarness(t)
 	ours := h.activePlan("app_a", "pro")
-	theirs := h.activePlan("app_b", "other")
+	theirs := h.activePlan("app_b", "rival-secret")
+	missing := id.NewPlanID()
 	start := time.Date(2026, 9, 1, 0, 0, 0, 0, time.UTC)
 	onPlan := func(planID id.PlanID) func() *subscription.Subscription {
 		return func() *subscription.Subscription {
@@ -237,6 +260,7 @@ func TestSubscriptionsImportFromProvider(t *testing.T) {
 	h.withImports(&importingProvider{subs: map[string]func() *subscription.Subscription{
 		"sub_1acme":    onPlan(ours.ID),
 		"sub_1foreign": onPlan(theirs.ID),
+		"sub_1missing": onPlan(missing),
 	}})
 
 	got := mustCall(h, "app_a", subscriptionsImport, ImportInput{ProviderID: "sub_1acme"})
@@ -251,15 +275,27 @@ func TestSubscriptionsImportFromProvider(t *testing.T) {
 		t.Errorf("applied_coupons must be [] on the wire: %s", wireJSON(t, got))
 	}
 
-	if _, err := call(h, "app_a", subscriptionsImport, ImportInput{ProviderID: "sub_1acme"}); codeOf(err) != dash.CodeConflict {
-		t.Errorf("second import: got %v, want CONFLICT", err)
+	_, err := call(h, "app_a", subscriptionsImport, ImportInput{ProviderID: "sub_1acme"})
+	if codeOf(err) != dash.CodeConflict || !strings.Contains(messageOf(err), got.Subscription.ID.String()) {
+		t.Errorf("second import: got %v, want CONFLICT naming %s", err, got.Subscription.ID)
 	}
-	_, err := call(h, "app_a", subscriptionsImport, ImportInput{ProviderID: "sub_1foreign"})
-	if codeOf(err) != dash.CodeBadRequest || strings.Contains(messageOf(err), "app_b") {
-		t.Errorf("another app's plan: got %v, want BAD_REQUEST that names no other app", err)
+
+	_, foreignErr := call(h, "app_a", subscriptionsImport, ImportInput{ProviderID: "sub_1foreign"})
+	_, missingErr := call(h, "app_a", subscriptionsImport, ImportInput{ProviderID: "sub_1missing"})
+	if codeOf(foreignErr) != dash.CodeBadRequest || codeOf(missingErr) != dash.CodeBadRequest {
+		t.Fatalf("foreign plan: %v; missing plan: %v; want BAD_REQUEST for both", foreignErr, missingErr)
+	}
+	if want := strings.ReplaceAll(messageOf(foreignErr), theirs.ID.String(), missing.String()); messageOf(missingErr) != want {
+		t.Errorf("a missing plan reads %q, a foreign plan reads %q; want the same words around the plan id", messageOf(missingErr), messageOf(foreignErr))
+	}
+	if strings.Contains(messageOf(foreignErr), theirs.Slug) {
+		t.Errorf("the refusal %q names the other app's plan slug %q", messageOf(foreignErr), theirs.Slug)
 	}
 	if l := mustCall(h, "app_a", subscriptionsList, SubscriptionsListInput{}); len(l.Items) != 1 {
 		t.Errorf("app_a lists %d subscriptions, want 1", len(l.Items))
+	}
+	if l := mustCall(h, "app_b", subscriptionsList, SubscriptionsListInput{}); len(l.Items) != 0 {
+		t.Errorf("app_b lists %d subscriptions after refused imports, want 0", len(l.Items))
 	}
 }
 
@@ -295,13 +331,140 @@ func TestInvoicesImportFromProvider(t *testing.T) {
 		t.Errorf("line items %+v; want an id and this invoice's id", li)
 	}
 
-	if _, err := call(h, "app_a", invoicesImport, ImportInput{ProviderID: "in_1"}); codeOf(err) != dash.CodeConflict {
-		t.Errorf("second import: got %v, want CONFLICT", err)
-	}
-	if _, err := call(h, "app_a", invoicesImport, ImportInput{ProviderID: "in_2"}); codeOf(err) != dash.CodeConflict {
-		t.Errorf("a second live invoice for the period: got %v, want CONFLICT", err)
+	for _, pid := range []string{"in_1", "in_2"} {
+		_, err := call(h, "app_a", invoicesImport, ImportInput{ProviderID: pid})
+		if codeOf(err) != dash.CodeConflict || !strings.Contains(messageOf(err), got.Invoice.ID.String()) {
+			t.Errorf("%s again or for the same period: got %v, want CONFLICT naming %s", pid, err, got.Invoice.ID)
+		}
 	}
 	if _, err := call(h, "app_a", invoicesImport, ImportInput{ProviderID: "in_foreign"}); codeOf(err) != dash.CodeBadRequest {
 		t.Errorf("another app's subscription: got %v, want BAD_REQUEST", err)
+	}
+	if l := mustCall(h, "app_a", invoicesList, InvoicesListInput{}); len(l.Items) != 1 {
+		t.Errorf("app_a lists %d invoices, want 1", len(l.Items))
+	}
+	if l := mustCall(h, "app_b", invoicesList, InvoicesListInput{}); len(l.Items) != 0 {
+		t.Errorf("app_b lists %d invoices after a refused import, want 0", len(l.Items))
+	}
+}
+
+// importCase is one intent, called the same way for every entity so the
+// refusals and scopes every import shares are pinned in one table.
+type importCase struct {
+	name string
+	// provider builds a provider holding one good record, "good", and the
+	// app_a rows that record needs.
+	provider func(h *harness) *importingProvider
+	// run calls the intent and returns only its error.
+	run func(h *harness, app string, in ImportInput) error
+	// noun is what the provider's refusal of an unknown id names.
+	noun string
+	// emptyScope is what the empty scope does with the intent.
+	emptyScope func(t *testing.T, h *harness)
+}
+
+func importCases() []importCase {
+	start := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+	paidAt := start.AddDate(0, 0, 3)
+	refuseEmpty := func(run func(h *harness, app string, in ImportInput) error) func(*testing.T, *harness) {
+		return func(t *testing.T, h *harness) {
+			t.Helper()
+			if err := run(h, "", ImportInput{ProviderID: "good"}); codeOf(err) != dash.CodePermissionDenied {
+				t.Errorf("empty scope: got %v, want PERMISSION_DENIED", err)
+			}
+		}
+	}
+	runPlans := func(h *harness, app string, in ImportInput) error {
+		_, err := call(h, app, plansImport, in)
+		return err
+	}
+	runFeatures := func(h *harness, app string, in ImportInput) error {
+		_, err := callPlatform(h, app, featuresImport, in)
+		return err
+	}
+	runSubs := func(h *harness, app string, in ImportInput) error {
+		_, err := call(h, app, subscriptionsImport, in)
+		return err
+	}
+	runInvoices := func(h *harness, app string, in ImportInput) error {
+		_, err := call(h, app, invoicesImport, in)
+		return err
+	}
+	return []importCase{
+		{
+			name: "plans", noun: "plan", run: runPlans, emptyScope: refuseEmpty(runPlans),
+			provider: func(*harness) *importingProvider {
+				return &importingProvider{plans: map[string]func() *plan.Plan{"good": providerPlan("growth", "")}}
+			},
+		},
+		{
+			name: "features", noun: "feature", run: runFeatures,
+			provider: func(*harness) *importingProvider {
+				return &importingProvider{features: map[string]func() *feature.Feature{"good": func() *feature.Feature {
+					return &feature.Feature{Key: "exports", Name: "Exports", Type: feature.FeatureMetered}
+				}}}
+			},
+			emptyScope: func(t *testing.T, h *harness) {
+				t.Helper()
+				got, err := callPlatform(h, "", featuresImport, ImportInput{ProviderID: "good"})
+				if err != nil || got.AppID != "" {
+					t.Fatalf("empty scope: got %+v, %v; want the feature in the shared catalog", got, err)
+				}
+				if l := mustCallPlatform(h, "", featuresList, FeaturesListInput{Global: true}); len(l.Items) != 1 {
+					t.Errorf("the shared catalog lists %d features, want 1", len(l.Items))
+				}
+			},
+		},
+		{
+			name: "subscriptions", noun: "subscription", run: runSubs, emptyScope: refuseEmpty(runSubs),
+			provider: func(h *harness) *importingProvider {
+				pro := h.activePlan("app_a", "pro")
+				return &importingProvider{subs: map[string]func() *subscription.Subscription{"good": func() *subscription.Subscription {
+					return &subscription.Subscription{
+						TenantID: "acme", PlanID: pro.ID, Status: subscription.StatusActive,
+						CurrentPeriodStart: start, CurrentPeriodEnd: start.AddDate(0, 1, 0),
+					}
+				}}}
+			},
+		},
+		{
+			name: "invoices", noun: "invoice", run: runInvoices, emptyScope: refuseEmpty(runInvoices),
+			provider: func(h *harness) *importingProvider {
+				sub := h.subscribe("app_a", "acme", h.activePlan("app_a", "pro"))
+				return &importingProvider{invoices: map[string]func() *invoice.Invoice{"good": func() *invoice.Invoice {
+					return &invoice.Invoice{
+						TenantID: "acme", SubscriptionID: sub.ID, Status: invoice.StatusPaid, PaidAt: &paidAt, Currency: "usd",
+						Subtotal: types.USD(4900), Total: types.USD(4900), TaxAmount: types.Zero("usd"), DiscountAmount: types.Zero("usd"),
+						PeriodStart: start, PeriodEnd: start.AddDate(0, 1, 0),
+						LineItems: []invoice.LineItem{{Description: "Pro plan", Quantity: 1, UnitAmount: types.USD(4900), Amount: types.USD(4900), Type: invoice.LineItemBase}},
+					}
+				}}}
+			},
+		},
+	}
+}
+
+func TestImportsShareTheirRefusalsAndScopes(t *testing.T) {
+	for _, tc := range importCases() {
+		t.Run(tc.name+": no provider is unavailable", func(t *testing.T) {
+			h := newHarness(t)
+			if err := tc.run(h, "app_a", ImportInput{ProviderID: "good"}); codeOf(err) != dash.CodeUnavailable {
+				t.Errorf("got %v, want UNAVAILABLE", err)
+			}
+		})
+		t.Run(tc.name+": a provider refusal is unavailable, in the provider's words", func(t *testing.T) {
+			h := newHarness(t)
+			h.withImports(tc.provider(h))
+			err := tc.run(h, "app_a", ImportInput{ProviderID: "unknown_id"})
+			want := "no such " + tc.noun + ": unknown_id"
+			if codeOf(err) != dash.CodeUnavailable || !strings.Contains(messageOf(err), want) {
+				t.Errorf("got %v, want UNAVAILABLE containing %q", err, want)
+			}
+		})
+		t.Run(tc.name+": the empty scope", func(t *testing.T) {
+			h := newHarness(t)
+			h.withImports(tc.provider(h))
+			tc.emptyScope(t, h)
+		})
 	}
 }
