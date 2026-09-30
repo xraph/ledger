@@ -27,6 +27,9 @@ type SettingsView struct {
 	MeterBatchSize      int    `json:"meter_batch_size"`
 	MeterFlushInterval  string `json:"meter_flush_interval"`
 	EntitlementCacheTTL string `json:"entitlement_cache_ttl"`
+	// LifecycleInterval is how often the lifecycle clock runs, as a Go
+	// duration, or "off".
+	LifecycleInterval string `json:"lifecycle_interval"`
 }
 
 // Deps is everything the handlers need. Engine is a function because the

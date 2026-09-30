@@ -27,6 +27,16 @@ type Config struct {
 	// cached in-process before re-evaluating against the store (default: 30s).
 	EntitlementCacheTTL time.Duration `json:"entitlement_cache_ttl" mapstructure:"entitlement_cache_ttl" yaml:"entitlement_cache_ttl"`
 
+	// LifecycleInterval is how often the lifecycle clock runs: it moves ended
+	// billing periods forward, enacts scheduled cancellations, ends trials and
+	// marks overdue invoices past due (default: 1m). Zero means the default,
+	// as for every other duration here; DisableLifecycle turns it off.
+	LifecycleInterval time.Duration `json:"lifecycle_interval" mapstructure:"lifecycle_interval" yaml:"lifecycle_interval"`
+
+	// DisableLifecycle turns the lifecycle clock off, for a deployment that
+	// calls Ledger.Advance from its own scheduler.
+	DisableLifecycle bool `json:"disable_lifecycle" mapstructure:"disable_lifecycle" yaml:"disable_lifecycle"`
+
 	// GroveDatabase is the name of a grove.DB registered in the DI container.
 	// When set, the extension resolves this named database and auto-constructs
 	// the appropriate store based on the driver type (pg/sqlite/mongo).
@@ -53,5 +63,6 @@ func DefaultConfig() Config {
 		MeterBatchSize:      100,
 		MeterFlushInterval:  5 * time.Second,
 		EntitlementCacheTTL: 30 * time.Second,
+		LifecycleInterval:   time.Minute,
 	}
 }

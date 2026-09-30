@@ -4,7 +4,6 @@ import (
 	"context"
 	"fmt"
 	"strings"
-	"time"
 
 	"github.com/xraph/ledger/coupon"
 	"github.com/xraph/ledger/id"
@@ -37,7 +36,7 @@ func (l *Ledger) ApplyCoupon(ctx context.Context, subID id.SubscriptionID, code 
 		return nil, err
 	}
 
-	now := time.Now().UTC()
+	now := l.now()
 	if c.ValidFrom != nil && now.Before(*c.ValidFrom) {
 		return nil, ErrCouponNotStarted
 	}
@@ -63,8 +62,8 @@ func (l *Ledger) ApplyCoupon(ctx context.Context, subID id.SubscriptionID, code 
 	// normalised copy so the caller's coupon is left as the store returned it.
 	norm := *c
 	normaliseCoupon(&norm)
-	if err := validateCouponShape(&norm); err != nil {
-		return nil, err
+	if shapeErr := validateCouponShape(&norm); shapeErr != nil {
+		return nil, shapeErr
 	}
 
 	// Currency must match the Money the discount will actually be computed
@@ -91,7 +90,7 @@ func (l *Ledger) ApplyCoupon(ctx context.Context, subID id.SubscriptionID, code 
 				if couponCurrency == "" {
 					couponCurrency = c.Currency
 				}
-				if couponCurrency == "" || strings.ToLower(couponCurrency) != planCurrency {
+				if couponCurrency == "" || !strings.EqualFold(couponCurrency, planCurrency) {
 					return nil, fmt.Errorf("%w: coupon is in %q, plan bills in %q",
 						ErrCouponInvalid, couponCurrency, p.Currency)
 				}
@@ -99,7 +98,7 @@ func (l *Ledger) ApplyCoupon(ctx context.Context, subID id.SubscriptionID, code 
 				// No Money is involved before the discount is computed for
 				// a percentage coupon, but a coupon explicitly labelled for
 				// another currency is still refused.
-				if c.Currency != "" && strings.ToLower(c.Currency) != planCurrency {
+				if c.Currency != "" && !strings.EqualFold(c.Currency, planCurrency) {
 					return nil, fmt.Errorf("%w: coupon is in %q, plan bills in %q",
 						ErrCouponInvalid, c.Currency, p.Currency)
 				}
@@ -113,8 +112,8 @@ func (l *Ledger) ApplyCoupon(ctx context.Context, subID id.SubscriptionID, code 
 		}
 	}
 
-	if err := l.store.RedeemCoupon(ctx, subID, c.ID); err != nil {
-		return nil, err
+	if redeemErr := l.store.RedeemCoupon(ctx, subID, c.ID); redeemErr != nil {
+		return nil, redeemErr
 	}
 
 	// Re-read rather than incrementing c.TimesRedeemed locally: c was read

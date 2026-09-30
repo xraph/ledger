@@ -46,6 +46,8 @@ type Ledger struct {
 	meterBatchSize      int
 	meterFlushInterval  time.Duration
 	entitlementCacheTTL time.Duration
+	lifecycleInterval   time.Duration
+	clock               func() time.Time
 	skipMigrate         bool
 }
 
@@ -60,6 +62,8 @@ func New(s store.Store, opts ...Option) *Ledger {
 		meterBatchSize:      100,
 		meterFlushInterval:  5 * time.Second,
 		entitlementCacheTTL: 30 * time.Second,
+		lifecycleInterval:   time.Minute,
+		clock:               time.Now,
 	}
 
 	for _, opt := range opts {
@@ -102,6 +106,35 @@ func WithEntitlementCacheTTL(ttl time.Duration) Option {
 	}
 }
 
+// WithLifecycleInterval sets how often the lifecycle clock runs Advance in the
+// background (default: one minute). Zero or less turns the clock off, for a
+// deployment that calls Advance from its own scheduler.
+func WithLifecycleInterval(d time.Duration) Option {
+	return func(l *Ledger) {
+		l.lifecycleInterval = max(d, 0)
+	}
+}
+
+// WithClock sets where the engine reads the time for its decisions: the
+// lifecycle worker's Advance, the periods GenerateInvoice will bill, coupon
+// validity and an invoice's due date. Tests use it. A nil clock keeps
+// time.Now. Stamps such as UpdatedAt, usage timestamps and the store's own
+// usage windows still read the wall clock.
+func WithClock(now func() time.Time) Option {
+	return func(l *Ledger) {
+		if now != nil {
+			l.clock = now
+		}
+	}
+}
+
+// LifecycleInterval reports how often the lifecycle clock runs. Zero means it
+// is off.
+func (l *Ledger) LifecycleInterval() time.Duration { return l.lifecycleInterval }
+
+// now is the engine's current time, in UTC, from the configured clock.
+func (l *Ledger) now() time.Time { return l.clock().UTC() }
+
 // WithoutMigrate makes Start skip the store migration and start only the
 // background workers, for a deployment that migrates its schema separately.
 func WithoutMigrate() Option {
@@ -129,10 +162,17 @@ func (l *Ledger) Start(ctx context.Context) error {
 	l.wg.Add(1)
 	go l.meterFlushWorker(ctx)
 
+	// Start the lifecycle clock
+	if l.lifecycleInterval > 0 {
+		l.wg.Add(1)
+		go l.lifecycleWorker(ctx)
+	}
+
 	l.logger.Info("ledger started",
 		log.Int("batch_size", l.meterBatchSize),
 		log.Duration("flush_interval", l.meterFlushInterval),
 		log.Duration("cache_ttl", l.entitlementCacheTTL),
+		log.Duration("lifecycle_interval", l.lifecycleInterval),
 	)
 
 	return nil
@@ -825,7 +865,7 @@ func (l *Ledger) GenerateInvoice(ctx context.Context, subID id.SubscriptionID, o
 	// A named past period (ForPeriod) is billed on a copy of the subscription
 	// carrying that period, so the duplicate check, the invoice's dates and a
 	// plugin aggregator's window all read it from one place.
-	named, err := namedPeriod(sub, p, opts, time.Now().UTC())
+	named, err := namedPeriod(sub, p, opts, l.now())
 	if err != nil {
 		return nil, err
 	}
@@ -1425,7 +1465,7 @@ func (l *Ledger) FinalizeInvoice(ctx context.Context, invID id.InvoiceID) error 
 	}
 
 	inv.Status = invoice.StatusPending
-	now := time.Now().UTC()
+	now := l.now()
 	dueDate := now.AddDate(0, 0, 30) // 30-day payment terms
 	inv.DueDate = &dueDate
 

@@ -47,6 +47,12 @@ func WithDisableMigrate() Option {
 	return func(e *Extension) { e.config.DisableMigrate = true }
 }
 
+// WithDisableLifecycle turns the engine's lifecycle clock off, for a
+// deployment that calls Ledger.Advance from its own scheduler.
+func WithDisableLifecycle() Option {
+	return func(e *Extension) { e.config.DisableLifecycle = true }
+}
+
 // WithBasePath sets the URL prefix for ledger routes.
 func WithBasePath(path string) Option {
 	return func(e *Extension) { e.config.BasePath = path }

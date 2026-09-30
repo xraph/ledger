@@ -89,10 +89,10 @@ func TestSettingsDetailReadsConfigurationNotConstants(t *testing.T) {
 	h.deps.AppID = "app_cfg"
 	h.deps.RequireAppClaim = true
 	h.deps.Settings = func() SettingsView {
-		return SettingsView{MeterBatchSize: 250, MeterFlushInterval: "7s", EntitlementCacheTTL: "45s"}
+		return SettingsView{MeterBatchSize: 250, MeterFlushInterval: "7s", EntitlementCacheTTL: "45s", LifecycleInterval: "2m0s"}
 	}
 	got := mustCall(h, "app_a", settingsDetailFor(h.deps), struct{}{})
-	if got.MeterBatchSize != 250 || got.MeterFlushInterval != "7s" || got.EntitlementCacheTTL != "45s" {
+	if got.MeterBatchSize != 250 || got.MeterFlushInterval != "7s" || got.EntitlementCacheTTL != "45s" || got.LifecycleInterval != "2m0s" {
 		t.Errorf("got %+v, want the configured values", got)
 	}
 	if got.AppID != "app_cfg" || !got.RequireAppClaim {

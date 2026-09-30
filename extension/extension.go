@@ -161,7 +161,7 @@ func (e *Extension) Health(ctx context.Context) error {
 
 // buildLedgerOpts constructs ledger.Option values from the resolved config.
 func (e *Extension) buildLedgerOpts() []ledger.Option {
-	opts := make([]ledger.Option, 0, len(e.ledgerOpts)+4)
+	opts := make([]ledger.Option, 0, len(e.ledgerOpts)+5)
 
 	// Apply config-derived options.
 	if e.config.MeterBatchSize > 0 || e.config.MeterFlushInterval > 0 {
@@ -183,6 +183,13 @@ func (e *Extension) buildLedgerOpts() []ledger.Option {
 
 	if e.config.DisableMigrate {
 		opts = append(opts, ledger.WithoutMigrate())
+	}
+
+	switch {
+	case e.config.DisableLifecycle:
+		opts = append(opts, ledger.WithLifecycleInterval(0))
+	case e.config.LifecycleInterval > 0:
+		opts = append(opts, ledger.WithLifecycleInterval(e.config.LifecycleInterval))
 	}
 
 	// Append any pass-through ledger options.
@@ -277,6 +284,9 @@ func (e *Extension) mergeWithDefaults(cfg Config) Config {
 	if cfg.EntitlementCacheTTL == 0 {
 		cfg.EntitlementCacheTTL = defaults.EntitlementCacheTTL
 	}
+	if cfg.LifecycleInterval == 0 {
+		cfg.LifecycleInterval = defaults.LifecycleInterval
+	}
 	return cfg
 }
 
@@ -292,6 +302,9 @@ func (e *Extension) mergeConfigurations(yamlConfig, programmaticConfig Config) C
 	}
 	if programmaticConfig.RequireAppClaim {
 		yamlConfig.RequireAppClaim = true
+	}
+	if programmaticConfig.DisableLifecycle {
+		yamlConfig.DisableLifecycle = true
 	}
 
 	// String fields: YAML takes precedence.
@@ -314,6 +327,9 @@ func (e *Extension) mergeConfigurations(yamlConfig, programmaticConfig Config) C
 	}
 	if yamlConfig.EntitlementCacheTTL == 0 && programmaticConfig.EntitlementCacheTTL != 0 {
 		yamlConfig.EntitlementCacheTTL = programmaticConfig.EntitlementCacheTTL
+	}
+	if yamlConfig.LifecycleInterval == 0 && programmaticConfig.LifecycleInterval != 0 {
+		yamlConfig.LifecycleInterval = programmaticConfig.LifecycleInterval
 	}
 
 	// Fill remaining zeros with defaults.
@@ -369,7 +385,18 @@ func (e *Extension) RegisterContractContributor(
 				MeterBatchSize:      e.config.MeterBatchSize,
 				MeterFlushInterval:  e.config.MeterFlushInterval.String(),
 				EntitlementCacheTTL: e.config.EntitlementCacheTTL.String(),
+				LifecycleInterval:   lifecycleSetting(e.engine),
 			}
 		},
 	})
+}
+
+// lifecycleSetting is the lifecycle clock's interval as settings.detail
+// reports it. It reads the engine, so a pass-through ledger option shows,
+// and says "off" when the clock does not run.
+func lifecycleSetting(eng *ledger.Ledger) string {
+	if eng == nil || eng.LifecycleInterval() <= 0 {
+		return "off"
+	}
+	return eng.LifecycleInterval().String()
 }
