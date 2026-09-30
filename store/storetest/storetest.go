@@ -70,6 +70,10 @@ func Run(t *testing.T, newStore func(t *testing.T) ledgerstore.Store) {
 	})
 	t.Run("UsageEventRoundTripsFromTimeNow", func(t *testing.T) { testUsageEventRoundTripsFromTimeNow(t, newStore(t)) })
 	t.Run("CancelSubscriptionAtNowEndsIt", func(t *testing.T) { testCancelSubscriptionAtNowEndsIt(t, newStore(t)) })
+	t.Run("ArchivePlanStoresTheArchive", func(t *testing.T) { testArchivePlanStoresTheArchive(t, newStore(t)) })
+	t.Run("ArchiveFeatureStoresTheArchive", func(t *testing.T) { testArchiveFeatureStoresTheArchive(t, newStore(t)) })
+	t.Run("MarkInvoicePaidStoresThePayment", func(t *testing.T) { testMarkInvoicePaidStoresThePayment(t, newStore(t)) })
+	t.Run("MarkInvoiceVoidedStoresTheVoid", func(t *testing.T) { testMarkInvoiceVoidedStoresTheVoid(t, newStore(t)) })
 	t.Run("ListInvoicesBoundsAreInstants", func(t *testing.T) { testListInvoicesBoundsAreInstants(t, newStore(t)) })
 	t.Run("UsageEventNearABoundaryInALocalZone", func(t *testing.T) { testUsageEventNearABoundaryInALocalZone(t, newStore(t)) })
 	t.Run("ListsPageInAStableOrder", func(t *testing.T) { testListsPageInAStableOrder(t, newStore(t)) })
@@ -2056,5 +2060,189 @@ func testCancelSubscriptionAtNowEndsIt(t *testing.T, s ledgerstore.Store) {
 	}
 	if gotLater.Status != subscription.StatusActive || gotLater.CancelAt == nil {
 		t.Errorf("a future cancel: status %q cancel_at %v, want active with cancel_at set", gotLater.Status, gotLater.CancelAt)
+	}
+}
+
+// The four subtests below pin the updates that set a status plus timestamps
+// in one statement: ArchivePlan, ArchiveFeature, MarkInvoicePaid and
+// MarkInvoiceVoided. Each reads the row back and checks every column the
+// update writes. On postgres they are the only guard on the argument order of
+// those statements: CancelSubscription once numbered its placeholders by hand
+// in an order the builder does not bind in, and every immediate cancel failed.
+//
+// Each fixture is backdated an hour before it is written, so an updated_at
+// that the update forgot to set cannot pass for one it did.
+
+// backdate moves an entity's timestamps an hour into the past, truncated to
+// the second so every backend stores them without rounding.
+func backdate(e *types.Entity) {
+	past := time.Now().UTC().Add(-time.Hour).Truncate(time.Second)
+	e.CreatedAt = past
+	e.UpdatedAt = past
+}
+
+// requireStampedDuring fails unless got falls between start and end, allowing
+// a second either side for a backend that stores less than nanosecond
+// precision.
+func requireStampedDuring(t *testing.T, column string, got, start, end time.Time) {
+	t.Helper()
+	if got.Before(start.Add(-time.Second)) || got.After(end.Add(time.Second)) {
+		t.Errorf("%s: got %v, want a time between %v and %v", column, got, start, end)
+	}
+}
+
+func testArchivePlanStoresTheArchive(t *testing.T, s ledgerstore.Store) {
+	ctx := context.Background()
+	appID := "app-" + uniqueSuffix()
+
+	p := &plan.Plan{
+		Entity: types.NewEntity(), ID: id.NewPlanID(),
+		Name: "Pro", Slug: "pro-archive-" + uniqueSuffix(), Currency: "usd",
+		Status: plan.StatusActive, AppID: appID,
+		Pricing: &plan.Pricing{
+			ID: id.NewPriceID(), BaseAmount: types.USD(4900),
+			BillingPeriod: plan.PeriodMonthly,
+		},
+	}
+	backdate(&p.Entity)
+	if err := s.CreatePlan(ctx, p); err != nil {
+		t.Fatalf("CreatePlan: %v", err)
+	}
+
+	start := time.Now()
+	if err := s.ArchivePlan(ctx, p.ID); err != nil {
+		t.Fatalf("ArchivePlan: %v", err)
+	}
+	end := time.Now()
+
+	got, err := s.GetPlan(ctx, p.ID)
+	if err != nil {
+		t.Fatalf("GetPlan: %v", err)
+	}
+	if got.Status != plan.StatusArchived {
+		t.Errorf("status: got %q, want %q", got.Status, plan.StatusArchived)
+	}
+	requireStampedDuring(t, "updated_at", got.UpdatedAt, start, end)
+
+	if err = s.ArchivePlan(ctx, id.NewPlanID()); !errors.Is(err, ledger.ErrPlanNotFound) {
+		t.Errorf("ArchivePlan on an unknown plan: got %v, want ErrPlanNotFound", err)
+	}
+}
+
+func testArchiveFeatureStoresTheArchive(t *testing.T, s ledgerstore.Store) {
+	ctx := context.Background()
+	appID := "app-" + uniqueSuffix()
+
+	f := newTestFeature(appID)
+	backdate(&f.Entity)
+	if err := s.CreateFeature(ctx, f); err != nil {
+		t.Fatalf("CreateFeature: %v", err)
+	}
+
+	start := time.Now()
+	if err := s.ArchiveFeature(ctx, f.ID); err != nil {
+		t.Fatalf("ArchiveFeature: %v", err)
+	}
+	end := time.Now()
+
+	got, err := s.GetFeature(ctx, f.ID)
+	if err != nil {
+		t.Fatalf("GetFeature: %v", err)
+	}
+	if got.Status != feature.StatusArchived {
+		t.Errorf("status: got %q, want %q", got.Status, feature.StatusArchived)
+	}
+	requireStampedDuring(t, "updated_at", got.UpdatedAt, start, end)
+
+	if err = s.ArchiveFeature(ctx, id.NewFeatureID()); !errors.Is(err, ledger.ErrFeatureNotFound) {
+		t.Errorf("ArchiveFeature on an unknown feature: got %v, want ErrFeatureNotFound", err)
+	}
+}
+
+// testMarkInvoicePaidStoresThePayment passes paidAt in a non-UTC zone, dated
+// well before the call, so a store that stamped its own clock instead of the
+// caller's instant, or shifted the instant by the zone offset, would fail.
+func testMarkInvoicePaidStoresThePayment(t *testing.T, s ledgerstore.Store) {
+	ctx := context.Background()
+	appID := "app-" + uniqueSuffix()
+	tenantID := "tenant-" + uniqueSuffix()
+
+	inv := newTestInvoice(tenantID, appID)
+	inv.Status = invoice.StatusPending
+	backdate(&inv.Entity)
+	if err := s.CreateInvoice(ctx, inv); err != nil {
+		t.Fatalf("CreateInvoice: %v", err)
+	}
+
+	paidAt := time.Now().Add(-30 * time.Minute).Truncate(time.Second).In(time.FixedZone("CDT", -5*3600))
+	paymentRef := "pi_" + uniqueSuffix()
+
+	start := time.Now()
+	if err := s.MarkInvoicePaid(ctx, inv.ID, paidAt, paymentRef); err != nil {
+		t.Fatalf("MarkInvoicePaid: %v", err)
+	}
+	end := time.Now()
+
+	got, err := s.GetInvoice(ctx, inv.ID)
+	if err != nil {
+		t.Fatalf("GetInvoice: %v", err)
+	}
+	if got.Status != invoice.StatusPaid {
+		t.Errorf("status: got %q, want %q", got.Status, invoice.StatusPaid)
+	}
+	if got.PaidAt == nil {
+		t.Error("paid_at was not stored")
+	} else if !got.PaidAt.Equal(paidAt) {
+		t.Errorf("paid_at: got %v, want %v", got.PaidAt, paidAt)
+	}
+	if got.PaymentRef != paymentRef {
+		t.Errorf("payment_ref: got %q, want %q", got.PaymentRef, paymentRef)
+	}
+	requireStampedDuring(t, "updated_at", got.UpdatedAt, start, end)
+
+	if err = s.MarkInvoicePaid(ctx, id.NewInvoiceID(), paidAt, paymentRef); !errors.Is(err, ledger.ErrInvoiceNotFound) {
+		t.Errorf("MarkInvoicePaid on an unknown invoice: got %v, want ErrInvoiceNotFound", err)
+	}
+}
+
+func testMarkInvoiceVoidedStoresTheVoid(t *testing.T, s ledgerstore.Store) {
+	ctx := context.Background()
+	appID := "app-" + uniqueSuffix()
+	tenantID := "tenant-" + uniqueSuffix()
+
+	inv := newTestInvoice(tenantID, appID)
+	inv.Status = invoice.StatusPending
+	backdate(&inv.Entity)
+	if err := s.CreateInvoice(ctx, inv); err != nil {
+		t.Fatalf("CreateInvoice: %v", err)
+	}
+
+	reason := "duplicate of " + uniqueSuffix()
+
+	start := time.Now()
+	if err := s.MarkInvoiceVoided(ctx, inv.ID, reason); err != nil {
+		t.Fatalf("MarkInvoiceVoided: %v", err)
+	}
+	end := time.Now()
+
+	got, err := s.GetInvoice(ctx, inv.ID)
+	if err != nil {
+		t.Fatalf("GetInvoice: %v", err)
+	}
+	if got.Status != invoice.StatusVoided {
+		t.Errorf("status: got %q, want %q", got.Status, invoice.StatusVoided)
+	}
+	if got.VoidedAt == nil {
+		t.Error("voided_at was not stored")
+	} else {
+		requireStampedDuring(t, "voided_at", *got.VoidedAt, start, end)
+	}
+	if got.VoidReason != reason {
+		t.Errorf("void_reason: got %q, want %q", got.VoidReason, reason)
+	}
+	requireStampedDuring(t, "updated_at", got.UpdatedAt, start, end)
+
+	if err = s.MarkInvoiceVoided(ctx, id.NewInvoiceID(), reason); !errors.Is(err, ledger.ErrInvoiceNotFound) {
+		t.Errorf("MarkInvoiceVoided on an unknown invoice: got %v, want ErrInvoiceNotFound", err)
 	}
 }

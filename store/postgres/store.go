@@ -180,9 +180,9 @@ func (s *Store) DeletePlan(ctx context.Context, planID id.PlanID) error {
 func (s *Store) ArchivePlan(ctx context.Context, planID id.PlanID) error {
 	t := now()
 	res, err := s.pg.NewUpdate((*planModel)(nil)).
-		Set("status = $1", string(plan.StatusArchived)).
-		Set("updated_at = $2", t).
-		Where("id = $3", planID.String()).
+		Set("status = ?", string(plan.StatusArchived)).
+		Set("updated_at = ?", t).
+		Where("id = ?", planID.String()).
 		Exec(ctx)
 	if err != nil {
 		return err
@@ -342,9 +342,9 @@ func (s *Store) DeleteFeature(ctx context.Context, featureID id.FeatureID) error
 func (s *Store) ArchiveFeature(ctx context.Context, featureID id.FeatureID) error {
 	t := now()
 	res, err := s.pg.NewUpdate((*featureModel)(nil)).
-		Set("status = $1", string(feature.StatusArchived)).
-		Set("updated_at = $2", t).
-		Where("id = $3", featureID.String()).
+		Set("status = ?", string(feature.StatusArchived)).
+		Set("updated_at = ?", t).
+		Where("id = ?", featureID.String()).
 		Exec(ctx)
 	if err != nil {
 		return err
@@ -766,11 +766,11 @@ func (s *Store) ListPendingInvoices(ctx context.Context, appID string) ([]*invoi
 func (s *Store) MarkInvoicePaid(ctx context.Context, invID id.InvoiceID, paidAt time.Time, paymentRef string) error {
 	t := now()
 	res, err := s.pg.NewUpdate((*invoiceModel)(nil)).
-		Set("status = $1", string(invoice.StatusPaid)).
-		Set("paid_at = $2", paidAt).
-		Set("payment_ref = $3", paymentRef).
-		Set("updated_at = $4", t).
-		Where("id = $5", invID.String()).
+		Set("status = ?", string(invoice.StatusPaid)).
+		Set("paid_at = ?", paidAt).
+		Set("payment_ref = ?", paymentRef).
+		Set("updated_at = ?", t).
+		Where("id = ?", invID.String()).
 		Exec(ctx)
 	if err != nil {
 		return err
@@ -788,11 +788,11 @@ func (s *Store) MarkInvoicePaid(ctx context.Context, invID id.InvoiceID, paidAt 
 func (s *Store) MarkInvoiceVoided(ctx context.Context, invID id.InvoiceID, reason string) error {
 	t := now()
 	res, err := s.pg.NewUpdate((*invoiceModel)(nil)).
-		Set("status = $1", string(invoice.StatusVoided)).
-		Set("voided_at = $2", t).
-		Set("void_reason = $3", reason).
-		Set("updated_at = $4", t).
-		Where("id = $5", invID.String()).
+		Set("status = ?", string(invoice.StatusVoided)).
+		Set("voided_at = ?", t).
+		Set("void_reason = ?", reason).
+		Set("updated_at = ?", t).
+		Where("id = ?", invID.String()).
 		Exec(ctx)
 	if err != nil {
 		return err

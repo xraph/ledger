@@ -249,6 +249,7 @@ func (s *Store) ArchivePlan(_ context.Context, planID id.PlanID) error {
 
 	if p, exists := s.plans[planID.String()]; exists {
 		p.Status = plan.StatusArchived
+		p.UpdatedAt = time.Now().UTC()
 		return nil
 	}
 	return ledger.ErrPlanNotFound
@@ -593,6 +594,7 @@ func (s *Store) MarkInvoicePaid(_ context.Context, invID id.InvoiceID, paidAt ti
 		inv.Status = invoice.StatusPaid
 		inv.PaidAt = &paidAt
 		inv.PaymentRef = paymentRef
+		inv.UpdatedAt = time.Now().UTC()
 		return nil
 	}
 	return ledger.ErrInvoiceNotFound
@@ -607,6 +609,7 @@ func (s *Store) MarkInvoiceVoided(_ context.Context, invID id.InvoiceID, reason 
 		now := time.Now().UTC()
 		inv.VoidedAt = &now
 		inv.VoidReason = reason
+		inv.UpdatedAt = now
 		return nil
 	}
 	return ledger.ErrInvoiceNotFound
@@ -957,6 +960,7 @@ func (s *Store) ArchiveFeature(_ context.Context, featureID id.FeatureID) error 
 
 	if f, exists := s.features[featureID.String()]; exists {
 		f.Status = feature.StatusArchived
+		f.UpdatedAt = time.Now().UTC()
 		return nil
 	}
 	return ledger.ErrFeatureNotFound
