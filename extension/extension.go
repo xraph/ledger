@@ -21,7 +21,6 @@ import (
 
 	ledger "github.com/xraph/ledger"
 	ledgercontract "github.com/xraph/ledger/extension/contract"
-	"github.com/xraph/ledger/plugin"
 	"github.com/xraph/ledger/store"
 	"github.com/xraph/ledger/store/memory"
 	mongostore "github.com/xraph/ledger/store/mongo"
@@ -51,7 +50,6 @@ type Extension struct {
 	config     Config
 	engine     *ledger.Ledger
 	store      store.Store
-	plugins    []plugin.Plugin
 	ledgerOpts []ledger.Option
 	useGrove   bool
 }

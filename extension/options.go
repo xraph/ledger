@@ -28,7 +28,6 @@ func WithLedgerOption(opt ledger.Option) Option {
 // WithPlugin registers a ledger plugin.
 func WithPlugin(p plugin.Plugin) Option {
 	return func(e *Extension) {
-		e.plugins = append(e.plugins, p)
 		e.ledgerOpts = append(e.ledgerOpts, ledger.WithPlugin(p))
 	}
 }
