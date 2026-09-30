@@ -81,7 +81,7 @@ func (s *Store) CreatePlan(ctx context.Context, p *plan.Plan) error {
 func (s *Store) GetPlan(ctx context.Context, planID id.PlanID) (*plan.Plan, error) {
 	m := new(planModel)
 	err := s.pg.NewSelect(m).
-		Where("id = $1", planID.String()).
+		Where("id = ?", planID.String()).
 		Scan(ctx)
 	if err != nil {
 		if isNoRows(err) {
@@ -95,8 +95,8 @@ func (s *Store) GetPlan(ctx context.Context, planID id.PlanID) (*plan.Plan, erro
 func (s *Store) GetPlanBySlug(ctx context.Context, slug, appID string) (*plan.Plan, error) {
 	m := new(planModel)
 	err := s.pg.NewSelect(m).
-		Where("slug = $1", slug).
-		Where("app_id = $2", appID).
+		Where("slug = ?", slug).
+		Where("app_id = ?", appID).
 		Scan(ctx)
 	if err != nil {
 		if isNoRows(err) {
@@ -159,7 +159,7 @@ func (s *Store) UpdatePlan(ctx context.Context, p *plan.Plan) error {
 
 func (s *Store) DeletePlan(ctx context.Context, planID id.PlanID) error {
 	res, err := s.pg.NewDelete((*planModel)(nil)).
-		Where("id = $1", planID.String()).
+		Where("id = ?", planID.String()).
 		Exec(ctx)
 	if err != nil {
 		return err
@@ -208,7 +208,7 @@ func (s *Store) CreateFeature(ctx context.Context, f *feature.Feature) error {
 func (s *Store) GetFeature(ctx context.Context, featureID id.FeatureID) (*feature.Feature, error) {
 	m := new(featureModel)
 	err := s.pg.NewSelect(m).
-		Where("id = $1", featureID.String()).
+		Where("id = ?", featureID.String()).
 		Scan(ctx)
 	if err != nil {
 		if isNoRows(err) {
@@ -222,8 +222,8 @@ func (s *Store) GetFeature(ctx context.Context, featureID id.FeatureID) (*featur
 func (s *Store) GetFeatureByKey(ctx context.Context, key, appID string) (*feature.Feature, error) {
 	m := new(featureModel)
 	err := s.pg.NewSelect(m).
-		Where("key = $1", key).
-		Where("app_id = $2", appID).
+		Where("key = ?", key).
+		Where("app_id = ?", appID).
 		Scan(ctx)
 	if err != nil {
 		if isNoRows(err) {
@@ -316,7 +316,7 @@ func (s *Store) UpdateFeature(ctx context.Context, f *feature.Feature) error {
 
 func (s *Store) DeleteFeature(ctx context.Context, featureID id.FeatureID) error {
 	res, err := s.pg.NewDelete((*featureModel)(nil)).
-		Where("id = $1", featureID.String()).
+		Where("id = ?", featureID.String()).
 		Exec(ctx)
 	if err != nil {
 		return err
@@ -362,7 +362,7 @@ func (s *Store) CreateSubscription(ctx context.Context, sub *subscription.Subscr
 func (s *Store) GetSubscription(ctx context.Context, subID id.SubscriptionID) (*subscription.Subscription, error) {
 	m := new(subscriptionModel)
 	err := s.pg.NewSelect(m).
-		Where("id = $1", subID.String()).
+		Where("id = ?", subID.String()).
 		Scan(ctx)
 	if err != nil {
 		if isNoRows(err) {
@@ -376,9 +376,9 @@ func (s *Store) GetSubscription(ctx context.Context, subID id.SubscriptionID) (*
 func (s *Store) GetActiveSubscription(ctx context.Context, tenantID, appID string) (*subscription.Subscription, error) {
 	m := new(subscriptionModel)
 	err := s.pg.NewSelect(m).
-		Where("tenant_id = $1", tenantID).
-		Where("app_id = $2", appID).
-		Where("status IN ($3, $4)", string(subscription.StatusActive), string(subscription.StatusTrialing)).
+		Where("tenant_id = ?", tenantID).
+		Where("app_id = ?", appID).
+		Where("status IN (?, ?)", string(subscription.StatusActive), string(subscription.StatusTrialing)).
 		OrderExpr("created_at DESC, id DESC").
 		Limit(1).
 		Scan(ctx)
@@ -558,7 +558,7 @@ func (s *Store) QueryUsage(ctx context.Context, tenantID, appID string, opts met
 
 func (s *Store) PurgeUsage(ctx context.Context, before time.Time) (int64, error) {
 	res, err := s.pg.NewDelete((*usageEventModel)(nil)).
-		Where("timestamp < $1", before).
+		Where("timestamp < ?", before).
 		Exec(ctx)
 	if err != nil {
 		return 0, err
@@ -576,8 +576,8 @@ func (s *Store) GetCached(ctx context.Context, tenantID, appID, featureKey strin
 	m := new(entitlementCacheModel)
 	cacheKey := tenantID + ":" + appID + ":" + featureKey
 	err := s.pg.NewSelect(m).
-		Where("cache_key = $1", cacheKey).
-		Where("expires_at > $2", time.Now().UTC()).
+		Where("cache_key = ?", cacheKey).
+		Where("expires_at > ?", time.Now().UTC()).
 		Scan(ctx)
 	if err != nil {
 		if isNoRows(err) {
@@ -608,8 +608,8 @@ func (s *Store) SetCached(ctx context.Context, tenantID, appID, featureKey strin
 
 func (s *Store) Invalidate(ctx context.Context, tenantID, appID string) error {
 	_, err := s.pg.NewDelete((*entitlementCacheModel)(nil)).
-		Where("tenant_id = $1", tenantID).
-		Where("app_id = $2", appID).
+		Where("tenant_id = ?", tenantID).
+		Where("app_id = ?", appID).
 		Exec(ctx)
 	return err
 }
@@ -617,7 +617,7 @@ func (s *Store) Invalidate(ctx context.Context, tenantID, appID string) error {
 func (s *Store) InvalidateFeature(ctx context.Context, tenantID, appID, featureKey string) error {
 	cacheKey := tenantID + ":" + appID + ":" + featureKey
 	_, err := s.pg.NewDelete((*entitlementCacheModel)(nil)).
-		Where("cache_key = $1", cacheKey).
+		Where("cache_key = ?", cacheKey).
 		Exec(ctx)
 	return err
 }
@@ -633,7 +633,7 @@ func (s *Store) CreateInvoice(ctx context.Context, inv *invoice.Invoice) error {
 func (s *Store) GetInvoice(ctx context.Context, invID id.InvoiceID) (*invoice.Invoice, error) {
 	m := new(invoiceModel)
 	err := s.pg.NewSelect(m).
-		Where("id = $1", invID.String()).
+		Where("id = ?", invID.String()).
 		Scan(ctx)
 	if err != nil {
 		if isNoRows(err) {
@@ -696,10 +696,10 @@ func (s *Store) UpdateInvoice(ctx context.Context, inv *invoice.Invoice) error {
 func (s *Store) GetInvoiceByPeriod(ctx context.Context, tenantID, appID string, periodStart, periodEnd time.Time) (*invoice.Invoice, error) {
 	m := new(invoiceModel)
 	err := s.pg.NewSelect(m).
-		Where("tenant_id = $1", tenantID).
-		Where("app_id = $2", appID).
-		Where("period_start = $3", periodStart).
-		Where("period_end = $4", periodEnd).
+		Where("tenant_id = ?", tenantID).
+		Where("app_id = ?", appID).
+		Where("period_start = ?", periodStart).
+		Where("period_end = ?", periodEnd).
 		Scan(ctx)
 	if err != nil {
 		if isNoRows(err) {
@@ -791,8 +791,8 @@ func (s *Store) CreateCoupon(ctx context.Context, c *coupon.Coupon) error {
 func (s *Store) GetCoupon(ctx context.Context, code, appID string) (*coupon.Coupon, error) {
 	m := new(couponModel)
 	err := s.pg.NewSelect(m).
-		Where("code = $1", code).
-		Where("app_id = $2", appID).
+		Where("code = ?", code).
+		Where("app_id = ?", appID).
 		Scan(ctx)
 	if err != nil {
 		if isNoRows(err) {
@@ -806,7 +806,7 @@ func (s *Store) GetCoupon(ctx context.Context, code, appID string) (*coupon.Coup
 func (s *Store) GetCouponByID(ctx context.Context, couponID id.CouponID) (*coupon.Coupon, error) {
 	m := new(couponModel)
 	err := s.pg.NewSelect(m).
-		Where("id = $1", couponID.String()).
+		Where("id = ?", couponID.String()).
 		Scan(ctx)
 	if err != nil {
 		if isNoRows(err) {
@@ -871,7 +871,7 @@ func (s *Store) UpdateCoupon(ctx context.Context, c *coupon.Coupon) error {
 
 func (s *Store) DeleteCoupon(ctx context.Context, couponID id.CouponID) error {
 	res, err := s.pg.NewDelete((*couponModel)(nil)).
-		Where("id = $1", couponID.String()).
+		Where("id = ?", couponID.String()).
 		Exec(ctx)
 	if err != nil {
 		return err

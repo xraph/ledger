@@ -12,6 +12,7 @@ import (
 
 	ledger "github.com/xraph/ledger"
 	"github.com/xraph/ledger/coupon"
+	"github.com/xraph/ledger/entitlement"
 	"github.com/xraph/ledger/feature"
 	"github.com/xraph/ledger/id"
 	"github.com/xraph/ledger/invoice"
@@ -75,6 +76,7 @@ func Run(t *testing.T, newStore func(t *testing.T) ledgerstore.Store) {
 	t.Run("MarkInvoicePaidStoresThePayment", func(t *testing.T) { testMarkInvoicePaidStoresThePayment(t, newStore(t)) })
 	t.Run("MarkInvoiceVoidedStoresTheVoid", func(t *testing.T) { testMarkInvoiceVoidedStoresTheVoid(t, newStore(t)) })
 	t.Run("ListFiltersCombine", func(t *testing.T) { testListFiltersCombine(t, newStore(t)) })
+	t.Run("LookupsMatchEveryArgument", func(t *testing.T) { testLookupsMatchEveryArgument(t, newStore(t)) })
 	t.Run("ListInvoicesBoundsAreInstants", func(t *testing.T) { testListInvoicesBoundsAreInstants(t, newStore(t)) })
 	t.Run("UsageEventNearABoundaryInALocalZone", func(t *testing.T) { testUsageEventNearABoundaryInALocalZone(t, newStore(t)) })
 	t.Run("ListsPageInAStableOrder", func(t *testing.T) { testListsPageInAStableOrder(t, newStore(t)) })
@@ -2486,4 +2488,241 @@ func couponIDs(cs []*coupon.Coupon) []string {
 		out[i] = c.ID.String()
 	}
 	return out
+}
+
+// testLookupsMatchEveryArgument covers the single-row lookups, deletes and
+// cache calls the rest of the suite never reaches. Each one is given a row
+// that matches every argument next to rows that miss on exactly one, so an
+// argument bound to the wrong column finds the wrong row, or none.
+func testLookupsMatchEveryArgument(t *testing.T, s ledgerstore.Store) {
+	ctx := context.Background()
+	appID := "app-" + uniqueSuffix()
+	otherApp := "app-other-" + uniqueSuffix()
+	tenantID := "tenant-" + uniqueSuffix()
+	otherTenant := "tenant-other-" + uniqueSuffix()
+
+	t.Run("GetPlanBySlugAndDeletePlan", func(t *testing.T) {
+		slug := "plan-lookup-" + uniqueSuffix()
+		newPlan := func(app string) *plan.Plan {
+			p := &plan.Plan{
+				Entity: types.NewEntity(), ID: id.NewPlanID(),
+				Name: "Plan", Slug: slug, Currency: "usd",
+				Status: plan.StatusActive, AppID: app,
+				Pricing: &plan.Pricing{
+					ID: id.NewPriceID(), BaseAmount: types.USD(1000),
+					BillingPeriod: plan.PeriodMonthly,
+				},
+			}
+			if err := s.CreatePlan(ctx, p); err != nil {
+				t.Fatalf("CreatePlan: %v", err)
+			}
+			return p
+		}
+		mine, theirs := newPlan(appID), newPlan(otherApp)
+
+		for _, want := range []*plan.Plan{mine, theirs} {
+			got, err := s.GetPlanBySlug(ctx, slug, want.AppID)
+			if err != nil {
+				t.Fatalf("GetPlanBySlug(%q): %v", want.AppID, err)
+			}
+			if got.ID.String() != want.ID.String() {
+				t.Errorf("GetPlanBySlug(%q): got plan %s, want %s", want.AppID, got.ID, want.ID)
+			}
+		}
+		if _, err := s.GetPlanBySlug(ctx, slug, "app-none-"+uniqueSuffix()); !errors.Is(err, ledger.ErrPlanNotFound) {
+			t.Errorf("GetPlanBySlug in an app without it: got %v, want ErrPlanNotFound", err)
+		}
+
+		if err := s.DeletePlan(ctx, mine.ID); err != nil {
+			t.Fatalf("DeletePlan: %v", err)
+		}
+		if _, err := s.GetPlan(ctx, mine.ID); !errors.Is(err, ledger.ErrPlanNotFound) {
+			t.Errorf("GetPlan after DeletePlan: got %v, want ErrPlanNotFound", err)
+		}
+		if _, err := s.GetPlan(ctx, theirs.ID); err != nil {
+			t.Errorf("DeletePlan took the other app's plan with it: %v", err)
+		}
+	})
+
+	t.Run("GetFeatureByKeyAndDeleteFeature", func(t *testing.T) {
+		mine := newTestFeature(appID)
+		theirs := newTestFeature(otherApp)
+		theirs.Key = mine.Key
+		for _, f := range []*feature.Feature{mine, theirs} {
+			if err := s.CreateFeature(ctx, f); err != nil {
+				t.Fatalf("CreateFeature: %v", err)
+			}
+		}
+
+		for _, want := range []*feature.Feature{mine, theirs} {
+			got, err := s.GetFeatureByKey(ctx, mine.Key, want.AppID)
+			if err != nil {
+				t.Fatalf("GetFeatureByKey(%q): %v", want.AppID, err)
+			}
+			if got.ID.String() != want.ID.String() {
+				t.Errorf("GetFeatureByKey(%q): got feature %s, want %s", want.AppID, got.ID, want.ID)
+			}
+		}
+		if _, err := s.GetFeatureByKey(ctx, mine.Key, "app-none-"+uniqueSuffix()); !errors.Is(err, ledger.ErrFeatureNotFound) {
+			t.Errorf("GetFeatureByKey in an app without it: got %v, want ErrFeatureNotFound", err)
+		}
+
+		if err := s.DeleteFeature(ctx, mine.ID); err != nil {
+			t.Fatalf("DeleteFeature: %v", err)
+		}
+		if _, err := s.GetFeature(ctx, mine.ID); !errors.Is(err, ledger.ErrFeatureNotFound) {
+			t.Errorf("GetFeature after DeleteFeature: got %v, want ErrFeatureNotFound", err)
+		}
+		if _, err := s.GetFeature(ctx, theirs.ID); err != nil {
+			t.Errorf("DeleteFeature took the other app's feature with it: %v", err)
+		}
+	})
+
+	t.Run("GetActiveSubscription", func(t *testing.T) {
+		base := time.Now().UTC().Truncate(time.Second)
+		newSub := func(tenant, app string, status subscription.Status, age time.Duration) *subscription.Subscription {
+			sub := newTestSubscription(tenant, app)
+			sub.Status = status
+			sub.CreatedAt = base.Add(-age)
+			sub.UpdatedAt = sub.CreatedAt
+			if err := s.CreateSubscription(ctx, sub); err != nil {
+				t.Fatalf("CreateSubscription: %v", err)
+			}
+			return sub
+		}
+		// The newest active or trialing subscription wins. Every row newer
+		// than it misses on one argument: its status, its tenant or its app.
+		newSub(tenantID, appID, subscription.StatusActive, 3*time.Hour)
+		want := newSub(tenantID, appID, subscription.StatusTrialing, 2*time.Hour)
+		newSub(tenantID, appID, subscription.StatusCanceled, time.Hour)
+		newSub(otherTenant, appID, subscription.StatusActive, time.Hour)
+		newSub(tenantID, otherApp, subscription.StatusActive, time.Hour)
+
+		got, err := s.GetActiveSubscription(ctx, tenantID, appID)
+		if err != nil {
+			t.Fatalf("GetActiveSubscription: %v", err)
+		}
+		if got.ID.String() != want.ID.String() {
+			t.Errorf("GetActiveSubscription: got %s (%s, %s, %s), want %s", got.ID, got.TenantID, got.AppID, got.Status, want.ID)
+		}
+
+		lapsed := "tenant-lapsed-" + uniqueSuffix()
+		newSub(lapsed, appID, subscription.StatusCanceled, time.Hour)
+		if _, err = s.GetActiveSubscription(ctx, lapsed, appID); !errors.Is(err, ledger.ErrNoActiveSubscription) {
+			t.Errorf("GetActiveSubscription with only a canceled one: got %v, want ErrNoActiveSubscription", err)
+		}
+	})
+
+	t.Run("GetInvoiceByPeriod", func(t *testing.T) {
+		start := time.Now().UTC().Truncate(time.Second)
+		end := start.AddDate(0, 1, 0)
+		newInv := func(tenant, app string, from, to time.Time) *invoice.Invoice {
+			inv := newTestInvoice(tenant, app)
+			inv.PeriodStart, inv.PeriodEnd = from, to
+			if err := s.CreateInvoice(ctx, inv); err != nil {
+				t.Fatalf("CreateInvoice: %v", err)
+			}
+			return inv
+		}
+		want := newInv(tenantID, appID, start, end)
+		newInv(otherTenant, appID, start, end)
+		newInv(tenantID, otherApp, start, end)
+		newInv(tenantID, appID, start.Add(time.Hour), end)
+		newInv(tenantID, appID, start, end.Add(time.Hour))
+
+		got, err := s.GetInvoiceByPeriod(ctx, tenantID, appID, start, end)
+		if err != nil {
+			t.Fatalf("GetInvoiceByPeriod: %v", err)
+		}
+		if got.ID.String() != want.ID.String() {
+			t.Errorf("GetInvoiceByPeriod: got %s, want %s", got.ID, want.ID)
+		}
+		if _, err = s.GetInvoiceByPeriod(ctx, tenantID, appID, start.Add(-time.Hour), end); !errors.Is(err, ledger.ErrInvoiceNotFound) {
+			t.Errorf("GetInvoiceByPeriod for a period with no invoice: got %v, want ErrInvoiceNotFound", err)
+		}
+	})
+
+	t.Run("EntitlementCache", func(t *testing.T) {
+		set := func(tenant, app, key string, used int64, ttl time.Duration) {
+			r := &entitlement.Result{Allowed: true, Feature: key, Used: used, Limit: 100, Remaining: 100 - used}
+			if err := s.SetCached(ctx, tenant, app, key, r, ttl); err != nil {
+				t.Fatalf("SetCached: %v", err)
+			}
+		}
+		// used tells the entries apart, so a hit on the wrong one shows.
+		requireHit := func(tenant, app, key string, used int64) {
+			t.Helper()
+			got, err := s.GetCached(ctx, tenant, app, key)
+			if err != nil {
+				t.Errorf("GetCached(%s, %s, %s): %v", tenant, app, key, err)
+				return
+			}
+			if got.Used != used || got.Feature != key {
+				t.Errorf("GetCached(%s, %s, %s): got used %d feature %q, want used %d", tenant, app, key, got.Used, got.Feature, used)
+			}
+		}
+		requireMiss := func(tenant, app, key string) {
+			t.Helper()
+			if _, err := s.GetCached(ctx, tenant, app, key); !errors.Is(err, ledger.ErrCacheMiss) {
+				t.Errorf("GetCached(%s, %s, %s): got %v, want ErrCacheMiss", tenant, app, key, err)
+			}
+		}
+
+		keyA, keyB, keyC := "feat-a-"+uniqueSuffix(), "feat-b-"+uniqueSuffix(), "feat-c-"+uniqueSuffix()
+		set(tenantID, appID, keyA, 1, time.Hour)
+		set(tenantID, appID, keyB, 2, time.Hour)
+		set(tenantID, appID, keyC, 3, -time.Minute) // already expired
+		set(tenantID, otherApp, keyA, 4, time.Hour)
+		set(otherTenant, appID, keyA, 5, time.Hour)
+
+		requireHit(tenantID, appID, keyA, 1)
+		requireHit(tenantID, appID, keyB, 2)
+		requireMiss(tenantID, appID, keyC)
+		requireHit(tenantID, otherApp, keyA, 4)
+		requireHit(otherTenant, appID, keyA, 5)
+
+		if err := s.InvalidateFeature(ctx, tenantID, appID, keyA); err != nil {
+			t.Fatalf("InvalidateFeature: %v", err)
+		}
+		requireMiss(tenantID, appID, keyA)
+		requireHit(tenantID, appID, keyB, 2)
+		requireHit(tenantID, otherApp, keyA, 4)
+		requireHit(otherTenant, appID, keyA, 5)
+
+		if err := s.Invalidate(ctx, tenantID, appID); err != nil {
+			t.Fatalf("Invalidate: %v", err)
+		}
+		requireMiss(tenantID, appID, keyB)
+		requireHit(tenantID, otherApp, keyA, 4)
+		requireHit(otherTenant, appID, keyA, 5)
+	})
+
+	t.Run("PurgeUsage", func(t *testing.T) {
+		// PurgeUsage is not scoped to a tenant, so the cutoff sits in 2001,
+		// where no other subtest's events live.
+		cutoff := time.Date(2001, 6, 1, 0, 0, 0, 0, time.UTC)
+		old := newTestUsageEvent(tenantID, appID)
+		old.Timestamp = cutoff.Add(-24 * time.Hour)
+		recent := newTestUsageEvent(tenantID, appID)
+		if err := s.IngestBatch(ctx, []*meter.UsageEvent{old, recent}); err != nil {
+			t.Fatalf("IngestBatch: %v", err)
+		}
+
+		n, err := s.PurgeUsage(ctx, cutoff)
+		if err != nil {
+			t.Fatalf("PurgeUsage: %v", err)
+		}
+		if n < 1 {
+			t.Errorf("PurgeUsage: removed %d events, want at least the one before the cutoff", n)
+		}
+		got, err := s.QueryUsage(ctx, tenantID, appID, meter.QueryOpts{})
+		if err != nil {
+			t.Fatalf("QueryUsage: %v", err)
+		}
+		ids := make([]string, len(got))
+		for i, e := range got {
+			ids[i] = e.ID.String()
+		}
+		requireIDs(t, "QueryUsage after PurgeUsage", ids, recent.ID.String())
+	})
 }

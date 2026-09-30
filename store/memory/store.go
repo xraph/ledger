@@ -308,13 +308,21 @@ func (s *Store) GetActiveSubscription(_ context.Context, tenantID, appID string)
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 
+	// A tenant can hold more than one live subscription in an app. Return the
+	// newest, as the database backends' ORDER BY does; returning the first
+	// match would pick one at random, since map iteration order is.
+	var live []*subscription.Subscription
 	for _, sub := range s.subscriptions {
 		if sub.TenantID == tenantID && sub.AppID == appID &&
 			(sub.Status == subscription.StatusActive || sub.Status == subscription.StatusTrialing) {
-			return copySubscription(sub), nil
+			live = append(live, sub)
 		}
 	}
-	return nil, ledger.ErrNoActiveSubscription
+	if len(live) == 0 {
+		return nil, ledger.ErrNoActiveSubscription
+	}
+	sortNewestFirst(live, func(sub *subscription.Subscription) time.Time { return sub.CreatedAt }, func(sub *subscription.Subscription) string { return sub.ID.String() })
+	return copySubscription(live[0]), nil
 }
 
 func (s *Store) ListSubscriptions(_ context.Context, tenantID, appID string, opts subscription.ListOpts) ([]*subscription.Subscription, error) {
