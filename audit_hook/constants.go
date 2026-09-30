@@ -8,11 +8,12 @@ const (
 	ActionPlanArchived = "plan.archived"
 
 	// Subscription actions
-	ActionSubscriptionCreated    = "subscription.created"
-	ActionSubscriptionUpgraded   = "subscription.upgraded"
-	ActionSubscriptionDowngraded = "subscription.downgraded"
-	ActionSubscriptionCanceled   = "subscription.canceled"
-	ActionSubscriptionExpired    = "subscription.expired"
+	ActionSubscriptionCreated         = "subscription.created"
+	ActionSubscriptionUpgraded        = "subscription.upgraded"
+	ActionSubscriptionDowngraded      = "subscription.downgraded"
+	ActionSubscriptionCanceled        = "subscription.canceled"
+	ActionSubscriptionCancelScheduled = "subscription.cancel_scheduled"
+	ActionSubscriptionExpired         = "subscription.expired"
 
 	// Usage actions
 	ActionUsageIngested = "usage.ingested"

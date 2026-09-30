@@ -45,3 +45,17 @@ type Subscription struct {
 	// were added this month", which is a different question.
 	Quantity map[string]int64 `json:"quantity,omitempty"`
 }
+
+// Period is one billing period, [Start, End).
+type Period struct {
+	Start time.Time `json:"start"`
+	End   time.Time `json:"end"`
+}
+
+// Renewal is what OnSubscriptionRenewed receives when the lifecycle clock
+// moves a subscription on: the subscription in its new period, and every
+// period that ended in the move, oldest first, catch-up periods included.
+type Renewal struct {
+	Subscription *Subscription `json:"subscription"`
+	Ended        []Period      `json:"ended"`
+}

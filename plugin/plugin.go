@@ -96,7 +96,9 @@ type OnSubscriptionChanged interface {
 	OnSubscriptionChanged(ctx context.Context, sub interface{}, oldPlan, newPlan interface{}) error
 }
 
-// OnSubscriptionCanceled is called when a subscription is canceled.
+// OnSubscriptionCanceled is called when a subscription stops: an immediate
+// cancel, or the lifecycle clock enacting a scheduled one. A cancel dated
+// later fires OnSubscriptionCancelScheduled when it is recorded.
 type OnSubscriptionCanceled interface {
 	Plugin
 	OnSubscriptionCanceled(ctx context.Context, sub interface{}) error
@@ -106,6 +108,32 @@ type OnSubscriptionCanceled interface {
 type OnSubscriptionExpired interface {
 	Plugin
 	OnSubscriptionExpired(ctx context.Context, sub interface{}) error
+}
+
+// OnSubscriptionCancelScheduled is called when a cancellation is recorded for
+// a later date. The subscription keeps running until then, and
+// OnSubscriptionCanceled fires when the lifecycle clock ends it.
+type OnSubscriptionCancelScheduled interface {
+	Plugin
+	OnSubscriptionCancelScheduled(ctx context.Context, sub interface{}) error
+}
+
+// OnSubscriptionTrialEnded is called when the lifecycle clock ends a trial and
+// the subscription becomes active.
+type OnSubscriptionTrialEnded interface {
+	Plugin
+	OnSubscriptionTrialEnded(ctx context.Context, sub interface{}) error
+}
+
+// OnSubscriptionRenewed is called when the lifecycle clock moves a subscription
+// into a new billing period. It fires once per move and receives a
+// *subscription.Renewal: the subscription in its new period, and every period
+// that ended in the move, oldest first, catch-up periods included. Ledger bills
+// none of them; a plugin that invoices at rollover calls GenerateInvoice with
+// ledger.ForPeriod for each.
+type OnSubscriptionRenewed interface {
+	Plugin
+	OnSubscriptionRenewed(ctx context.Context, renewal interface{}) error
 }
 
 // ──────────────────────────────────────────────────
@@ -178,6 +206,13 @@ type OnInvoiceFailed interface {
 type OnInvoiceVoided interface {
 	Plugin
 	OnInvoiceVoided(ctx context.Context, inv interface{}, reason string) error
+}
+
+// OnInvoicePastDue is called when the lifecycle clock marks a pending invoice
+// past due. The subscription's status does not change.
+type OnInvoicePastDue interface {
+	Plugin
+	OnInvoicePastDue(ctx context.Context, inv interface{}) error
 }
 
 // ──────────────────────────────────────────────────

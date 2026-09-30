@@ -288,14 +288,17 @@ func (l *Ledger) CreateSubscription(ctx context.Context, sub *subscription.Subsc
 	}
 	sub.Entity = types.NewEntity()
 
-	// Set initial period
-	if sub.CurrentPeriodStart.IsZero() {
-		// Stored times are UTC, so every backend holds the same
-		// representation. time.Now() carries the host's zone and a monotonic
-		// reading, neither of which a store can round-trip.
-		now := time.Now().UTC()
-		sub.CurrentPeriodStart = now
-		sub.CurrentPeriodEnd = now.AddDate(0, 1, 0) // Monthly by default
+	// Set the first period from the plan's billing period (see
+	// billingPeriod). Stored times are UTC, so every backend holds the same
+	// representation. time.Now() carries the host's zone and a monotonic
+	// reading, neither of which a store can round-trip.
+	switch {
+	case sub.CurrentPeriodStart.IsZero():
+		sub.CurrentPeriodStart = time.Now().UTC()
+		sub.CurrentPeriodEnd = firstPeriodEnd(sub.CurrentPeriodStart, billingPeriod(p))
+	case sub.CurrentPeriodEnd.IsZero():
+		sub.CurrentPeriodStart = sub.CurrentPeriodStart.UTC()
+		sub.CurrentPeriodEnd = firstPeriodEnd(sub.CurrentPeriodStart, billingPeriod(p))
 	}
 
 	if sub.Status == "" {
@@ -331,9 +334,16 @@ func (l *Ledger) GetActiveSubscription(ctx context.Context, tenantID, appID stri
 	return l.store.GetActiveSubscription(ctx, tenantID, appID)
 }
 
-// CancelSubscription cancels a subscription. A subscription that is already
-// canceled or expired is refused, so a second cancel can neither move its
-// cancel_at nor announce the cancellation again.
+// CancelSubscription cancels a subscription, now or at the end of its current
+// period. A subscription that is already canceled or expired is refused, so a
+// second cancel can neither move its cancel_at nor announce the cancellation
+// again.
+//
+// OnSubscriptionCanceled fires only when the subscription stopped now. A
+// cancel dated later fires OnSubscriptionCancelScheduled, and the lifecycle
+// clock fires OnSubscriptionCanceled when it enacts it. That holds even when
+// the period it ends is already over: the subscription keeps running until
+// the clock's next run cancels it as of that period's end.
 func (l *Ledger) CancelSubscription(ctx context.Context, subID id.SubscriptionID, immediately bool) error {
 	sub, err := l.store.GetSubscription(ctx, subID)
 	if err != nil {
@@ -363,7 +373,13 @@ func (l *Ledger) CancelSubscription(ctx context.Context, subID id.SubscriptionID
 	// Invalidate entitlement cache
 	_ = l.store.Invalidate(ctx, sub.TenantID, sub.AppID) //nolint:errcheck // best-effort cache invalidation
 
-	l.plugins.EmitSubscriptionCanceled(ctx, sub)
+	// Only an immediate cancel changes the status; a scheduled one never
+	// does, whatever date the store copied into cancel_at.
+	if immediately {
+		l.plugins.EmitSubscriptionCanceled(ctx, sub)
+	} else {
+		l.plugins.EmitSubscriptionCancelScheduled(ctx, sub)
+	}
 	return nil
 }
 

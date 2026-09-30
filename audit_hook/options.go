@@ -51,6 +51,7 @@ func allActions() []string {
 		ActionSubscriptionUpgraded,
 		ActionSubscriptionDowngraded,
 		ActionSubscriptionCanceled,
+		ActionSubscriptionCancelScheduled,
 		ActionSubscriptionExpired,
 		ActionUsageIngested,
 		ActionUsageFlushed,

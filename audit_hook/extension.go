@@ -16,20 +16,21 @@ import (
 
 // Compile-time interface checks.
 var (
-	_ plugin.Plugin                 = (*Extension)(nil)
-	_ plugin.OnPlanCreated          = (*Extension)(nil)
-	_ plugin.OnPlanUpdated          = (*Extension)(nil)
-	_ plugin.OnPlanArchived         = (*Extension)(nil)
-	_ plugin.OnSubscriptionCreated  = (*Extension)(nil)
-	_ plugin.OnSubscriptionChanged  = (*Extension)(nil)
-	_ plugin.OnSubscriptionCanceled = (*Extension)(nil)
-	_ plugin.OnInvoiceGenerated     = (*Extension)(nil)
-	_ plugin.OnInvoiceFinalized     = (*Extension)(nil)
-	_ plugin.OnInvoicePaid          = (*Extension)(nil)
-	_ plugin.OnInvoiceFailed        = (*Extension)(nil)
-	_ plugin.OnInvoiceVoided        = (*Extension)(nil)
-	_ plugin.OnQuotaExceeded        = (*Extension)(nil)
-	_ plugin.OnEntitlementChecked   = (*Extension)(nil)
+	_ plugin.Plugin                        = (*Extension)(nil)
+	_ plugin.OnPlanCreated                 = (*Extension)(nil)
+	_ plugin.OnPlanUpdated                 = (*Extension)(nil)
+	_ plugin.OnPlanArchived                = (*Extension)(nil)
+	_ plugin.OnSubscriptionCreated         = (*Extension)(nil)
+	_ plugin.OnSubscriptionChanged         = (*Extension)(nil)
+	_ plugin.OnSubscriptionCanceled        = (*Extension)(nil)
+	_ plugin.OnSubscriptionCancelScheduled = (*Extension)(nil)
+	_ plugin.OnInvoiceGenerated            = (*Extension)(nil)
+	_ plugin.OnInvoiceFinalized            = (*Extension)(nil)
+	_ plugin.OnInvoicePaid                 = (*Extension)(nil)
+	_ plugin.OnInvoiceFailed               = (*Extension)(nil)
+	_ plugin.OnInvoiceVoided               = (*Extension)(nil)
+	_ plugin.OnQuotaExceeded               = (*Extension)(nil)
+	_ plugin.OnEntitlementChecked          = (*Extension)(nil)
 )
 
 // Recorder is the interface that audit backends must implement.
@@ -141,6 +142,16 @@ func (e *Extension) OnSubscriptionCanceled(ctx context.Context, _ interface{}) e
 	return e.record(ctx, ActionSubscriptionCanceled, SeverityInfo, OutcomeSuccess,
 		ResourceSubscription, "", CategorySubscription, nil,
 		"event", "subscription_canceled",
+	)
+}
+
+// OnSubscriptionCancelScheduled implements plugin.OnSubscriptionCancelScheduled.
+// The operator's action is recorded when it is taken; subscription.canceled
+// follows when the cancellation takes effect.
+func (e *Extension) OnSubscriptionCancelScheduled(ctx context.Context, _ interface{}) error {
+	return e.record(ctx, ActionSubscriptionCancelScheduled, SeverityInfo, OutcomeSuccess,
+		ResourceSubscription, "", CategorySubscription, nil,
+		"event", "subscription_cancel_scheduled",
 	)
 }
 

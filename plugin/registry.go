@@ -19,37 +19,41 @@ type Registry struct {
 	logger  log.Logger
 
 	// Type-cached plugin lists for efficient dispatch
-	onInit                 []OnInit
-	onShutdown             []OnShutdown
-	onPlanCreated          []OnPlanCreated
-	onPlanUpdated          []OnPlanUpdated
-	onPlanArchived         []OnPlanArchived
-	onFeatureCreated       []OnFeatureCreated
-	onFeatureUpdated       []OnFeatureUpdated
-	onFeatureDeleted       []OnFeatureDeleted
-	onFeatureArchived      []OnFeatureArchived
-	onSubscriptionCreated  []OnSubscriptionCreated
-	onSubscriptionChanged  []OnSubscriptionChanged
-	onSubscriptionCanceled []OnSubscriptionCanceled
-	onSubscriptionExpired  []OnSubscriptionExpired
-	onUsageIngested        []OnUsageIngested
-	onUsageFlushed         []OnUsageFlushed
-	onEntitlementChecked   []OnEntitlementChecked
-	onQuotaExceeded        []OnQuotaExceeded
-	onSoftLimitReached     []OnSoftLimitReached
-	onInvoiceGenerated     []OnInvoiceGenerated
-	onInvoiceFinalized     []OnInvoiceFinalized
-	onInvoicePaid          []OnInvoicePaid
-	onInvoiceFailed        []OnInvoiceFailed
-	onInvoiceVoided        []OnInvoiceVoided
-	onProviderSync         []OnProviderSync
-	onWebhookReceived      []OnWebhookReceived
-	paymentProviders       []PaymentProviderPlugin
-	pricingStrategies      map[string]PricingStrategy
-	usageAggregators       map[string]UsageAggregator
-	taxCalculators         []TaxCalculator
-	invoiceFormatters      map[string]InvoiceFormatter
-	couponValidators       []CouponValidator
+	onInit                        []OnInit
+	onShutdown                    []OnShutdown
+	onPlanCreated                 []OnPlanCreated
+	onPlanUpdated                 []OnPlanUpdated
+	onPlanArchived                []OnPlanArchived
+	onFeatureCreated              []OnFeatureCreated
+	onFeatureUpdated              []OnFeatureUpdated
+	onFeatureDeleted              []OnFeatureDeleted
+	onFeatureArchived             []OnFeatureArchived
+	onSubscriptionCreated         []OnSubscriptionCreated
+	onSubscriptionChanged         []OnSubscriptionChanged
+	onSubscriptionCanceled        []OnSubscriptionCanceled
+	onSubscriptionExpired         []OnSubscriptionExpired
+	onSubscriptionCancelScheduled []OnSubscriptionCancelScheduled
+	onSubscriptionTrialEnded      []OnSubscriptionTrialEnded
+	onSubscriptionRenewed         []OnSubscriptionRenewed
+	onInvoicePastDue              []OnInvoicePastDue
+	onUsageIngested               []OnUsageIngested
+	onUsageFlushed                []OnUsageFlushed
+	onEntitlementChecked          []OnEntitlementChecked
+	onQuotaExceeded               []OnQuotaExceeded
+	onSoftLimitReached            []OnSoftLimitReached
+	onInvoiceGenerated            []OnInvoiceGenerated
+	onInvoiceFinalized            []OnInvoiceFinalized
+	onInvoicePaid                 []OnInvoicePaid
+	onInvoiceFailed               []OnInvoiceFailed
+	onInvoiceVoided               []OnInvoiceVoided
+	onProviderSync                []OnProviderSync
+	onWebhookReceived             []OnWebhookReceived
+	paymentProviders              []PaymentProviderPlugin
+	pricingStrategies             map[string]PricingStrategy
+	usageAggregators              map[string]UsageAggregator
+	taxCalculators                []TaxCalculator
+	invoiceFormatters             map[string]InvoiceFormatter
+	couponValidators              []CouponValidator
 }
 
 // NewRegistry creates a new plugin registry.
@@ -121,6 +125,18 @@ func (r *Registry) Register(p Plugin) error {
 	}
 	if v, ok := p.(OnSubscriptionExpired); ok {
 		r.onSubscriptionExpired = append(r.onSubscriptionExpired, v)
+	}
+	if v, ok := p.(OnSubscriptionCancelScheduled); ok {
+		r.onSubscriptionCancelScheduled = append(r.onSubscriptionCancelScheduled, v)
+	}
+	if v, ok := p.(OnSubscriptionTrialEnded); ok {
+		r.onSubscriptionTrialEnded = append(r.onSubscriptionTrialEnded, v)
+	}
+	if v, ok := p.(OnSubscriptionRenewed); ok {
+		r.onSubscriptionRenewed = append(r.onSubscriptionRenewed, v)
+	}
+	if v, ok := p.(OnInvoicePastDue); ok {
+		r.onInvoicePastDue = append(r.onInvoicePastDue, v)
 	}
 	if v, ok := p.(OnUsageIngested); ok {
 		r.onUsageIngested = append(r.onUsageIngested, v)
@@ -631,6 +647,79 @@ func (r *Registry) EmitSubscriptionExpired(ctx context.Context, sub interface{})
 			return p.OnSubscriptionExpired(ctx, sub)
 		}); err != nil {
 			r.logger.Warn("plugin OnSubscriptionExpired failed",
+				log.String("plugin", p.Name()),
+				log.Error(err),
+			)
+		}
+	}
+}
+
+// EmitSubscriptionCancelScheduled emits a cancellation recorded for a later date.
+func (r *Registry) EmitSubscriptionCancelScheduled(ctx context.Context, sub interface{}) {
+	r.mu.RLock()
+	plugins := r.onSubscriptionCancelScheduled
+	r.mu.RUnlock()
+
+	for _, p := range plugins {
+		if err := r.callWithTimeout(ctx, p.Name(), func() error {
+			return p.OnSubscriptionCancelScheduled(ctx, sub)
+		}); err != nil {
+			r.logger.Warn("plugin OnSubscriptionCancelScheduled failed",
+				log.String("plugin", p.Name()),
+				log.Error(err),
+			)
+		}
+	}
+}
+
+// EmitSubscriptionTrialEnded emits a trial ended by the lifecycle clock.
+func (r *Registry) EmitSubscriptionTrialEnded(ctx context.Context, sub interface{}) {
+	r.mu.RLock()
+	plugins := r.onSubscriptionTrialEnded
+	r.mu.RUnlock()
+
+	for _, p := range plugins {
+		if err := r.callWithTimeout(ctx, p.Name(), func() error {
+			return p.OnSubscriptionTrialEnded(ctx, sub)
+		}); err != nil {
+			r.logger.Warn("plugin OnSubscriptionTrialEnded failed",
+				log.String("plugin", p.Name()),
+				log.Error(err),
+			)
+		}
+	}
+}
+
+// EmitSubscriptionRenewed emits a subscription moved into a new period, as a
+// *subscription.Renewal.
+func (r *Registry) EmitSubscriptionRenewed(ctx context.Context, renewal interface{}) {
+	r.mu.RLock()
+	plugins := r.onSubscriptionRenewed
+	r.mu.RUnlock()
+
+	for _, p := range plugins {
+		if err := r.callWithTimeout(ctx, p.Name(), func() error {
+			return p.OnSubscriptionRenewed(ctx, renewal)
+		}); err != nil {
+			r.logger.Warn("plugin OnSubscriptionRenewed failed",
+				log.String("plugin", p.Name()),
+				log.Error(err),
+			)
+		}
+	}
+}
+
+// EmitInvoicePastDue emits an invoice the lifecycle clock marked past due.
+func (r *Registry) EmitInvoicePastDue(ctx context.Context, inv interface{}) {
+	r.mu.RLock()
+	plugins := r.onInvoicePastDue
+	r.mu.RUnlock()
+
+	for _, p := range plugins {
+		if err := r.callWithTimeout(ctx, p.Name(), func() error {
+			return p.OnInvoicePastDue(ctx, inv)
+		}); err != nil {
+			r.logger.Warn("plugin OnInvoicePastDue failed",
 				log.String("plugin", p.Name()),
 				log.Error(err),
 			)
