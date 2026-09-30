@@ -619,10 +619,10 @@ func (l *Ledger) Remaining(ctx context.Context, featureKey string) (int64, error
 // which drops the app filter when the app id is empty. The store path does
 // not need that check: store.Aggregate matches the app id exactly, so an
 // empty one only ever matches events recorded without an app.
-func (l *Ledger) aggregateUsage(ctx context.Context, sub *subscription.Subscription, pf plan.Feature) (int64, error) {
+func (l *Ledger) aggregateUsage(ctx context.Context, sub *subscription.Subscription, pf plan.Feature, named bool) (int64, error) {
 	name := pf.Metadata["aggregator"]
 	if name == "" {
-		return l.storeUsage(ctx, sub, pf)
+		return l.storeUsage(ctx, sub, pf, named)
 	}
 
 	agg := l.plugins.GetUsageAggregator(name)
@@ -632,7 +632,7 @@ func (l *Ledger) aggregateUsage(ctx context.Context, sub *subscription.Subscript
 			log.String("feature", pf.Key),
 		)
 
-		return l.storeUsage(ctx, sub, pf)
+		return l.storeUsage(ctx, sub, pf, named)
 	}
 
 	if sub.AppID == "" {
@@ -672,8 +672,13 @@ func (l *Ledger) aggregateUsage(ctx context.Context, sub *subscription.Subscript
 // negative quantities (a correction, say), so the sum can come back below
 // zero. That is refused rather than billed as nothing, the same way a
 // plugin aggregator's negative total is: a silent zero would hide an
-// overage along with whatever made the total negative.
-func (l *Ledger) storeUsage(ctx context.Context, sub *subscription.Subscription, pf plan.Feature) (int64, error) {
+// overage along with whatever made the total negative. A named past period is
+// totalled from its own events instead (usageInPeriod).
+func (l *Ledger) storeUsage(ctx context.Context, sub *subscription.Subscription, pf plan.Feature, named bool) (int64, error) {
+	if named {
+		return l.usageInPeriod(ctx, sub, pf)
+	}
+
 	total, err := l.store.Aggregate(ctx, sub.TenantID, sub.AppID, pf.Key, pf.Period)
 	if err != nil {
 		return 0, err
@@ -782,7 +787,12 @@ func addChecked(stage string, a, b types.Money) (types.Money, error) {
 // customers' usage. An empty app id is allowed and still bills the base
 // fee; only a feature totalled by a plugin aggregator refuses it (see
 // aggregateUsage).
-func (l *Ledger) GenerateInvoice(ctx context.Context, subID id.SubscriptionID) (*invoice.Invoice, error) {
+//
+// With ForPeriod it bills a period the subscription has already had instead
+// of its current one, with that period's own usage (see usageInPeriod).
+// Seat charges always use the subscription's seat counts as they are now:
+// Ledger keeps no seat history.
+func (l *Ledger) GenerateInvoice(ctx context.Context, subID id.SubscriptionID, opts ...InvoiceOption) (*invoice.Invoice, error) {
 	sub, err := l.store.GetSubscription(ctx, subID)
 	if err != nil {
 		return nil, err
@@ -795,6 +805,19 @@ func (l *Ledger) GenerateInvoice(ctx context.Context, subID id.SubscriptionID) (
 	p, err := l.store.GetPlan(ctx, sub.PlanID)
 	if err != nil {
 		return nil, err
+	}
+
+	// A named past period (ForPeriod) is billed on a copy of the subscription
+	// carrying that period, so the duplicate check, the invoice's dates and a
+	// plugin aggregator's window all read it from one place.
+	named, err := namedPeriod(sub, p, opts, time.Now().UTC())
+	if err != nil {
+		return nil, err
+	}
+	if named != nil {
+		billed := *sub
+		billed.CurrentPeriodStart, billed.CurrentPeriodEnd = named.Start, named.End
+		sub = &billed
 	}
 
 	existing, err := l.liveInvoiceForPeriod(ctx, sub)
@@ -880,7 +903,7 @@ func (l *Ledger) GenerateInvoice(ctx context.Context, subID id.SubscriptionID) (
 			return nil, fmt.Errorf("plan %s feature %q: %w", p.ID, pf.Key, vErr)
 		}
 
-		used, aggErr := l.aggregateUsage(ctx, sub, pf)
+		used, aggErr := l.aggregateUsage(ctx, sub, pf, named != nil)
 		if aggErr != nil {
 			return nil, fmt.Errorf("aggregate usage for feature %q: %w", pf.Key, aggErr)
 		}
