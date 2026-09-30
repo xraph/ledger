@@ -1119,13 +1119,18 @@ func now() time.Time {
 	return time.Now().UTC()
 }
 
-// getStartOfPeriod returns the start of the given period.
+// getStartOfPeriod returns the start of the calendar month or year that
+// contains t, at midnight UTC. Billing periods are cut in UTC and every stored
+// timestamp is UTC, so a usage window opens on the UTC calendar whatever zone
+// the server runs in. A period of "none", or one it does not know, has no
+// start: the zero time, which every event is after.
 func getStartOfPeriod(t time.Time, period plan.Period) time.Time {
+	t = t.UTC()
 	switch period {
 	case plan.PeriodMonthly:
-		return time.Date(t.Year(), t.Month(), 1, 0, 0, 0, 0, t.Location())
+		return time.Date(t.Year(), t.Month(), 1, 0, 0, 0, 0, time.UTC)
 	case plan.PeriodYearly:
-		return time.Date(t.Year(), 1, 1, 0, 0, 0, 0, t.Location())
+		return time.Date(t.Year(), time.January, 1, 0, 0, 0, 0, time.UTC)
 	default:
 		return time.Time{}
 	}

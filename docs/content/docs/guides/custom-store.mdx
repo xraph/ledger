@@ -388,13 +388,15 @@ func (s *Store) PurgeUsage(ctx context.Context, before time.Time) (int64, error)
     return tag.RowsAffected(), nil
 }
 
-// Helper: compute the start of a billing period
+// Helper: compute the start of a usage period, at midnight UTC whatever zone
+// the server runs in
 func getStartOfPeriod(t time.Time, period plan.Period) time.Time {
+    t = t.UTC()
     switch period {
     case plan.PeriodMonthly:
-        return time.Date(t.Year(), t.Month(), 1, 0, 0, 0, 0, t.Location())
+        return time.Date(t.Year(), t.Month(), 1, 0, 0, 0, 0, time.UTC)
     case plan.PeriodYearly:
-        return time.Date(t.Year(), 1, 1, 0, 0, 0, 0, t.Location())
+        return time.Date(t.Year(), 1, 1, 0, 0, 0, 0, time.UTC)
     default:
         return time.Time{}
     }
