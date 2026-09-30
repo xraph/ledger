@@ -115,11 +115,17 @@ func WithLifecycleInterval(d time.Duration) Option {
 	}
 }
 
-// WithClock sets where the engine reads the time for its decisions: the
-// lifecycle worker's Advance, the periods GenerateInvoice will bill, coupon
-// validity and an invoice's due date. Tests use it. A nil clock keeps
-// time.Now. Stamps such as UpdatedAt, usage timestamps and the store's own
-// usage windows still read the wall clock.
+// WithClock sets where the engine reads the time for its decisions. Tests use
+// it. A nil clock keeps time.Now.
+//
+// These follow the clock: the lifecycle worker's Advance, a new
+// subscription's creation time, first period and trial, the periods
+// GenerateInvoice will bill, coupon validity, and an invoice's due date.
+//
+// These stay on the wall clock: UpdatedAt and other change stamps, the
+// timestamp on a metered usage event, the moment an immediate cancel or a
+// void is recorded, the store's own usage windows, and the expiry of the
+// entitlement cache.
 func WithClock(now func() time.Time) Option {
 	return func(l *Ledger) {
 		if now != nil {
@@ -337,7 +343,10 @@ func (l *Ledger) CreateSubscription(ctx context.Context, sub *subscription.Subsc
 	if sub.ID == (id.SubscriptionID{}) {
 		sub.ID = id.NewSubscriptionID()
 	}
-	sub.Entity = types.NewEntity()
+	// Stamped from the engine's clock, so a subscription created under
+	// WithClock has its first period and its trial on that clock's dates.
+	created := l.now()
+	sub.Entity = types.Entity{CreatedAt: created, UpdatedAt: created}
 
 	// Set the first period from the plan's billing period (see
 	// billingPeriod). Stored times are UTC, so every backend holds the same

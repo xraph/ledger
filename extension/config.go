@@ -30,7 +30,8 @@ type Config struct {
 	// LifecycleInterval is how often the lifecycle clock runs: it moves ended
 	// billing periods forward, enacts scheduled cancellations, ends trials and
 	// marks overdue invoices past due (default: 1m). Zero means the default,
-	// as for every other duration here; DisableLifecycle turns it off.
+	// as for every other duration here, and so does a negative value: neither
+	// turns the clock off. Use DisableLifecycle for that.
 	LifecycleInterval time.Duration `json:"lifecycle_interval" mapstructure:"lifecycle_interval" yaml:"lifecycle_interval"`
 
 	// DisableLifecycle turns the lifecycle clock off, for a deployment that
