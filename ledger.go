@@ -1280,7 +1280,9 @@ func (l *Ledger) SyncSubscriptionToProvider(ctx context.Context, subID id.Subscr
 	if syncErr == nil {
 		s.ProviderID = providerID
 		s.ProviderName = prov.Name()
-		_ = l.store.UpdateSubscription(ctx, s) //nolint:errcheck // best-effort update
+		// Only the provider columns: the sync took a network round trip, and
+		// the clock or an operator may have written the row meanwhile.
+		_ = l.store.SetSubscriptionProvider(ctx, subID, providerID, s.ProviderName) //nolint:errcheck // best-effort update
 	}
 
 	l.plugins.EmitProviderSync(ctx, prov.Name(), syncErr == nil, syncErr)
@@ -1315,7 +1317,10 @@ func (l *Ledger) SyncInvoiceToProvider(ctx context.Context, invID id.InvoiceID) 
 	if syncErr == nil {
 		inv.ProviderID = providerID
 		inv.ProviderName = prov.Name()
-		_ = l.store.UpdateInvoice(ctx, inv) //nolint:errcheck // best-effort update
+		// Only the provider columns: the sync took a network round trip, and
+		// the clock may have marked the invoice past due meanwhile, or an
+		// operator paid or voided it.
+		_ = l.store.SetInvoiceProvider(ctx, invID, providerID, inv.ProviderName) //nolint:errcheck // best-effort update
 	}
 
 	l.plugins.EmitProviderSync(ctx, prov.Name(), syncErr == nil, syncErr)

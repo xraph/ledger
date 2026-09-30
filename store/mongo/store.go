@@ -409,7 +409,10 @@ func (s *Store) UpdateSubscription(ctx context.Context, sub *subscription.Subscr
 func (s *Store) CancelSubscription(ctx context.Context, subID id.SubscriptionID, cancelAt time.Time) error {
 	t := now()
 	update := s.mdb.NewUpdate((*subscriptionModel)(nil)).
-		Filter(bson.M{"_id": subID.String()}).
+		Filter(bson.M{
+			"_id":    subID.String(),
+			"status": bson.M{"$nin": []string{string(subscription.StatusCanceled), string(subscription.StatusExpired)}},
+		}).
 		Set("cancel_at", cancelAt).
 		Set("updated_at", t)
 
@@ -424,7 +427,7 @@ func (s *Store) CancelSubscription(ctx context.Context, subID id.SubscriptionID,
 		return fmt.Errorf("ledger/mongo: cancel subscription: %w", err)
 	}
 	if res.MatchedCount() == 0 {
-		return ledger.ErrSubscriptionNotFound
+		return s.cancelMissed(ctx, subID)
 	}
 	return nil
 }

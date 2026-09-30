@@ -360,6 +360,12 @@ func (s *Store) CancelSubscription(_ context.Context, subID id.SubscriptionID, c
 	defer s.mu.Unlock()
 
 	if sub, exists := s.subscriptions[subID.String()]; exists {
+		switch sub.Status {
+		case subscription.StatusCanceled:
+			return ledger.ErrSubscriptionCanceled
+		case subscription.StatusExpired:
+			return ledger.ErrSubscriptionExpired
+		}
 		sub.CancelAt = &cancelAt
 		if !cancelAt.After(time.Now()) {
 			sub.Status = subscription.StatusCanceled

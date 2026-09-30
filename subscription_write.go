@@ -3,6 +3,7 @@ package ledger
 import (
 	"context"
 	"fmt"
+	"slices"
 
 	"github.com/xraph/ledger/id"
 	"github.com/xraph/ledger/invoice"
@@ -75,11 +76,25 @@ func (l *Ledger) ChangePlan(ctx context.Context, subID id.SubscriptionID, planID
 		return nil, err
 	}
 
-	sub.PlanID = next.ID
-	sub.Quantity = quantity
-	sub.Touch()
-	if err := l.store.UpdateSubscription(ctx, sub); err != nil {
+	// Only plan_id and quantity are written, and only while the subscription
+	// is neither canceled nor expired, so a period the lifecycle clock
+	// advanced or a cancel it enacted since the read above survives.
+	changed, err := l.store.ChangeSubscriptionPlan(ctx, subID, next.ID, quantity)
+	if err != nil {
 		return nil, err
+	}
+	sub, err = l.store.GetSubscription(ctx, subID)
+	if err != nil {
+		return nil, err
+	}
+	if !changed {
+		// The subscription stopped between the read and the write.
+		switch sub.Status {
+		case subscription.StatusExpired:
+			return nil, ErrSubscriptionExpired
+		default:
+			return nil, ErrSubscriptionCanceled
+		}
 	}
 	_ = l.store.Invalidate(ctx, sub.TenantID, sub.AppID) //nolint:errcheck // best-effort cache invalidation
 
@@ -89,36 +104,45 @@ func (l *Ledger) ChangePlan(ctx context.Context, subID id.SubscriptionID, planID
 
 // PauseSubscription pauses an active or trialing subscription.
 func (l *Ledger) PauseSubscription(ctx context.Context, subID id.SubscriptionID) (*subscription.Subscription, error) {
-	return l.transitionSubscription(ctx, subID, subscription.StatusPaused,
+	return l.transitionSubscription(ctx, subID, subscription.StatusPaused, l.store.PauseSubscription,
 		subscription.StatusActive, subscription.StatusTrialing)
 }
 
-// ResumeSubscription resumes a paused subscription.
+// ResumeSubscription resumes a paused subscription. A subscription the
+// lifecycle clock canceled while it was paused stays canceled.
 func (l *Ledger) ResumeSubscription(ctx context.Context, subID id.SubscriptionID) (*subscription.Subscription, error) {
-	return l.transitionSubscription(ctx, subID, subscription.StatusActive, subscription.StatusPaused)
+	return l.transitionSubscription(ctx, subID, subscription.StatusActive, l.store.ResumeSubscription,
+		subscription.StatusPaused)
 }
 
-func (l *Ledger) transitionSubscription(ctx context.Context, subID id.SubscriptionID, to subscription.Status, from ...subscription.Status) (*subscription.Subscription, error) {
+// transitionSubscription moves a subscription whose status is one of from to
+// the status to, through write, a conditional store write that repeats the
+// same precondition and changes the status column alone. A whole-row write
+// of the row read here could revive a subscription the lifecycle clock
+// canceled after the read, or put back a period it advanced. When the write
+// matches nothing, the status changed between the read and the write, and
+// the refusal names the status it changed to.
+func (l *Ledger) transitionSubscription(ctx context.Context, subID id.SubscriptionID, to subscription.Status,
+	write func(context.Context, id.SubscriptionID) (bool, error), from ...subscription.Status,
+) (*subscription.Subscription, error) {
 	sub, err := l.store.GetSubscription(ctx, subID)
 	if err != nil {
 		return nil, err
 	}
-
-	allowed := false
-	for _, f := range from {
-		if sub.Status == f {
-			allowed = true
-			break
-		}
-	}
-	if !allowed {
+	if !slices.Contains(from, sub.Status) {
 		return nil, fmt.Errorf("%w: cannot move a %s subscription to %s", ErrInvalidInput, sub.Status, to)
 	}
 
-	sub.Status = to
-	sub.Touch()
-	if err := l.store.UpdateSubscription(ctx, sub); err != nil {
+	changed, err := write(ctx, subID)
+	if err != nil {
 		return nil, err
+	}
+	sub, err = l.store.GetSubscription(ctx, subID)
+	if err != nil {
+		return nil, err
+	}
+	if !changed {
+		return nil, fmt.Errorf("%w: cannot move a %s subscription to %s", ErrInvalidInput, sub.Status, to)
 	}
 	_ = l.store.Invalidate(ctx, sub.TenantID, sub.AppID) //nolint:errcheck // best-effort cache invalidation
 

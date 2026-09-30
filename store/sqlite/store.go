@@ -443,7 +443,8 @@ func (s *Store) CancelSubscription(ctx context.Context, subID id.SubscriptionID,
 	updates := s.sdb.NewUpdate((*subscriptionModel)(nil)).
 		Set("cancel_at = ?", cancelAt.UTC()).
 		Set("updated_at = ?", t).
-		Where("id = ?", subID.String())
+		Where("id = ?", subID.String()).
+		Where("status NOT IN (?, ?)", string(subscription.StatusCanceled), string(subscription.StatusExpired))
 
 	if !cancelAt.After(time.Now()) {
 		updates = updates.
@@ -460,7 +461,7 @@ func (s *Store) CancelSubscription(ctx context.Context, subID id.SubscriptionID,
 		return err
 	}
 	if rows == 0 {
-		return ledger.ErrSubscriptionNotFound
+		return s.cancelMissed(ctx, subID)
 	}
 	return nil
 }

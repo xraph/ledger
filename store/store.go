@@ -43,7 +43,31 @@ type Store interface {
 	GetActiveSubscription(ctx context.Context, tenantID string, appID string) (*subscription.Subscription, error)
 	ListSubscriptions(ctx context.Context, tenantID string, appID string, opts subscription.ListOpts) ([]*subscription.Subscription, error)
 	UpdateSubscription(ctx context.Context, s *subscription.Subscription) error
+	// CancelSubscription sets cancel_at, and when cancelAt is not after now
+	// also cancels the subscription and stamps canceled_at. It refuses a
+	// subscription that is already canceled or expired, with
+	// ledger.ErrSubscriptionCanceled or ledger.ErrSubscriptionExpired, in
+	// the same conditional write, so an operator's cancel racing the
+	// lifecycle clock's enactment never cancels a subscription twice.
 	CancelSubscription(ctx context.Context, subID id.SubscriptionID, cancelAt time.Time) error
+
+	// Operator writes that can race the lifecycle clock. Each one writes only
+	// the columns it names in one conditional statement whose WHERE repeats
+	// the engine's precondition, never a whole row read earlier, so it cannot
+	// put back a period the clock advanced or revive a subscription the clock
+	// canceled. The bool ones report whether a row matched; a missing row is
+	// false with no error, and the caller re-reads to learn why.
+	//
+	// PauseSubscription sets status to paused when it is active or trialing.
+	PauseSubscription(ctx context.Context, subID id.SubscriptionID) (bool, error)
+	// ResumeSubscription sets status to active when it is paused.
+	ResumeSubscription(ctx context.Context, subID id.SubscriptionID) (bool, error)
+	// ChangeSubscriptionPlan sets plan_id and quantity when the status is
+	// neither canceled nor expired. A nil quantity is stored as empty.
+	ChangeSubscriptionPlan(ctx context.Context, subID id.SubscriptionID, planID id.PlanID, quantity map[string]int64) (bool, error)
+	// SetSubscriptionProvider records the provider's id and name for a
+	// subscription, or returns ledger.ErrSubscriptionNotFound.
+	SetSubscriptionProvider(ctx context.Context, subID id.SubscriptionID, providerID, providerName string) error
 
 	// Meter methods
 	IngestBatch(ctx context.Context, events []*meter.UsageEvent) error
@@ -67,6 +91,11 @@ type Store interface {
 	ListPendingInvoices(ctx context.Context, appID string) ([]*invoice.Invoice, error)
 	MarkInvoicePaid(ctx context.Context, invID id.InvoiceID, paidAt time.Time, paymentRef string) error
 	MarkInvoiceVoided(ctx context.Context, invID id.InvoiceID, reason string) error
+	// SetInvoiceProvider records the provider's id and name for an invoice,
+	// and nothing else, so a provider sync cannot put back a status the
+	// lifecycle clock or an operator wrote meanwhile. It returns
+	// ledger.ErrInvoiceNotFound for a missing invoice.
+	SetInvoiceProvider(ctx context.Context, invID id.InvoiceID, providerID, providerName string) error
 
 	// Coupon methods
 	CreateCoupon(ctx context.Context, c *coupon.Coupon) error
