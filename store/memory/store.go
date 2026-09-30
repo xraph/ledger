@@ -239,6 +239,9 @@ func (s *Store) DeletePlan(_ context.Context, planID id.PlanID) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
+	if _, ok := s.plans[planID.String()]; !ok {
+		return ledger.ErrPlanNotFound
+	}
 	delete(s.plans, planID.String())
 	return nil
 }
@@ -720,6 +723,9 @@ func (s *Store) DeleteCoupon(_ context.Context, couponID id.CouponID) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
+	if _, ok := s.coupons[couponID.String()]; !ok {
+		return ledger.ErrCouponNotFound
+	}
 	delete(s.coupons, couponID.String())
 	return nil
 }
@@ -958,6 +964,9 @@ func (s *Store) DeleteFeature(_ context.Context, featureID id.FeatureID) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
+	if _, ok := s.features[featureID.String()]; !ok {
+		return ledger.ErrFeatureNotFound
+	}
 	delete(s.features, featureID.String())
 	return nil
 }

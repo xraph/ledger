@@ -2542,6 +2542,12 @@ func testLookupsMatchEveryArgument(t *testing.T, s ledgerstore.Store) {
 		if _, err := s.GetPlan(ctx, theirs.ID); err != nil {
 			t.Errorf("DeletePlan took the other app's plan with it: %v", err)
 		}
+		if err := s.DeletePlan(ctx, mine.ID); !errors.Is(err, ledger.ErrPlanNotFound) {
+			t.Errorf("DeletePlan a second time: got %v, want ErrPlanNotFound", err)
+		}
+		if err := s.DeletePlan(ctx, id.NewPlanID()); !errors.Is(err, ledger.ErrPlanNotFound) {
+			t.Errorf("DeletePlan on an unknown plan: got %v, want ErrPlanNotFound", err)
+		}
 	})
 
 	t.Run("GetFeatureByKeyAndDeleteFeature", func(t *testing.T) {
@@ -2575,6 +2581,37 @@ func testLookupsMatchEveryArgument(t *testing.T, s ledgerstore.Store) {
 		}
 		if _, err := s.GetFeature(ctx, theirs.ID); err != nil {
 			t.Errorf("DeleteFeature took the other app's feature with it: %v", err)
+		}
+		if err := s.DeleteFeature(ctx, mine.ID); !errors.Is(err, ledger.ErrFeatureNotFound) {
+			t.Errorf("DeleteFeature a second time: got %v, want ErrFeatureNotFound", err)
+		}
+		if err := s.DeleteFeature(ctx, id.NewFeatureID()); !errors.Is(err, ledger.ErrFeatureNotFound) {
+			t.Errorf("DeleteFeature on an unknown feature: got %v, want ErrFeatureNotFound", err)
+		}
+	})
+
+	t.Run("DeleteCoupon", func(t *testing.T) {
+		mine, theirs := newTestCoupon(appID), newTestCoupon(otherApp)
+		for _, c := range []*coupon.Coupon{mine, theirs} {
+			if err := s.CreateCoupon(ctx, c); err != nil {
+				t.Fatalf("CreateCoupon: %v", err)
+			}
+		}
+
+		if err := s.DeleteCoupon(ctx, mine.ID); err != nil {
+			t.Fatalf("DeleteCoupon: %v", err)
+		}
+		if _, err := s.GetCouponByID(ctx, mine.ID); !errors.Is(err, ledger.ErrCouponNotFound) {
+			t.Errorf("GetCouponByID after DeleteCoupon: got %v, want ErrCouponNotFound", err)
+		}
+		if _, err := s.GetCouponByID(ctx, theirs.ID); err != nil {
+			t.Errorf("DeleteCoupon took the other app's coupon with it: %v", err)
+		}
+		if err := s.DeleteCoupon(ctx, mine.ID); !errors.Is(err, ledger.ErrCouponNotFound) {
+			t.Errorf("DeleteCoupon a second time: got %v, want ErrCouponNotFound", err)
+		}
+		if err := s.DeleteCoupon(ctx, id.NewCouponID()); !errors.Is(err, ledger.ErrCouponNotFound) {
+			t.Errorf("DeleteCoupon on an unknown coupon: got %v, want ErrCouponNotFound", err)
 		}
 	})
 
