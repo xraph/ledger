@@ -294,7 +294,10 @@ func (l *Ledger) CreateSubscription(ctx context.Context, sub *subscription.Subsc
 	// reading, neither of which a store can round-trip.
 	switch {
 	case sub.CurrentPeriodStart.IsZero():
-		sub.CurrentPeriodStart = time.Now().UTC()
+		// From CreatedAt, not a second clock reading: on a nanosecond clock a
+		// start later than created_at would let ForPeriod accept the period
+		// before the first, which ends just after created_at.
+		sub.CurrentPeriodStart = sub.CreatedAt.UTC()
 		sub.CurrentPeriodEnd = firstPeriodEnd(sub.CurrentPeriodStart, billingPeriod(p))
 	case sub.CurrentPeriodEnd.IsZero():
 		sub.CurrentPeriodStart = sub.CurrentPeriodStart.UTC()

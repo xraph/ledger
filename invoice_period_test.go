@@ -234,3 +234,66 @@ func TestGenerateInvoiceRefusesAPeriodThatHasNotStarted(t *testing.T) {
 		t.Errorf("a period that starts in the future: got %v, want ErrInvalidInput", err)
 	}
 }
+
+// A monthly subscription imported or backdated on the 29th to the 31st can have
+// a provider period that starts a few days before its creation day and ends on
+// the last day of the next month. The monthly anchor recovers without help, so
+// those real periods are accepted and their neighbours are not.
+func TestGenerateInvoiceForAMonthlyPeriodAroundAMonthEnd(t *testing.T) {
+	ctx := context.Background()
+	type span struct{ start, end time.Time }
+	for _, c := range []struct {
+		name    string
+		created time.Time
+		current span
+		real    span
+		refused []span
+	}{
+		{
+			"created 31 Jan, provider period 28 Jan to 28 Feb", at(2026, 1, 31),
+			span{at(2026, 2, 28), at(2026, 3, 28)},
+			span{at(2026, 1, 28), at(2026, 2, 28)},
+			[]span{{at(2025, 12, 28), at(2026, 1, 28)}, {at(2026, 1, 31), at(2026, 2, 28)}, {at(2026, 1, 1), at(2026, 2, 1)}},
+		},
+		{
+			"created 31 Mar, provider period 30 Mar to 30 Apr", at(2026, 3, 31),
+			span{at(2026, 4, 30), at(2026, 5, 30)},
+			span{at(2026, 3, 30), at(2026, 4, 30)},
+			[]span{{at(2026, 2, 28), at(2026, 3, 30)}, {at(2026, 3, 31), at(2026, 4, 30)}, {at(2026, 3, 1), at(2026, 4, 1)}},
+		},
+	} {
+		l, s, _, p := lifecycleFixture(t)
+		sub := seedSub(t, s, p, func(x *subscription.Subscription) {
+			x.CreatedAt = c.created
+			x.CurrentPeriodStart, x.CurrentPeriodEnd = c.current.start, c.current.end
+		})
+		for _, n := range c.refused {
+			if _, err := l.GenerateInvoice(ctx, sub.ID, ledger.ForPeriod(n.start, n.end)); !errors.Is(err, ledger.ErrInvalidInput) {
+				t.Errorf("%s: neighbour %v to %v: got %v, want ErrInvalidInput", c.name, n.start, n.end, err)
+			}
+		}
+		if _, err := l.GenerateInvoice(ctx, sub.ID, ledger.ForPeriod(c.real.start, c.real.end)); err != nil {
+			t.Errorf("%s: the real period: %v", c.name, err)
+		}
+	}
+}
+
+// CreateSubscription starts the first period at created_at itself. A start a
+// clock reading later would make the period before the first end after
+// created_at, and ForPeriod would accept it.
+func TestCreateSubscriptionStartsItsFirstPeriodAtCreation(t *testing.T) {
+	ctx := context.Background()
+	l, _, _, p := lifecycleFixture(t)
+	sub := &subscription.Subscription{TenantID: "acme", PlanID: p.ID, AppID: p.AppID}
+	if err := l.CreateSubscription(ctx, sub); err != nil {
+		t.Fatalf("CreateSubscription: %v", err)
+	}
+	got := reload(t, l, sub)
+	if !got.CurrentPeriodStart.Equal(got.CreatedAt) {
+		t.Fatalf("first period starts %v, created %v; want the same instant", got.CurrentPeriodStart, got.CreatedAt)
+	}
+	before := ledger.ForPeriod(got.CurrentPeriodStart.AddDate(0, -1, 0), got.CurrentPeriodStart)
+	if _, err := l.GenerateInvoice(ctx, sub.ID, before); !errors.Is(err, ledger.ErrInvalidInput) {
+		t.Errorf("the period before the first: got %v, want ErrInvalidInput", err)
+	}
+}

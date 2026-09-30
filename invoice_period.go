@@ -66,6 +66,8 @@ func namedPeriod(sub *subscription.Subscription, p *plan.Plan, opts []InvoiceOpt
 // billed "none", or one whose period Ledger does not know, has only its
 // current period.
 func periodBelongsTo(sub *subscription.Subscription, period plan.Period, want subscription.Period, now time.Time) bool {
+	// The start-before-end check is a cheap early exit: the walk below can
+	// never match a period that is empty or runs backwards, so it is redundant.
 	if !want.Start.Before(want.End) || want.Start.After(now) || !want.End.After(sub.CreatedAt) {
 		return false
 	}
@@ -79,7 +81,12 @@ func periodBelongsTo(sub *subscription.Subscription, period plan.Period, want su
 			return false
 		}
 		if start.Equal(want.End) {
-			if first, ok := clampedFirstStart(sub, period, want.End); ok {
+			// Only a yearly plan loses its anchor: a monthly plan's anchorDay
+			// always recovers the 29th to the 31st from the period itself, so
+			// the walk is exact and the rule below would only refuse real
+			// periods, such as an import whose provider period started a
+			// few days before the creation day.
+			if first, ok := clampedFirstStart(sub, period, want.End); ok && period == plan.PeriodYearly {
 				// The anchor is lost where a year from 29 February lands on
 				// the 28th, so the walk back cannot tell 29 February to 28
 				// February from 28 to 28. The subscription's own creation
