@@ -15,6 +15,7 @@ import (
 	"github.com/xraph/ledger/invoice"
 	"github.com/xraph/ledger/plan"
 	"github.com/xraph/ledger/provider"
+	"github.com/xraph/ledger/store"
 	"github.com/xraph/ledger/store/memory"
 	"github.com/xraph/ledger/subscription"
 	"github.com/xraph/ledger/types"
@@ -424,16 +425,67 @@ func TestImportedSubscriptionDuplicateCheckStaysInItsApp(t *testing.T) {
 	}
 }
 
+// barrierStore holds every subscription listing at a barrier once it is armed,
+// until want callers are inside or a short timeout passes. The subscription
+// import's duplicate scan is that listing, so armed with want imports in
+// flight, every goroutine is past its duplicate check before any of them
+// writes. Without the engine's import lock that always stores several rows.
+// With the lock only one goroutine is inside at a time, the barrier times out
+// once, and then lets everything through, so the test stays fast.
+type barrierStore struct {
+	store.Store
+	mu      sync.Mutex
+	want    int
+	arrived int
+	release chan struct{}
+	once    sync.Once
+}
+
+func (b *barrierStore) arm(want int) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	b.want, b.arrived, b.release = want, 0, make(chan struct{})
+	b.once = sync.Once{}
+}
+
+func (b *barrierStore) wait() {
+	b.mu.Lock()
+	if b.release == nil {
+		b.mu.Unlock()
+		return
+	}
+	release := b.release
+	b.arrived++
+	if b.arrived >= b.want {
+		b.once.Do(func() { close(release) })
+	}
+	b.mu.Unlock()
+
+	select {
+	case <-release:
+	case <-time.After(200 * time.Millisecond):
+		b.once.Do(func() { close(release) })
+	}
+}
+
+func (b *barrierStore) ListSubscriptions(ctx context.Context, tenantID, appID string, opts subscription.ListOpts) ([]*subscription.Subscription, error) {
+	rows, err := b.Store.ListSubscriptions(ctx, tenantID, appID, opts)
+	b.wait()
+	return rows, err
+}
+
 func TestConcurrentImportsOfOneSubscriptionStoreOneRow(t *testing.T) {
 	ctx := context.Background()
 	src := &importSource{}
-	l, st := newImportLedger(src)
+	bs := &barrierStore{Store: memory.New()}
+	l := ledger.New(bs, ledger.WithPlugin(src))
 	p := activePlanIn(t, l, "pro", "app_1")
 	src.subs = map[string]func() *subscription.Subscription{
 		"sub_1": func() *subscription.Subscription { return &subscription.Subscription{TenantID: "acme", PlanID: p.ID} },
 	}
 
 	const n = 8
+	bs.arm(n)
 	errs := make(chan error, n)
 	var wg sync.WaitGroup
 	for range n {
@@ -461,8 +513,41 @@ func TestConcurrentImportsOfOneSubscriptionStoreOneRow(t *testing.T) {
 	if stored != 1 || conflicts != n-1 {
 		t.Errorf("%d stored and %d conflicts from %d imports; want 1 and %d", stored, conflicts, n, n-1)
 	}
-	if rows, _ := st.ListSubscriptions(ctx, "acme", "app_1", subscription.ListOpts{}); len(rows) != 1 {
+	if rows, _ := bs.ListSubscriptions(ctx, "acme", "app_1", subscription.ListOpts{}); len(rows) != 1 {
 		t.Errorf("%d subscription rows, want exactly 1", len(rows))
+	}
+}
+
+func TestImportedInvoiceDuplicateCheckStaysInItsApp(t *testing.T) {
+	ctx := context.Background()
+	src := &importSource{}
+	l, _ := newImportLedger(src)
+	inApp := activePlanIn(t, l, "pro", "app_1")
+	noApp := activePlanIn(t, l, "team", "")
+	subIn := &subscription.Subscription{TenantID: "acme", PlanID: inApp.ID, AppID: "app_1"}
+	subOut := &subscription.Subscription{TenantID: "acme", PlanID: noApp.ID}
+	for _, s := range []*subscription.Subscription{subIn, subOut} {
+		if err := l.CreateSubscription(ctx, s); err != nil {
+			t.Fatalf("CreateSubscription: %v", err)
+		}
+	}
+	src.invoices = map[string]func() *invoice.Invoice{
+		"in_1": func() *invoice.Invoice { return importedBill("acme", subIn.ID) },
+	}
+	if _, err := l.ImportInvoiceFromProvider(ctx, "", "in_1", ledger.ImportInto("app_1")); err != nil {
+		t.Fatalf("import into app_1: %v", err)
+	}
+
+	// The same provider id, for the same tenant and period, in the no-app
+	// scope: the store lists every app's invoices for an empty app, so only
+	// the engine's own filter keeps app_1's copy from blocking this one.
+	src.invoices["in_1"] = func() *invoice.Invoice { return importedBill("acme", subOut.ID) }
+	inv, err := l.ImportInvoiceFromProvider(ctx, "", "in_1", ledger.ImportInto(""))
+	if err != nil {
+		t.Fatalf("the no-app scope must not see app_1's invoice as a duplicate: %v", err)
+	}
+	if inv.AppID != "" || inv.SubscriptionID != subOut.ID {
+		t.Errorf("imported %+v; want it in the no-app scope on its own subscription", inv)
 	}
 }
 
