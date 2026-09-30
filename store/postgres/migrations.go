@@ -317,7 +317,7 @@ ALTER TABLE ledger_subscriptions ADD COLUMN IF NOT EXISTS quantity JSONB NOT NUL
 			Version: "20240101000011",
 			Up: func(ctx context.Context, exec migrate.Executor) error {
 				_, err := exec.Exec(ctx, `
-CREATE INDEX IF NOT EXISTS idx_ledger_subs_cancel_at ON ledger_subscriptions (cancel_at);
+CREATE INDEX IF NOT EXISTS idx_ledger_subs_status_cancel_at ON ledger_subscriptions (status, cancel_at);
 CREATE INDEX IF NOT EXISTS idx_ledger_subs_status_trial_end ON ledger_subscriptions (status, trial_end);
 CREATE INDEX IF NOT EXISTS idx_ledger_subs_status_period_end ON ledger_subscriptions (status, current_period_end);
 CREATE INDEX IF NOT EXISTS idx_ledger_invoices_status_due ON ledger_invoices (status, due_date);
@@ -326,7 +326,7 @@ CREATE INDEX IF NOT EXISTS idx_ledger_invoices_status_due ON ledger_invoices (st
 			},
 			Down: func(ctx context.Context, exec migrate.Executor) error {
 				_, err := exec.Exec(ctx, `
-DROP INDEX IF EXISTS idx_ledger_subs_cancel_at;
+DROP INDEX IF EXISTS idx_ledger_subs_status_cancel_at;
 DROP INDEX IF EXISTS idx_ledger_subs_status_trial_end;
 DROP INDEX IF EXISTS idx_ledger_subs_status_period_end;
 DROP INDEX IF EXISTS idx_ledger_invoices_status_due;

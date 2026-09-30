@@ -135,8 +135,12 @@ func (s *Store) AdvanceSubscriptionPeriod(_ context.Context, subID id.Subscripti
 
 // MarkInvoicePastDue stores a changed copy in place of the invoice rather than
 // writing to it. This store keeps invoices by the pointer it was handed and
-// hands the same pointer back from Get and the lists, so a write to it would
-// race any caller still reading an invoice the clock is moving.
+// hands the same pointer back from GetInvoice and the older lists, so a write
+// to it would race any caller still reading an invoice the clock is moving.
+// The copy removes this method from that race, not the store: other writers
+// still share the stored pointer, Ledger.MarkInvoicePaid among them, which
+// sets Status, PaidAt and PaymentRef on the invoice GetInvoice returned, after
+// the store call and outside this store's lock.
 func (s *Store) MarkInvoicePastDue(_ context.Context, invID id.InvoiceID, now time.Time) (bool, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()

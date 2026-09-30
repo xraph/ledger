@@ -341,7 +341,7 @@ func init() {
 					return fmt.Errorf("expected mongomigrate executor, got %T", exec)
 				}
 				drops := map[string][]string{
-					colSubscriptions: {"cancel_at_1", "status_1_trial_end_1", "status_1_current_period_end_1"},
+					colSubscriptions: {"status_1_cancel_at_1", "status_1_trial_end_1", "status_1_current_period_end_1"},
 					colInvoices:      {"status_1_due_date_1"},
 				}
 				for col, names := range drops {

@@ -37,7 +37,10 @@ const (
 // DueOpts selects the subscriptions whose Field is at or before Before and
 // whose status is one of Statuses (any status when it is empty), earliest date
 // first, ties broken by id. An empty AppID means every app: the lifecycle
-// clock runs across apps.
+// clock runs across apps. The database stores index each date behind the
+// status, (status, cancel_at) and so on, so a caller that names its Statuses
+// reads the index and not every row that ever carried the date: an immediate
+// cancel stamps cancel_at too, so that date is set on every canceled row.
 type DueOpts struct {
 	Field    DueField
 	Before   time.Time

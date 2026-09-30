@@ -34,7 +34,7 @@ func statusStrings(in []subscription.Status) []string {
 // add_lifecycle_indexes migration builds the same ones; keep the two in step.
 func lifecycleSubscriptionIndexes() []mongo.IndexModel {
 	return []mongo.IndexModel{
-		{Keys: bson.D{{Key: "cancel_at", Value: 1}}},
+		{Keys: bson.D{{Key: "status", Value: 1}, {Key: "cancel_at", Value: 1}}},
 		{Keys: bson.D{{Key: "status", Value: 1}, {Key: "trial_end", Value: 1}}},
 		{Keys: bson.D{{Key: "status", Value: 1}, {Key: "current_period_end", Value: 1}}},
 	}
@@ -132,7 +132,10 @@ func (s *Store) EndSubscriptionTrial(ctx context.Context, subID id.SubscriptionI
 
 // EnactSubscriptionCancel copies cancel_at into canceled_at inside the update,
 // with a pipeline, so the value written is the stored one and nothing is read
-// first.
+// first. Grove's update builder has no pipeline form, so this goes to the
+// driver's collection directly and bypasses grove's operation hooks: a hook a
+// host registers on the grove DB does not see this write, though it sees every
+// other lifecycle transition.
 func (s *Store) EnactSubscriptionCancel(ctx context.Context, subID id.SubscriptionID, at time.Time) (bool, error) {
 	res, err := s.mdb.Collection(colSubscriptions).UpdateOne(ctx,
 		bson.M{
