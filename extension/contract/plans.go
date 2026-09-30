@@ -18,6 +18,7 @@ func registerPlans(b *binder) {
 	command(b, "plans.activate", plansActivate)
 	command(b, "plans.delete", plansDelete)
 	command(b, "plans.syncToProvider", plansSync)
+	command(b, "plans.importFromProvider", plansImport)
 }
 
 // IDInput is the request for every intent that names one entity.

@@ -118,6 +118,7 @@ func TestToContractError(t *testing.T) {
 		{ledger.ErrSubscriptionCanceled, dash.CodeConflict},
 		{ledger.ErrProviderNotConfigured, dash.CodeUnavailable},
 		{ledger.ErrProviderNotFound, dash.CodeUnavailable},
+		{fmt.Errorf("%w: import plan: %w", ledger.ErrProviderSync, errors.New("no such plan")), dash.CodeUnavailable},
 		{errors.New("disk on fire"), dash.CodeInternal},
 		{&dash.Error{Code: dash.CodePermissionDenied}, dash.CodePermissionDenied},
 	}

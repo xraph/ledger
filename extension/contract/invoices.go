@@ -22,6 +22,7 @@ func registerInvoices(b *binder) {
 	command(b, "invoices.markPaid", invoicesMarkPaid)
 	command(b, "invoices.void", invoicesVoid)
 	command(b, "invoices.syncToProvider", invoicesSync)
+	command(b, "invoices.importFromProvider", invoicesImport)
 }
 
 func loadInvoice(ctx context.Context, eng *ledger.Ledger, sc scope, raw string) (*invoice.Invoice, error) {

@@ -41,9 +41,13 @@ var (
 		ledger.ErrSubscriptionExists, ledger.ErrSubscriptionCanceled, ledger.ErrSubscriptionExpired,
 		ledger.ErrInvoiceFinalized, ledger.ErrInvoicePaid, ledger.ErrInvoiceVoided,
 	}
+	// ErrProviderSync is a provider refusing an import (the four
+	// *.importFromProvider intents are its only source). Its text is the
+	// provider's own words, which the operator needs, as the sync intents
+	// already hand back in SyncResult.Error.
 	unavailableErrs = []error{
-		ledger.ErrProviderNotConfigured, ledger.ErrProviderNotFound, ledger.ErrStoreNotReady,
-		ledger.ErrStoreClosed,
+		ledger.ErrProviderNotConfigured, ledger.ErrProviderNotFound, ledger.ErrProviderSync,
+		ledger.ErrStoreNotReady, ledger.ErrStoreClosed,
 	}
 )
 

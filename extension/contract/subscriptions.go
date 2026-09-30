@@ -22,6 +22,7 @@ func registerSubscriptions(b *binder) {
 	command(b, "subscriptions.resume", subscriptionsResume)
 	command(b, "subscriptions.cancel", subscriptionsCancel)
 	command(b, "subscriptions.syncToProvider", subscriptionsSync)
+	command(b, "subscriptions.importFromProvider", subscriptionsImport)
 }
 
 // loadSubscription parses an id and loads the subscription it names, refusing

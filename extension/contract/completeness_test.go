@@ -11,7 +11,7 @@ import (
 	ledger "github.com/xraph/ledger"
 )
 
-const wantIntents = 47
+const wantIntents = 51
 
 // Every intent the manifest declares is bound with its declared kind, nothing
 // is bound that is not declared, and every invalidates entry names a declared
@@ -64,7 +64,7 @@ func TestManifestAndRegistrationsAgree(t *testing.T) {
 	}
 }
 
-// The intents that may run without an app are the seven feature catalog
+// The intents that may run without an app are the eight feature catalog
 // intents, whose global rows belong to no app, and settings.detail, which
 // reports configuration and reads no app data. Every other intent refuses the
 // empty scope.
@@ -75,7 +75,7 @@ func TestPlatformIntentsAreTheFeatureCatalogAndSettings(t *testing.T) {
 		t.Fatalf("registerAll: %v", b.err)
 	}
 
-	var got []string
+	got := make([]string, 0, len(b.platform))
 	for name := range b.platform {
 		got = append(got, name)
 	}
@@ -87,8 +87,8 @@ func TestPlatformIntentsAreTheFeatureCatalogAndSettings(t *testing.T) {
 	}
 	sort.Strings(got)
 	sort.Strings(want)
-	if len(want) != 8 {
-		t.Fatalf("expected 7 features.* intents plus settings.detail, found %v", want)
+	if len(want) != 9 {
+		t.Fatalf("expected 8 features.* intents plus settings.detail, found %v", want)
 	}
 	if strings.Join(got, ",") != strings.Join(want, ",") {
 		t.Errorf("platform intents = %v, want exactly %v", got, want)
@@ -117,8 +117,6 @@ func TestDroppedIntentsAreAbsent(t *testing.T) {
 		t.Fatalf("load: %v", err)
 	}
 	dropped := map[string]bool{
-		"plans.importFromProvider": true, "features.importFromProvider": true,
-		"subscriptions.importFromProvider": true, "invoices.importFromProvider": true,
 		"usage.purge": true, "providers.list": true,
 	}
 	for _, in := range m.Intents {

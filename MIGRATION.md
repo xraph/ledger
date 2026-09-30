@@ -35,9 +35,9 @@ One row per templ page or widget. A surface is migrated when a contract-backed p
 
 ## The dashboard contract
 
-The `ledger` contributor lives in `extension/contract/`. It declares 47 intents in `manifest.yaml` and binds a typed handler to each. They cover plans, features, subscriptions, invoices, coupons, usage, entitlements, payment methods, the overview and settings. The React plugin in forge-dashboard reads these intents. The templ contributor in `dashboard/` is a separate thing and keeps working until it's deleted.
+The `ledger` contributor lives in `extension/contract/`. It declares 51 intents in `manifest.yaml` and binds a typed handler to each. They cover plans, features, subscriptions, invoices, coupons, usage, entitlements, payment methods, the overview and settings. The React plugin in forge-dashboard reads these intents. The templ contributor in `dashboard/` is a separate thing and keeps working until it's deleted.
 
-`extension/contract/completeness_test.go` fails if the manifest and the registrations disagree, so the number 47 is checked on every test run and not just written here.
+`extension/contract/completeness_test.go` fails if the manifest and the registrations disagree, so the number 51 is checked on every test run and not just written here.
 
 How a request is scoped, since this is the part you'll trip over in a real deployment:
 
@@ -55,13 +55,13 @@ What comes back over the wire:
 - Plans and catalog features list oldest first. Subscriptions, invoices, coupons and usage list newest first. Every list breaks ties by id, so a page boundary doesn't shuffle rows between requests.
 - Every command declares `invalidates`, naming each query whose answer it can change, so a page refetches what a write touched.
 - `*.syncToProvider` answers a provider's refusal as a normal result with `success: false` and the provider's message in `error`. It returns an error code only when there's nothing to sync (an unknown id) or no provider is configured (`UNAVAILABLE`).
+- `*.importFromProvider` copies one record the payment provider holds into your app. You send `{provider_name, provider_id}`, and an empty `provider_name` means the first registered provider. You get back the same shape the matching `detail` intent answers, so a page can open the record straight away. The record always lands in the app that asked, whatever app the provider reports, and one the provider files under a different app is `NOT_FOUND`. Importing the same thing twice is `CONFLICT`: plans by slug, features by key, subscriptions and invoices by provider id. A subscription's plan has to be in the app already, and so does an invoice's subscription. No provider, an unknown provider name, and a provider refusing the id are all `UNAVAILABLE`, and a refusal carries the provider's own words.
 - `overview.stats` has no count method to call, because the stores don't have one. It scans up to 5000 rows for each of plans, subscriptions, pending invoices and coupons, and sets `capped: true` when any scan hit the bound. When `capped` is true the counts are lower bounds, and the page has to say so.
 - `paymentMethods.list` answers only for a tenant with a subscription in the caller's app. A tenant that has payment methods at the provider but no subscription in the app gets `NOT_FOUND`, and the provider isn't asked. We check it ourselves because a provider's tenant namespace is shared across apps, so the provider can't tell one app's tenant from another's.
 - `settings.detail` reports the batch size, flush interval and cache TTL the extension is actually running with, plus the registered providers and invoice formats. It replaces the three literals the templ page showed.
 
 ### Intents we chose not to offer
 
-- `plans.importFromProvider`, `features.importFromProvider`, `subscriptions.importFromProvider` and `invoices.importFromProvider`. The provider interface has no per-app scoping, so an import would pull in rows for every app that shares the provider account and file them under whichever app asked.
 - `usage.purge`. It deletes usage for every app at once.
 - `providers.list`. `settings.detail` already returns the provider names.
 
@@ -468,6 +468,7 @@ An SDK caller will notice these, because the contract needed the engine to refus
 - A plugin `CouponValidator` that refuses a coupon now gives you an error wrapping `ErrCouponInvalid` as well as the validator's own error, so `errors.Is` finds both. The dashboard answers `BAD_REQUEST` with the validator's message, where it used to answer `INTERNAL`.
 - `CreateCoupon` and `UpdateCoupon` validate the coupon the same way `ApplyCoupon` does. A coupon's code, type, value, currency and app are fixed once it exists, because applied coupons are priced from them on every later invoice. `UpdateCoupon` never writes the redemption count, on any backend, which closes the rollback race that used to be known constraint 6.
 - `ExportInvoice` and `InvoiceFormats` give invoice formatters their first caller, and `ProviderNames` lists the registered payment providers. Entitlements can be inspected without touching the cache or firing plugin events.
+- `ImportPlanFromProvider` and its three siblings take an optional `ledger.ImportInto(appID)`, and every import now goes through the same checks as a record you'd create by hand. A plan goes through `CreatePlan`. A feature goes through `ledger.ValidateFeature`, which is exported now, and `features.create` and `features.update` call it too. An invoice has its currency, line items, totals and period dates checked against the plan's currency and against the arithmetic `GenerateInvoice` uses, so a bad figure can't reach the books through a provider. A duplicate is `ErrAlreadyExists`, a record the provider files under another app is that entity's not-found error, and a subscription on a plan that isn't active is refused with a message naming the plan to activate. Imports also fill in any line item id the provider left out. One import at a time runs its duplicate check and write in a process, behind a mutex.
 
 Five store bugs got fixed along the way.
 
@@ -515,4 +516,6 @@ None of these are fixed. Read them before you assume Ledger handles the case for
 15. Fixed. The memory store now honours `Limit` and `Offset` on `ListInvoices`, in the same newest-first order as the other backends.
 16. Deleting a coupon leaves its application rows behind on sqlite, mongo and memory. Postgres deletes them with it, because the foreign key is `ON DELETE CASCADE`. You can't see the difference through Ledger today, since `ListAppliedCoupons` skips a coupon that no longer exists, but a query over the applications themselves, or a data audit, will find the backends disagree.
 17. On postgres, `ApplyCoupon` and `RedeemCoupon` catch a duplicate through the unique index. If you call either inside your own transaction, a duplicate aborts that whole transaction unless you wrap the call in a savepoint.
-18. On mongo, invoice line items must carry ids. An imported provider invoice whose line items have none can't be read back.
+18. On mongo, invoice line items must carry ids. `ImportInvoiceFromProvider` now fills in a missing one, but a caller that writes an invoice straight to the store still has to set them.
+19. A provider has no idea which app a record belongs to unless it says so in `app_id`, and several apps can share one provider account. `ImportInto` files every import under the app that asked, and refuses a record the provider files under another app. A record the provider files under no app can be imported by any app that knows its id. For subscriptions and invoices that's bounded, because the plan or subscription they point at has to be in the importing app already. For plans and catalog features it isn't: if the provider account is shared and you have the id, you can copy another app's plan definition. Nothing in Ledger ships a real provider yet, so every import path is tested against a fake one.
+20. Imports are serialised inside one process, not across replicas. With several replicas, two concurrent imports of the same plan or feature can both pass the duplicate check and then hit a store unique index, and the loser surfaces as `INTERNAL` where you'd want `CONFLICT`. The follow-up is a store-level mapping from the unique violation to `ErrAlreadyExists`. Until then, the dashboard's disabled button while a request is pending is the only guard between replicas.

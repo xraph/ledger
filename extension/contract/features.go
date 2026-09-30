@@ -21,6 +21,7 @@ func registerFeatures(b *binder) {
 	platformCommand(b, "features.archive", featuresArchive)
 	platformCommand(b, "features.delete", featuresDelete)
 	platformCommand(b, "features.syncToProvider", featuresSync)
+	platformCommand(b, "features.importFromProvider", featuresImport)
 }
 
 type FeaturesListInput struct {
