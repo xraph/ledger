@@ -381,3 +381,16 @@ func TestInvoicesGenerateTakesThePeriodTheEngineWrote(t *testing.T) {
 		t.Errorf("the invoice's own period sent back: got %v, want CONFLICT (BAD_REQUEST would mean it was not read exactly)", err)
 	}
 }
+
+// TestInvoicesGenerateRefusesAPausedPeriod: a resume moves a paused period's
+// end, so the period cannot be billed while paused, and the refusal says why.
+func TestInvoicesGenerateRefusesAPausedPeriod(t *testing.T) {
+	h := newHarness(t)
+	p := h.activePlan("app_a", "p")
+	sub := h.subscribe("app_a", "acme", p)
+	mustCall(h, "app_a", subscriptionsPause, IDInput{ID: sub.ID.String()})
+	_, err := call(h, "app_a", invoicesGenerate, InvoiceGenerateInput{SubscriptionID: sub.ID.String()})
+	if codeOf(err) != dash.CodeBadRequest || !strings.Contains(err.Error(), "is paused; its period is billed when it ends") {
+		t.Errorf("a paused subscription: got %v, want BAD_REQUEST saying its period is billed when it ends", err)
+	}
+}

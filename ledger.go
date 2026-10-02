@@ -877,6 +877,13 @@ func (l *Ledger) GenerateInvoice(ctx context.Context, subID id.SubscriptionID, o
 	if err != nil {
 		return nil, err
 	}
+	// A resume moves the end of a paused subscription's period on by the
+	// length of the pause, so that period is not finished: billing it now
+	// would bill a period whose end later moves. Ended periods named with
+	// ForPeriod are finished and stay billable.
+	if named == nil && sub.Status == subscription.StatusPaused {
+		return nil, fmt.Errorf("%w: subscription %s is paused; its period is billed when it ends", ErrInvalidInput, sub.ID)
+	}
 	if named != nil {
 		billed := *sub
 		billed.CurrentPeriodStart, billed.CurrentPeriodEnd = named.Start, named.End
