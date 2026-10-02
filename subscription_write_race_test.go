@@ -107,7 +107,7 @@ func TestPauseKeepsAPeriodTheClockAdvanced(t *testing.T) {
 		x.CurrentPeriodStart, x.CurrentPeriodEnd = past.AddDate(0, -1, 0), past
 	})
 	st.clock = func() {
-		if ok, err := st.AdvanceSubscriptionPeriod(ctx, sub.ID, past, next, now); err != nil || !ok {
+		if ok, err := st.AdvanceSubscriptionPeriod(ctx, sub.ID, past, past, next, now); err != nil || !ok {
 			t.Fatalf("AdvanceSubscriptionPeriod: %v, %v", ok, err)
 		}
 	}
@@ -135,7 +135,7 @@ func TestChangePlanKeepsAPeriodTheClockAdvanced(t *testing.T) {
 	})
 	to := activePlan(t, l, "to", "app_1", 0)
 	st.clock = func() {
-		if ok, err := st.AdvanceSubscriptionPeriod(ctx, sub.ID, past, next, now); err != nil || !ok {
+		if ok, err := st.AdvanceSubscriptionPeriod(ctx, sub.ID, past, past, next, now); err != nil || !ok {
 			t.Fatalf("AdvanceSubscriptionPeriod: %v, %v", ok, err)
 		}
 	}
@@ -205,7 +205,7 @@ func TestScheduledCancelEndsThePeriodCurrentWhenItLands(t *testing.T) {
 	// The engine reads the ended period; the clock advances it before the
 	// cancel's write lands.
 	st.clock = func() {
-		if ok, err := st.AdvanceSubscriptionPeriod(ctx, sub.ID, past, next, now); err != nil || !ok {
+		if ok, err := st.AdvanceSubscriptionPeriod(ctx, sub.ID, past, past, next, now); err != nil || !ok {
 			t.Fatalf("AdvanceSubscriptionPeriod: %v, %v", ok, err)
 		}
 	}

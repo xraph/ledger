@@ -130,7 +130,7 @@ func (s *Store) EnactSubscriptionCancel(ctx context.Context, subID id.Subscripti
 		Exec(ctx))
 }
 
-func (s *Store) AdvanceSubscriptionPeriod(ctx context.Context, subID id.SubscriptionID, start, end, at time.Time) (bool, error) {
+func (s *Store) AdvanceSubscriptionPeriod(ctx context.Context, subID id.SubscriptionID, from, start, end, at time.Time) (bool, error) {
 	running, args := statusIn(runningStatuses)
 	return changed(s.sdb.NewUpdate((*subscriptionModel)(nil)).
 		Set("current_period_start = ?", start.UTC()).
@@ -138,6 +138,7 @@ func (s *Store) AdvanceSubscriptionPeriod(ctx context.Context, subID id.Subscrip
 		Set("updated_at = ?", now()).
 		Where("id = ?", subID.String()).
 		Where(running, args...).
+		Where("current_period_end = ?", from.UTC()).
 		Where("current_period_end <= ?", at.UTC()).
 		Where("current_period_end < ?", end.UTC()).
 		Where("(cancel_at IS NULL OR cancel_at > current_period_end)").

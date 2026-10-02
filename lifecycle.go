@@ -132,7 +132,9 @@ func (l *Ledger) advancePeriod(ctx context.Context, sub *subscription.Subscripti
 		return false, nil // a cancellation falls on the current end
 	}
 
-	changed, err := l.store.AdvanceSubscriptionPeriod(ctx, sub.ID, start, end, now)
+	// Pinned to the end listed here: a replica that listed the row before
+	// another moved it matches nothing and announces nothing.
+	changed, err := l.store.AdvanceSubscriptionPeriod(ctx, sub.ID, sub.CurrentPeriodEnd, start, end, now)
 	if err != nil {
 		return false, fmt.Errorf("advance subscription %s: %w", sub.ID, err)
 	}

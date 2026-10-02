@@ -316,7 +316,7 @@ func testLifecycleTransitionsAreConditional(t *testing.T, s ledgerstore.Store) {
 			x.Metadata = map[string]string{"note": "kept"}
 		})
 		before := time.Now()
-		expectChanged(t, "an ended period", true)(s.AdvanceSubscriptionPeriod(ctx, due.ID, past, next, now))
+		expectChanged(t, "an ended period", true)(s.AdvanceSubscriptionPeriod(ctx, due.ID, past, past, next, now))
 		after := time.Now()
 		got := reread(t, s, due)
 		requireStampedDuring(t, "updated_at", got.UpdatedAt, before, after)
@@ -327,18 +327,49 @@ func testLifecycleTransitionsAreConditional(t *testing.T, s ledgerstore.Store) {
 		if got.PlanID.String() != due.PlanID.String() || got.Quantity["seats"] != 3 || got.Metadata["note"] != "kept" || got.Status != subscription.StatusActive {
 			t.Errorf("the advance wrote more than the period: %+v", got)
 		}
-		expectChanged(t, "the same advance again", false)(s.AdvanceSubscriptionPeriod(ctx, due.ID, past, next, now))
+		expectChanged(t, "the same advance again", false)(s.AdvanceSubscriptionPeriod(ctx, due.ID, past, past, next, now))
 
 		stale := ended(func(*subscription.Subscription) {})
-		expectChanged(t, "an end no later than the current one", false)(s.AdvanceSubscriptionPeriod(ctx, stale.ID, past.AddDate(0, -1, 0), past, now))
+		expectChanged(t, "an end no later than the current one", false)(s.AdvanceSubscriptionPeriod(ctx, stale.ID, past, past.AddDate(0, -1, 0), past, now))
 		paused := ended(func(x *subscription.Subscription) { x.Status = subscription.StatusPaused })
-		expectChanged(t, "a paused subscription", false)(s.AdvanceSubscriptionPeriod(ctx, paused.ID, past, next, now))
+		expectChanged(t, "a paused subscription", false)(s.AdvanceSubscriptionPeriod(ctx, paused.ID, past, past, next, now))
 		cancelAtEnd := ended(func(x *subscription.Subscription) { c := past; x.CancelAt = &c })
-		expectChanged(t, "a cancel due at the period end", false)(s.AdvanceSubscriptionPeriod(ctx, cancelAtEnd.ID, past, next, now))
+		expectChanged(t, "a cancel due at the period end", false)(s.AdvanceSubscriptionPeriod(ctx, cancelAtEnd.ID, past, past, next, now))
 		cancelLater := ended(func(x *subscription.Subscription) { c := next; x.CancelAt = &c })
-		expectChanged(t, "a cancel in a later period", true)(s.AdvanceSubscriptionPeriod(ctx, cancelLater.ID, past, next, now))
+		expectChanged(t, "a cancel in a later period", true)(s.AdvanceSubscriptionPeriod(ctx, cancelLater.ID, past, past, next, now))
+		// The end the caller listed pins the write. Sub-second ends, read
+		// back the way the engine reads them, match on every backend; a
+		// replica whose listed end is stale matches nothing, even with a
+		// later target, once another replica has moved the row.
+		subSecond := past.Add(-123456789 * time.Nanosecond)
+		pinned := ended(func(x *subscription.Subscription) {
+			x.CurrentPeriodStart, x.CurrentPeriodEnd = subSecond.AddDate(0, -1, 0), subSecond
+		})
+		listed, err := s.ListDueSubscriptions(ctx, subscription.DueOpts{
+			Field: subscription.DuePeriodEnd, Before: now, AppID: appID, Statuses: []subscription.Status{subscription.StatusActive},
+		})
+		if err != nil {
+			t.Fatalf("ListDueSubscriptions: %v", err)
+		}
+		var from time.Time
+		for _, row := range listed {
+			if row.ID.String() == pinned.ID.String() {
+				from = row.CurrentPeriodEnd
+			}
+		}
+		if from.IsZero() {
+			t.Fatalf("the row with a sub-second end was not listed")
+		}
+		expectChanged(t, "an advance from a stale end", false)(s.AdvanceSubscriptionPeriod(ctx, pinned.ID, from.Add(-time.Second), from, next, now))
+		expectChanged(t, "an advance from the listed sub-second end", true)(s.AdvanceSubscriptionPeriod(ctx, pinned.ID, from, from, next, now))
+		expectChanged(t, "a second replica from the same listed end, aiming later", false)(
+			s.AdvanceSubscriptionPeriod(ctx, pinned.ID, from, next, next.AddDate(0, 1, 0), next.Add(time.Hour)))
+		if got := reread(t, s, pinned); !sameInstantToMillisecond(got.CurrentPeriodEnd, next) {
+			t.Errorf("period ends %v, want the first replica's %v", got.CurrentPeriodEnd, next)
+		}
+
 		running := storedSubscription(t, s, appID, func(*subscription.Subscription) {})
-		expectChanged(t, "a period that has not ended", false)(s.AdvanceSubscriptionPeriod(ctx, running.ID, running.CurrentPeriodEnd, running.CurrentPeriodEnd.AddDate(0, 1, 0), now))
+		expectChanged(t, "a period that has not ended", false)(s.AdvanceSubscriptionPeriod(ctx, running.ID, reread(t, s, running).CurrentPeriodEnd, running.CurrentPeriodEnd, running.CurrentPeriodEnd.AddDate(0, 1, 0), now))
 	})
 
 	t.Run("invoice", func(t *testing.T) {
@@ -415,7 +446,7 @@ func testLifecycleTransitionsApplyOnce(t *testing.T, s ledgerstore.Store) {
 			defer wg.Done()
 			canceled, cancelErr := s.EnactSubscriptionCancel(ctx, sub.ID, now)
 			trialEnded, trialErr := s.EndSubscriptionTrial(ctx, trial.ID, now)
-			advanced, advanceErr := s.AdvanceSubscriptionPeriod(ctx, ended.ID, past, next, now)
+			advanced, advanceErr := s.AdvanceSubscriptionPeriod(ctx, ended.ID, past, past, next, now)
 			marked, markErr := s.MarkInvoicePastDue(ctx, inv.ID, now)
 			mu.Lock()
 			defer mu.Unlock()
@@ -482,7 +513,7 @@ func testLifecycleScheduledCancelRacesTheAdvance(t *testing.T, s ledgerstore.Sto
 		}()
 		go func() {
 			defer wg.Done()
-			ok, err := s.AdvanceSubscriptionPeriod(ctx, sub.ID, past, next, now)
+			ok, err := s.AdvanceSubscriptionPeriod(ctx, sub.ID, past, past, next, now)
 			mu.Lock()
 			defer mu.Unlock()
 			errs = append(errs, err)

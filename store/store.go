@@ -149,9 +149,14 @@ type Store interface {
 	EnactSubscriptionCancel(ctx context.Context, subID id.SubscriptionID, now time.Time) (bool, error)
 	// AdvanceSubscriptionPeriod sets the current period to [start, end) when
 	// the subscription is active, trialing or past due, its current period
-	// ended at or before now, end is later than that current end, and no
-	// cancellation falls at or before the current end.
-	AdvanceSubscriptionPeriod(ctx context.Context, subID id.SubscriptionID, start, end, now time.Time) (bool, error)
+	// still ends at from (the end the caller listed and worked from) and
+	// that end is at or before now, end is later than it, and no
+	// cancellation falls at or before it. Pinning from means a replica that
+	// listed the row before another replica moved it matches nothing, so it
+	// cannot announce the periods the other one already announced. from
+	// round-trips from the row, so the equality holds on every backend,
+	// sqlite's text timestamps included.
+	AdvanceSubscriptionPeriod(ctx context.Context, subID id.SubscriptionID, from, start, end, now time.Time) (bool, error)
 	// MarkInvoicePastDue moves a pending invoice whose due_date is before now
 	// to past_due.
 	MarkInvoicePastDue(ctx context.Context, invID id.InvoiceID, now time.Time) (bool, error)

@@ -476,10 +476,25 @@ func TestAdvanceFromTwoEnginesAppliesEachTransitionOnce(t *testing.T) {
 	ev := &lifecycleEvents{}
 	// Each engine lists every step's rows before either writes one, so both
 	// try every transition and the store's conditional writes alone decide
-	// which engine applies it.
+	// which engine applies it. The two run at different times either side of
+	// 1 May, so they work out different periods from the same listed rows:
+	// a moves a subscription to April, b to May. a writes its periods first,
+	// the order in which b's later answer would still have matched a write
+	// that did not pin the end it listed.
 	meet := newRendezvous(2)
-	a := ledger.New(&lockstepStore{Store: s, meet: meet}, ledger.WithPlugin(ev))
-	b := ledger.New(&lockstepStore{Store: s, meet: meet}, ledger.WithPlugin(ev))
+	aAdvanced := make(chan struct{})
+	var aOnce sync.Once
+	a := ledger.New(&lockstepStore{Store: s, meet: meet, onList: func(field subscription.DueField) {
+		if field == subscription.DueCancel {
+			aOnce.Do(func() { close(aAdvanced) })
+		}
+	}}, ledger.WithPlugin(ev))
+	b := ledger.New(&lockstepStore{Store: s, meet: meet, beforeAdvance: func() {
+		select {
+		case <-aAdvanced:
+		case <-time.After(5 * time.Second):
+		}
+	}}, ledger.WithPlugin(ev))
 	p := activePlan(t, a, "pro", "app_1", 0)
 	for i := range 20 {
 		seedSub(t, s, p, func(x *subscription.Subscription) {
@@ -488,7 +503,7 @@ func TestAdvanceFromTwoEnginesAppliesEachTransitionOnce(t *testing.T) {
 			}
 		})
 	}
-	// A trial that ended, in a period that has not.
+	// A trial that ended, in a period that ended later.
 	trial := seedSub(t, s, p, func(x *subscription.Subscription) {
 		x.Status = subscription.StatusTrialing
 		x.CurrentPeriodStart, x.CurrentPeriodEnd = at(2026, 3, 1), at(2026, 4, 1)
@@ -504,14 +519,19 @@ func TestAdvanceFromTwoEnginesAppliesEachTransitionOnce(t *testing.T) {
 		t.Fatalf("CreateInvoice: %v", err)
 	}
 
+	beforeMay := at(2026, 5, 1).Add(-time.Second)
+	afterMay := at(2026, 5, 1).Add(time.Second)
 	var wg sync.WaitGroup
 	reports := make([]ledger.LifecycleReport, 2)
 	errs := make([]error, 2)
-	for i, eng := range []*ledger.Ledger{a, b} {
+	for i, run := range []struct {
+		eng *ledger.Ledger
+		now time.Time
+	}{{a, beforeMay}, {b, afterMay}} {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			reports[i], errs[i] = eng.Advance(ctx, at(2026, 3, 15))
+			reports[i], errs[i] = run.eng.Advance(ctx, run.now)
 		}()
 	}
 	wg.Wait()
@@ -526,13 +546,46 @@ func TestAdvanceFromTwoEnginesAppliesEachTransitionOnce(t *testing.T) {
 	renewals := sum(func(r ledger.LifecycleReport) int { return len(r.PeriodsAdvanced) })
 	trials := sum(func(r ledger.LifecycleReport) int { return len(r.TrialsEnded) })
 	pastDue := sum(func(r ledger.LifecycleReport) int { return len(r.InvoicesPastDue) })
-	if cancels != 10 || renewals != 10 || trials != 1 || pastDue != 1 {
-		t.Errorf("two engines reported %d cancels, %d renewals, %d trials and %d past due, want 10, 10, 1 and 1",
+	if cancels != 10 || renewals != 11 || trials != 1 || pastDue != 1 {
+		t.Errorf("two engines reported %d cancels, %d renewals, %d trials and %d past due, want 10, 11, 1 and 1",
 			cancels, renewals, trials, pastDue)
 	}
-	if ev.count(&ev.canceled) != 10 || ev.count(&ev.renewed) != 10 || ev.count(&ev.trials) != 1 || ev.count(&ev.pastDue) != 1 {
-		t.Errorf("hooks fired %d canceled, %d renewed, %d trials ended and %d past due, want 10, 10, 1 and 1",
+	if ev.count(&ev.canceled) != 10 || ev.count(&ev.renewed) != 11 || ev.count(&ev.trials) != 1 || ev.count(&ev.pastDue) != 1 {
+		t.Errorf("hooks fired %d canceled, %d renewed, %d trials ended and %d past due, want 10, 11, 1 and 1",
 			ev.count(&ev.canceled), ev.count(&ev.renewed), ev.count(&ev.trials), ev.count(&ev.pastDue))
+	}
+
+	// One more run after 1 May picks up April for the rows a moved. Across
+	// every announcement each period is then listed exactly once.
+	if _, err := b.Advance(ctx, afterMay); err != nil {
+		t.Fatalf("Advance: %v", err)
+	}
+	announced := map[string]map[time.Time]int{}
+	for _, r := range ev.renewals {
+		subID := r.Subscription.ID.String()
+		if announced[subID] == nil {
+			announced[subID] = map[time.Time]int{}
+		}
+		for _, period := range r.Ended {
+			announced[subID][period.Start]++
+		}
+	}
+	if len(announced) != 11 {
+		t.Errorf("%d subscriptions announced periods, want 11", len(announced))
+	}
+	for subID, starts := range announced {
+		first := at(2026, 1, 1)
+		if subID == trial.ID.String() {
+			first = at(2026, 3, 1)
+		}
+		for m := first; m.Before(at(2026, 5, 1)); m = m.AddDate(0, 1, 0) {
+			if starts[m] != 1 {
+				t.Errorf("%s: the period from %v announced %d times, want once", subID, m, starts[m])
+			}
+		}
+		if len(starts) != int(at(2026, 5, 1).Month()-first.Month()) {
+			t.Errorf("%s: announced periods %v, want only %v to 1 May", subID, starts, first)
+		}
 	}
 }
 
@@ -681,10 +734,24 @@ type lockstepStore struct {
 	*memory.Store
 	meet        *rendezvous
 	beforeEnact func(context.Context, id.SubscriptionID)
+	// onList runs as each subscription list is made, before the barrier;
+	// beforeAdvance runs just before each period advance's write.
+	onList        func(subscription.DueField)
+	beforeAdvance func()
+}
+
+func (w *lockstepStore) AdvanceSubscriptionPeriod(ctx context.Context, subID id.SubscriptionID, from, start, end, now time.Time) (bool, error) {
+	if w.beforeAdvance != nil {
+		w.beforeAdvance()
+	}
+	return w.Store.AdvanceSubscriptionPeriod(ctx, subID, from, start, end, now)
 }
 
 func (w *lockstepStore) ListDueSubscriptions(ctx context.Context, opts subscription.DueOpts) ([]*subscription.Subscription, error) {
 	rows, err := w.Store.ListDueSubscriptions(ctx, opts)
+	if w.onList != nil {
+		w.onList(opts.Field)
+	}
 	if w.meet != nil {
 		w.meet.wait(string(opts.Field))
 	}

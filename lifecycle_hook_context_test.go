@@ -27,8 +27,8 @@ func (s *cancelAfterWrite) landed(ok bool, err error) (bool, error) {
 	return ok, err
 }
 
-func (s *cancelAfterWrite) AdvanceSubscriptionPeriod(ctx context.Context, subID id.SubscriptionID, start, end, now time.Time) (bool, error) {
-	return s.landed(s.Store.AdvanceSubscriptionPeriod(ctx, subID, start, end, now))
+func (s *cancelAfterWrite) AdvanceSubscriptionPeriod(ctx context.Context, subID id.SubscriptionID, from, start, end, now time.Time) (bool, error) {
+	return s.landed(s.Store.AdvanceSubscriptionPeriod(ctx, subID, from, start, end, now))
 }
 
 func (s *cancelAfterWrite) EnactSubscriptionCancel(ctx context.Context, subID id.SubscriptionID, now time.Time) (bool, error) {

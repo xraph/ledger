@@ -368,7 +368,7 @@ func testOperatorWritesRaceTheClock(t *testing.T, s ledgerstore.Store) {
 				log.add(err)
 			},
 			func(sub *subscription.Subscription) {
-				advanced, err := s.AdvanceSubscriptionPeriod(ctx, sub.ID, past, next, now)
+				advanced, err := s.AdvanceSubscriptionPeriod(ctx, sub.ID, past, past, next, now)
 				log.add(err)
 				ended, err := s.EndSubscriptionTrial(ctx, sub.ID, now)
 				log.add(err)
@@ -400,7 +400,7 @@ func testOperatorWritesRaceTheClock(t *testing.T, s ledgerstore.Store) {
 				log.add(err)
 			},
 			func(sub *subscription.Subscription) {
-				ok, err := s.AdvanceSubscriptionPeriod(ctx, sub.ID, past, next, now)
+				ok, err := s.AdvanceSubscriptionPeriod(ctx, sub.ID, past, past, next, now)
 				if err == nil && !ok {
 					err = errors.New("the advance did not match " + sub.ID.String())
 				}
@@ -432,7 +432,7 @@ func testOperatorWritesRaceTheClock(t *testing.T, s ledgerstore.Store) {
 				log.add(err)
 			},
 			func(sub *subscription.Subscription) {
-				ok, err := s.AdvanceSubscriptionPeriod(ctx, sub.ID, past, next, now)
+				ok, err := s.AdvanceSubscriptionPeriod(ctx, sub.ID, past, past, next, now)
 				log.add(err)
 				advanced.Store(sub.ID.String(), ok)
 			})
@@ -500,7 +500,7 @@ func testOperatorWritesRaceTheClock(t *testing.T, s ledgerstore.Store) {
 				log.add(s.SetSubscriptionProvider(ctx, sub.ID, "sub_"+sub.ID.String(), "stripe"))
 			},
 			func(sub *subscription.Subscription) {
-				_, err := s.AdvanceSubscriptionPeriod(ctx, sub.ID, past, next, now)
+				_, err := s.AdvanceSubscriptionPeriod(ctx, sub.ID, past, past, next, now)
 				log.add(err)
 			})
 		invs := make([]*invoice.Invoice, operatorRaceRows)

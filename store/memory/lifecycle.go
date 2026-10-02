@@ -116,14 +116,14 @@ func (s *Store) EnactSubscriptionCancel(_ context.Context, subID id.Subscription
 	return true, nil
 }
 
-func (s *Store) AdvanceSubscriptionPeriod(_ context.Context, subID id.SubscriptionID, start, end, now time.Time) (bool, error) {
+func (s *Store) AdvanceSubscriptionPeriod(_ context.Context, subID id.SubscriptionID, from, start, end, now time.Time) (bool, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
 	sub, ok := s.subscriptions[subID.String()]
 	running := ok && (sub.Status == subscription.StatusActive || sub.Status == subscription.StatusTrialing ||
 		sub.Status == subscription.StatusPastDue)
-	if !running || sub.CurrentPeriodEnd.After(now) || !sub.CurrentPeriodEnd.Before(end) ||
+	if !running || !sub.CurrentPeriodEnd.Equal(from) || sub.CurrentPeriodEnd.After(now) || !sub.CurrentPeriodEnd.Before(end) ||
 		(sub.CancelAt != nil && !sub.CancelAt.After(sub.CurrentPeriodEnd)) {
 		return false, nil
 	}

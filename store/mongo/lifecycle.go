@@ -155,14 +155,14 @@ func (s *Store) EnactSubscriptionCancel(ctx context.Context, subID id.Subscripti
 	return res.MatchedCount > 0, nil
 }
 
-func (s *Store) AdvanceSubscriptionPeriod(ctx context.Context, subID id.SubscriptionID, start, end, at time.Time) (bool, error) {
+func (s *Store) AdvanceSubscriptionPeriod(ctx context.Context, subID id.SubscriptionID, from, start, end, at time.Time) (bool, error) {
 	res, err := s.mdb.NewUpdate((*subscriptionModel)(nil)).
 		Filter(bson.M{
 			"_id": subID.String(),
 			"status": bson.M{"$in": []string{
 				string(subscription.StatusActive), string(subscription.StatusTrialing), string(subscription.StatusPastDue),
 			}},
-			"current_period_end": bson.M{"$lte": at, "$lt": end},
+			"current_period_end": bson.M{"$eq": from.UTC(), "$lte": at, "$lt": end},
 			"$or": bson.A{
 				bson.M{"cancel_at": nil},
 				bson.M{"$expr": bson.M{"$gt": bson.A{"$cancel_at", "$current_period_end"}}},
