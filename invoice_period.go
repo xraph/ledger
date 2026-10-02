@@ -21,10 +21,12 @@ type invoiceConfig struct {
 // had, not its current one: the period the lifecycle clock just rolled over,
 // say, or one a catch-up skipped (OnSubscriptionRenewed lists them). The period
 // must be the current one or one before it on the subscription's cadence, must
-// have started, must end after the subscription was created, and must not
-// start before the subscription was last resumed (a resume restarts the
-// cycle, so the months spent paused are never a period); anything else is
-// refused with ErrInvalidInput. A second live invoice for the same period is
+// have started, and must end after the subscription was created; anything
+// else is refused with ErrInvalidInput. A period a resume stretched counts
+// with its stretched end, and the walk crosses it (see periodBelongsTo); a
+// period from before an older stretch, which Ledger no longer remembers, is
+// refused. A paused subscription's current period is not finished, so it
+// cannot be invoiced until it is resumed and its end passes. A second live invoice for the same period is
 // refused with ErrAlreadyExists, as for the current period. Nothing calls this
 // on its own: Ledger never bills a period automatically.
 //
@@ -64,26 +66,72 @@ func namedPeriod(sub *subscription.Subscription, p *plan.Plan, opts []InvoiceOpt
 // its current one. No history is stored, so it walks back from the current
 // period one billing period at a time, on the anchor day the clock renews on,
 // until it reaches the period that ends where want ends. The period must also
-// have started by now and ended after the subscription was created, and it
-// must not start before the last resume, which restarted the cycle. A plan
+// have started by now and ended after the subscription was created. A plan
 // billed "none", or one whose period Ledger does not know, has only its
 // current period.
+//
+// A resume stretches a period, which breaks the cadence: the periods after a
+// stretched one renew on its new end's day, and the ones before it on the
+// day that led to its original end. Only the most recent stretch is
+// remembered (Subscription.Stretch). The walk crosses it exactly, and stops
+// at its Floor, the end of an older stretch, below which nothing can be
+// proved. Anything it cannot prove is refused, never guessed.
 func periodBelongsTo(sub *subscription.Subscription, period plan.Period, want subscription.Period, now time.Time) bool {
 	// The start-before-end check is a cheap early exit: the walk below can
 	// never match a period that is empty or runs backwards, so it is redundant.
 	if !want.Start.Before(want.End) || want.Start.After(now) || !want.End.After(sub.CreatedAt) {
 		return false
 	}
-	// A resume restarted the cycle: every period before it was spent paused,
-	// or belongs to the cycle the pause ended.
-	if sub.ResumedAt != nil && want.Start.Before(*sub.ResumedAt) {
-		return false
-	}
 	if period != plan.PeriodMonthly && period != plan.PeriodYearly {
 		return false
 	}
 	start, end := sub.CurrentPeriodStart.UTC(), sub.CurrentPeriodEnd.UTC()
-	day := anchorDay(start, end)
+	st := sub.Stretch
+	if st == nil {
+		return walkBack(sub, period, want, start, end, true)
+	}
+
+	stStart, stEnd := st.Start.UTC(), st.End.UTC()
+	switch {
+	case start.Equal(stStart) && end.Equal(stEnd):
+		// The current period is the stretched one.
+	case !start.Before(stEnd):
+		// On the cadence after the stretch: walk back to the stretched end,
+		// then step over the stretched period in one go.
+		months, day := periodMonths(period), anchorDay(start, end)
+		for range maxCatchUpPeriods {
+			if start.Equal(want.End) {
+				if start.Equal(stEnd) {
+					return want.Start.Equal(stStart)
+				}
+				return shiftMonths(start, -months, day).Equal(want.Start)
+			}
+			if start.Before(want.End) || start.Equal(stEnd) {
+				break
+			}
+			prev := shiftMonths(start, -months, day)
+			if prev.Before(stEnd) {
+				return false // the cadence does not meet the stretched end: prove nothing
+			}
+			start = prev
+		}
+		if !start.Equal(stEnd) {
+			return false
+		}
+	default:
+		return false // the stretch does not line up with the current period
+	}
+	if st.Floor != nil && want.Start.Before(st.Floor.UTC()) {
+		return false
+	}
+	return walkBack(sub, period, want, stStart, st.OriginalEnd.UTC(), st.Floor == nil)
+}
+
+// walkBack reports whether want is one of the periods before [start, end) on
+// that period's own cadence. fromCreation says the cadence runs back to the
+// subscription's creation, where the 29 February rule applies.
+func walkBack(sub *subscription.Subscription, period plan.Period, want subscription.Period, start, end time.Time, fromCreation bool) bool {
+	months, day := periodMonths(period), anchorDay(start, end)
 	for range maxCatchUpPeriods {
 		if start.Before(want.End) {
 			return false
@@ -94,7 +142,7 @@ func periodBelongsTo(sub *subscription.Subscription, period plan.Period, want su
 			// the walk is exact and the rule below would only refuse real
 			// periods, such as an import whose provider period started a
 			// few days before the creation day.
-			if first, ok := clampedFirstStart(sub, period, want.End); ok && period == plan.PeriodYearly {
+			if first, ok := clampedFirstStart(sub, period, want.End); ok && fromCreation && period == plan.PeriodYearly {
 				// The anchor is lost where a year from 29 February lands on
 				// the 28th, so the walk back cannot tell 29 February to 28
 				// February from 28 to 28. The subscription's own creation
@@ -102,24 +150,20 @@ func periodBelongsTo(sub *subscription.Subscription, period plan.Period, want su
 				// period at all.
 				return want.Start.Equal(first) && reproduces(want, period, start, end)
 			}
-			return shiftMonths(start, -periodMonths(period), day).Equal(want.Start)
+			return shiftMonths(start, -months, day).Equal(want.Start)
 		}
-		start, end = shiftMonths(start, -periodMonths(period), day), start
+		start, end = shiftMonths(start, -months, day), start
 	}
 	return false
 }
 
 // clampedFirstStart returns where the subscription's first period started when
 // it began on a day the month it ended in does not have: a yearly subscription
-// created (or resumed) on 29 February has a first period ending on the 28th.
-// The start is that day, one period before end, and ok is false unless end is
-// a month's last day and that day is later than it.
+// created on 29 February has a first period ending on the 28th. The start is
+// the subscription's creation day, one period before end, and ok is false
+// unless end is a month's last day and the creation day is later than it.
 func clampedFirstStart(sub *subscription.Subscription, period plan.Period, end time.Time) (first time.Time, ok bool) {
-	// The cycle began at creation, or at the last resume, which restarted it.
 	created := sub.CreatedAt.UTC()
-	if sub.ResumedAt != nil {
-		created = sub.ResumedAt.UTC()
-	}
 	if end.Day() != daysIn(end.Year(), end.Month()) || created.Day() <= end.Day() {
 		return time.Time{}, false
 	}

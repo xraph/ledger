@@ -138,7 +138,10 @@ type subscriptionModel struct {
 	CancelAt           *time.Time `grove:"cancel_at"`
 	EndedAt            *time.Time `grove:"ended_at"`
 	PausedAt           *time.Time `grove:"paused_at"`
-	ResumedAt          *time.Time `grove:"resumed_at"`
+	StretchStart       *time.Time `grove:"stretch_start"`
+	StretchEnd         *time.Time `grove:"stretch_end"`
+	StretchOriginalEnd *time.Time `grove:"stretch_original_end"`
+	StretchFloor       *time.Time `grove:"stretch_floor"`
 	AppID              string     `grove:"app_id"`
 	ProviderID         string     `grove:"provider_id"`
 	ProviderName       string     `grove:"provider_name"`
@@ -157,7 +160,7 @@ func toSubscriptionModel(s *subscription.Subscription) *subscriptionModel {
 	}
 	quantityJSON, _ := json.Marshal(quantity) //nolint:errcheck // best-effort
 
-	return &subscriptionModel{
+	m := &subscriptionModel{
 		ID:                 s.ID.String(),
 		TenantID:           s.TenantID,
 		PlanID:             s.PlanID.String(),
@@ -170,7 +173,6 @@ func toSubscriptionModel(s *subscription.Subscription) *subscriptionModel {
 		CancelAt:           utcPtr(s.CancelAt),
 		EndedAt:            utcPtr(s.EndedAt),
 		PausedAt:           utcPtr(s.PausedAt),
-		ResumedAt:          utcPtr(s.ResumedAt),
 		AppID:              s.AppID,
 		ProviderID:         s.ProviderID,
 		ProviderName:       s.ProviderName,
@@ -179,6 +181,8 @@ func toSubscriptionModel(s *subscription.Subscription) *subscriptionModel {
 		CreatedAt:          s.CreatedAt.UTC(),
 		UpdatedAt:          s.UpdatedAt.UTC(),
 	}
+	m.StretchStart, m.StretchEnd, m.StretchOriginalEnd, m.StretchFloor = subscription.StretchColumns(s.Stretch)
+	return m
 }
 
 func fromSubscriptionModel(m *subscriptionModel) (*subscription.Subscription, error) {
@@ -221,7 +225,7 @@ func fromSubscriptionModel(m *subscriptionModel) (*subscription.Subscription, er
 		CancelAt:           m.CancelAt,
 		EndedAt:            m.EndedAt,
 		PausedAt:           m.PausedAt,
-		ResumedAt:          m.ResumedAt,
+		Stretch:            subscription.StretchFromColumns(m.StretchStart, m.StretchEnd, m.StretchOriginalEnd, m.StretchFloor),
 		AppID:              m.AppID,
 		ProviderID:         m.ProviderID,
 		ProviderName:       m.ProviderName,

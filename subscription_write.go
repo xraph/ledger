@@ -122,21 +122,23 @@ const resumeAttempts = 3
 // ResumeSubscription resumes a paused subscription. A subscription the
 // lifecycle clock canceled while it was paused stays canceled.
 //
-// A pause freezes the billing cycle, so the resume restarts it: the current
-// period begins now and runs one billing period of the plan, renewing on
-// today's day of the month from then on. The months spent paused are never
-// listed in a Renewal and cannot be invoiced with ForPeriod, and neither can
-// any period before the resume. Invoice the period that was running when the
-// subscription was paused before you resume it, while it is still the
-// current one.
+// A pause stops the billing clock, so the resume stretches the period by the
+// length of the pause: current_period_end moves on by now minus paused_at,
+// and current_period_start stays. The stretched period carries one base fee
+// and is billed once its new end passes, like any other; the lifecycle clock
+// lists it in Renewal.Ended then, and the periods after it renew on its new
+// end's day. A cancel scheduled for the period end moves with it. Ledger
+// remembers the most recent stretch (Subscription.Stretch), so ForPeriod can
+// still prove the periods on both sides of it.
 //
 // A trial still running when the subscription was paused resumes as a trial,
-// and its end moves on by the length of the pause, so the customer gets the
-// trial days they had left; the clock ends it, and fires
-// OnSubscriptionTrialEnded, once that later date passes. A subscription
-// paused before Ledger recorded paused_at has no pause start, so its trial
-// end stays where it was and it resumes as a trial only if that end is still
-// ahead.
+// and its end moves on by the same length, so the customer gets the trial
+// days they had left; the clock ends it, and fires OnSubscriptionTrialEnded,
+// once that later date passes.
+//
+// A subscription paused before Ledger recorded paused_at has no pause start.
+// Its period and its trial end stay where they were, and it resumes as a
+// trial only if that end is still ahead.
 //
 // Everything is one conditional store write that lands only while the
 // subscription is still paused and still carries the paused_at read here.
@@ -149,12 +151,8 @@ func (l *Ledger) ResumeSubscription(ctx context.Context, subID id.SubscriptionID
 		if sub.Status != subscription.StatusPaused {
 			return nil, fmt.Errorf("%w: cannot move a %s subscription to %s", ErrInvalidInput, sub.Status, subscription.StatusActive)
 		}
-		p, err := l.store.GetPlan(ctx, sub.PlanID)
-		if err != nil {
-			return nil, err
-		}
 
-		changed, err := l.store.ResumeSubscription(ctx, subID, resumeOf(sub, p, l.stamp()))
+		changed, err := l.store.ResumeSubscription(ctx, subID, resumeOf(sub, l.stamp()))
 		if err != nil {
 			return nil, err
 		}
@@ -175,30 +173,43 @@ func (l *Ledger) ResumeSubscription(ctx context.Context, subID id.SubscriptionID
 	return nil, fmt.Errorf("%w: subscription %s was resumed and paused again while this resume was being worked out; try again", ErrInvalidInput, subID)
 }
 
-// resumeOf works out what resuming sub at now writes: a fresh period from now
-// on the plan's billing period, the trial end moved on by the length of the
-// pause, and trialing or active.
-func resumeOf(sub *subscription.Subscription, p *plan.Plan, now time.Time) subscription.Resume {
+// resumeOf works out what resuming sub at now writes: the period end and a
+// running trial's end moved on by the length of the pause, the stretch
+// record, and trialing or active.
+func resumeOf(sub *subscription.Subscription, now time.Time) subscription.Resume {
 	now = now.UTC()
-	r := subscription.Resume{
-		PausedAt:    sub.PausedAt,
-		At:          now,
-		Status:      subscription.StatusActive,
-		PeriodStart: now,
-		PeriodEnd:   firstPeriodEnd(now, billingPeriod(p)),
-	}
-	if sub.TrialEnd == nil {
-		return r
-	}
+	r := subscription.Resume{PausedAt: sub.PausedAt, Status: subscription.StatusActive}
 	pauseStart := now // unknown for a pause from before paused_at existed
 	if sub.PausedAt != nil {
 		pauseStart = sub.PausedAt.UTC()
 	}
-	if !sub.TrialEnd.After(pauseStart) {
-		return r // the trial had ended before the pause
+	paused := now.Sub(pauseStart)
+
+	if paused > 0 {
+		start, end := sub.CurrentPeriodStart.UTC(), sub.CurrentPeriodEnd.UTC()
+		stretched := end.Add(paused)
+		r.PeriodEnd = &stretched
+		st := subscription.Stretch{Start: start, End: stretched, OriginalEnd: end}
+		if prev := sub.Stretch; prev != nil {
+			if prev.Start.Equal(start) {
+				// A second pause in the same period: the cadence before it
+				// still led to the first original end.
+				st.OriginalEnd, st.Floor = prev.OriginalEnd, prev.Floor
+			} else {
+				// The cadence this period sits on began at the previous
+				// stretch's end, and nothing before that is remembered.
+				floor := prev.End
+				st.Floor = &floor
+			}
+		}
+		r.Stretch = &st
+	}
+
+	if sub.TrialEnd == nil || !sub.TrialEnd.After(pauseStart) {
+		return r // no trial, or it had ended before the pause
 	}
 	r.Status = subscription.StatusTrialing
-	if paused := now.Sub(pauseStart); paused > 0 {
+	if paused > 0 {
 		trialEnd := sub.TrialEnd.UTC().Add(paused)
 		r.TrialEnd = &trialEnd
 	}

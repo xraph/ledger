@@ -32,14 +32,14 @@ type Subscription struct {
 	CancelAt           *time.Time        `json:"cancel_at,omitempty"`
 	EndedAt            *time.Time        `json:"ended_at,omitempty"`
 	// PausedAt is when the subscription was paused. It is set while the
-	// status is paused and cleared by a resume, which moves the trial end on
-	// by the length of the pause. A subscription paused before this field
-	// existed has none.
+	// status is paused and cleared by a resume, which moves the period end
+	// and a running trial's end on by the length of the pause. A
+	// subscription paused before this field existed has none.
 	PausedAt *time.Time `json:"paused_at,omitempty"`
-	// ResumedAt is when the subscription was last resumed. A resume restarts
-	// the billing period there, so no period before it can be invoiced by
-	// name: the time in between was spent paused.
-	ResumedAt    *time.Time        `json:"resumed_at,omitempty"`
+	// Stretch remembers the most recent period a resume stretched, so
+	// ledger.ForPeriod can still prove the periods around it. Ledger keeps
+	// it for itself; it is not part of the JSON.
+	Stretch      *Stretch          `json:"-"`
 	AppID        string            `json:"app_id"`
 	ProviderID   string            `json:"provider_id,omitempty"`
 	ProviderName string            `json:"provider_name,omitempty"`
@@ -61,26 +61,64 @@ type Period struct {
 	End   time.Time `json:"end"`
 }
 
+// Stretch is the most recent billing period a resume stretched: it began at
+// Start, was due to end at OriginalEnd, and ends at End once every pause in
+// it is added on. The periods after it renew on End's day; the ones before it
+// ran on the cadence that led to OriginalEnd. Floor is where that earlier
+// cadence began when an older stretch came before it (the older stretch's
+// End): periods before Floor cannot be proved, since only one stretch is
+// remembered. A nil Floor means the earlier cadence runs back to the
+// subscription's creation.
+type Stretch struct {
+	Start       time.Time
+	End         time.Time
+	OriginalEnd time.Time
+	Floor       *time.Time
+}
+
+// StretchColumns splits a stretch into the four nullable columns the stores
+// keep it in, in UTC. A nil stretch is four nils.
+func StretchColumns(st *Stretch) (start, end, originalEnd, floor *time.Time) {
+	if st == nil {
+		return nil, nil, nil, nil
+	}
+	utc := func(t time.Time) *time.Time { t = t.UTC(); return &t }
+	start, end, originalEnd = utc(st.Start), utc(st.End), utc(st.OriginalEnd)
+	if st.Floor != nil {
+		floor = utc(*st.Floor)
+	}
+	return start, end, originalEnd, floor
+}
+
+// StretchFromColumns is StretchColumns the other way: nil unless start, end
+// and originalEnd are all set.
+func StretchFromColumns(start, end, originalEnd, floor *time.Time) *Stretch {
+	if start == nil || end == nil || originalEnd == nil {
+		return nil
+	}
+	return &Stretch{Start: *start, End: *end, OriginalEnd: *originalEnd, Floor: floor}
+}
+
 // Resume is what a resume writes, in one conditional store write that lands
 // only while the subscription is still paused and still holds the PausedAt
 // the engine read (nil: none). Everything here is worked out by the engine
 // from that read, so a second pause and resume in between must not let it
-// land.
+// land. The period start never changes.
 type Resume struct {
 	// PausedAt is the paused_at the engine read, nil when there was none.
 	PausedAt *time.Time
-	// At is the moment of the resume, stored as resumed_at. paused_at is
-	// cleared.
-	At time.Time
 	// Status is what the subscription resumes to: trialing when its trial
 	// was still running when it was paused, active otherwise.
 	Status Status
-	// PeriodStart and PeriodEnd are the period the resume starts.
-	PeriodStart time.Time
-	PeriodEnd   time.Time
+	// PeriodEnd is the current period's end moved on by the length of the
+	// pause, or nil to leave the period alone. A cancel scheduled for the
+	// old period end (cancel_at equal to current_period_end) moves with it.
+	PeriodEnd *time.Time
 	// TrialEnd is the trial end moved on by the length of the pause, or nil
 	// to leave trial_end as it is.
 	TrialEnd *time.Time
+	// Stretch is the stretch record to store, or nil to leave it as it is.
+	Stretch *Stretch
 }
 
 // Renewal is what OnSubscriptionRenewed receives when the lifecycle clock

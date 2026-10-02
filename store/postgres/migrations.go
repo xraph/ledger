@@ -336,21 +336,28 @@ DROP INDEX IF EXISTS idx_ledger_invoices_status_due;
 		},
 		&migrate.Migration{
 			// paused_at holds the start of a pause, so a resume can move the
-			// trial end on by its length; resumed_at is where the billing
-			// period restarted, so no period spent paused can be named.
-			Name:    "add_subscription_pause_times",
+			// period end and the trial end on by its length. The stretch
+			// columns remember the last period a resume stretched, so the
+			// periods around it can still be named.
+			Name:    "add_subscription_pause_columns",
 			Version: "20240101000012",
 			Up: func(ctx context.Context, exec migrate.Executor) error {
 				_, err := exec.Exec(ctx, `
 ALTER TABLE ledger_subscriptions ADD COLUMN IF NOT EXISTS paused_at TIMESTAMPTZ;
-ALTER TABLE ledger_subscriptions ADD COLUMN IF NOT EXISTS resumed_at TIMESTAMPTZ;
+ALTER TABLE ledger_subscriptions ADD COLUMN IF NOT EXISTS stretch_start TIMESTAMPTZ;
+ALTER TABLE ledger_subscriptions ADD COLUMN IF NOT EXISTS stretch_end TIMESTAMPTZ;
+ALTER TABLE ledger_subscriptions ADD COLUMN IF NOT EXISTS stretch_original_end TIMESTAMPTZ;
+ALTER TABLE ledger_subscriptions ADD COLUMN IF NOT EXISTS stretch_floor TIMESTAMPTZ;
 `)
 				return err
 			},
 			Down: func(ctx context.Context, exec migrate.Executor) error {
 				_, err := exec.Exec(ctx, `
 ALTER TABLE ledger_subscriptions DROP COLUMN IF EXISTS paused_at;
-ALTER TABLE ledger_subscriptions DROP COLUMN IF EXISTS resumed_at;
+ALTER TABLE ledger_subscriptions DROP COLUMN IF EXISTS stretch_start;
+ALTER TABLE ledger_subscriptions DROP COLUMN IF EXISTS stretch_end;
+ALTER TABLE ledger_subscriptions DROP COLUMN IF EXISTS stretch_original_end;
+ALTER TABLE ledger_subscriptions DROP COLUMN IF EXISTS stretch_floor;
 `)
 				return err
 			},

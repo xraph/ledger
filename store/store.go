@@ -69,10 +69,13 @@ type Store interface {
 	PauseSubscription(ctx context.Context, subID id.SubscriptionID, at time.Time) (bool, error)
 	// ResumeSubscription applies r when the status is paused and paused_at
 	// still equals r.PausedAt (is null when r.PausedAt is nil): it sets the
-	// status to r.Status, the current period to [r.PeriodStart,
-	// r.PeriodEnd), trial_end to r.TrialEnd unless that is nil, resumed_at
-	// to r.At, and clears paused_at. The lifecycle clock never writes a
-	// paused row's period or trial, so nothing it does can be lost here.
+	// status to r.Status, current_period_end to r.PeriodEnd unless that is
+	// nil (moving cancel_at with it when cancel_at equals the old
+	// current_period_end), trial_end to r.TrialEnd unless that is nil, the
+	// four stretch columns to r.Stretch unless that is nil, and clears
+	// paused_at. current_period_start never changes. The lifecycle clock
+	// never writes a paused row's period or trial, so nothing it does can be
+	// lost here.
 	ResumeSubscription(ctx context.Context, subID id.SubscriptionID, r subscription.Resume) (bool, error)
 	// ChangeSubscriptionPlan sets plan_id and quantity when the status is
 	// neither canceled nor expired. A nil quantity is stored as empty.

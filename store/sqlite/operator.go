@@ -27,13 +27,27 @@ func (s *Store) PauseSubscription(ctx context.Context, subID id.SubscriptionID, 
 func (s *Store) ResumeSubscription(ctx context.Context, subID id.SubscriptionID, r subscription.Resume) (bool, error) {
 	q := s.sdb.NewUpdate((*subscriptionModel)(nil)).
 		Set("status = ?", string(r.Status)).
-		Set("current_period_start = ?", r.PeriodStart.UTC()).
-		Set("current_period_end = ?", r.PeriodEnd.UTC()).
 		Set("paused_at = NULL").
-		Set("resumed_at = ?", r.At.UTC()).
 		Set("updated_at = ?", now())
+	if r.PeriodEnd != nil {
+		// Every SET reads the row as it was, so the CASE compares cancel_at
+		// with the old period end: a cancel scheduled for the end of the
+		// period moves with it.
+		q = q.Set("cancel_at = CASE WHEN cancel_at = current_period_end THEN ? ELSE cancel_at END", r.PeriodEnd.UTC()).
+			Set("current_period_end = ?", r.PeriodEnd.UTC())
+	}
 	if r.TrialEnd != nil {
 		q = q.Set("trial_end = ?", r.TrialEnd.UTC())
+	}
+	if st := r.Stretch; st != nil {
+		q = q.Set("stretch_start = ?", st.Start.UTC()).
+			Set("stretch_end = ?", st.End.UTC()).
+			Set("stretch_original_end = ?", st.OriginalEnd.UTC())
+		if st.Floor != nil {
+			q = q.Set("stretch_floor = ?", st.Floor.UTC())
+		} else {
+			q = q.Set("stretch_floor = NULL")
+		}
 	}
 	q = q.Where("id = ?", subID.String()).
 		Where("status = ?", string(subscription.StatusPaused))

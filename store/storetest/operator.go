@@ -105,39 +105,54 @@ func testOperatorWritesAreConditional(t *testing.T, s ledgerstore.Store) {
 		// Sub-second values, read back from the store, must match the
 		// paused_at the store holds on every backend, sqlite's text included.
 		pausedAt := now.Add(-90 * 24 * time.Hour).Add(500 * time.Millisecond)
-		resumedAt := now.Add(123456789 * time.Nanosecond)
+		periodStart := pausedAt.AddDate(0, -1, 0)
+		periodEnd := pausedAt.AddDate(0, 0, 3)
+		stretched := periodEnd.Add(90*24*time.Hour + 123*time.Millisecond)
 		trialEnd := now.Add(10 * 24 * time.Hour)
-		resume := func(read *subscription.Subscription, status subscription.Status, trial *time.Time) subscription.Resume {
-			return subscription.Resume{
-				PausedAt: read.PausedAt, At: resumedAt, Status: status,
-				PeriodStart: resumedAt, PeriodEnd: resumedAt.AddDate(0, 1, 0), TrialEnd: trial,
-			}
-		}
+		floor := periodStart.AddDate(0, -2, 0)
+		stretch := &subscription.Stretch{Start: periodStart, End: stretched, OriginalEnd: periodEnd, Floor: &floor}
 		paused := func(edit func(*subscription.Subscription)) *subscription.Subscription {
 			return storedSubscription(t, s, appID, func(x *subscription.Subscription) {
 				backdate(&x.Entity)
 				x.Status = subscription.StatusPaused
 				p := pausedAt
 				x.PausedAt = &p
+				x.CurrentPeriodStart, x.CurrentPeriodEnd = periodStart, periodEnd
 				edit(x)
 			})
 		}
+		sameStretch := func(t *testing.T, got, want *subscription.Stretch) {
+			t.Helper()
+			if got == nil || !sameInstantToMillisecond(got.Start, want.Start) || !sameInstantToMillisecond(got.End, want.End) ||
+				!sameInstantToMillisecond(got.OriginalEnd, want.OriginalEnd) || (got.Floor == nil) != (want.Floor == nil) ||
+				(got.Floor != nil && !sameInstantToMillisecond(*got.Floor, *want.Floor)) {
+				t.Errorf("stretch %+v, want %+v", got, want)
+			}
+		}
 
+		// Everything at once: the period end and a cancel scheduled for it
+		// move, the trial end moves, the stretch is stored, paused_at goes.
 		sub := paused(func(x *subscription.Subscription) {
-			x.CurrentPeriodStart, x.CurrentPeriodEnd = pausedAt.AddDate(0, -1, 0), pausedAt.AddDate(0, 0, 3)
 			oldTrial := pausedAt.Add(time.Hour)
 			x.TrialEnd = &oldTrial
+			c := periodEnd
+			x.CancelAt = &c
 		})
 		read := reread(t, s, sub)
 		before := time.Now()
-		expectChanged(t, "resume a paused subscription", true)(s.ResumeSubscription(ctx, sub.ID, resume(read, subscription.StatusTrialing, &trialEnd)))
+		expectChanged(t, "resume a paused subscription", true)(s.ResumeSubscription(ctx, sub.ID, subscription.Resume{
+			PausedAt: read.PausedAt, Status: subscription.StatusTrialing, PeriodEnd: &stretched, TrialEnd: &trialEnd, Stretch: stretch,
+		}))
 		after := time.Now()
 		got := reread(t, s, sub)
 		if got.Status != subscription.StatusTrialing {
 			t.Errorf("a resumed subscription is %q, want the status it was given", got.Status)
 		}
-		if !sameInstantToMillisecond(got.CurrentPeriodStart, resumedAt) || !sameInstantToMillisecond(got.CurrentPeriodEnd, resumedAt.AddDate(0, 1, 0)) {
-			t.Errorf("a resumed period runs %v to %v, want it restarted at %v", got.CurrentPeriodStart, got.CurrentPeriodEnd, resumedAt)
+		if !sameInstantToMillisecond(got.CurrentPeriodStart, periodStart) || !sameInstantToMillisecond(got.CurrentPeriodEnd, stretched) {
+			t.Errorf("a resumed period runs %v to %v, want %v to the stretched %v", got.CurrentPeriodStart, got.CurrentPeriodEnd, periodStart, stretched)
+		}
+		if got.CancelAt == nil || !sameInstantToMillisecond(*got.CancelAt, stretched) {
+			t.Errorf("a cancel at the period end is now %v, want it moved to %v", got.CancelAt, stretched)
 		}
 		if got.TrialEnd == nil || !sameInstantToMillisecond(*got.TrialEnd, trialEnd) {
 			t.Errorf("trial_end %v, want the moved %v", got.TrialEnd, trialEnd)
@@ -145,49 +160,63 @@ func testOperatorWritesAreConditional(t *testing.T, s ledgerstore.Store) {
 		if got.PausedAt != nil {
 			t.Errorf("paused_at %v survived the resume", got.PausedAt)
 		}
-		if got.ResumedAt == nil || !sameInstantToMillisecond(*got.ResumedAt, resumedAt) {
-			t.Errorf("resumed_at %v, want %v", got.ResumedAt, resumedAt)
-		}
+		sameStretch(t, got.Stretch, stretch)
 		requireStampedDuring(t, "updated_at", got.UpdatedAt, before, after)
 
-		// A nil TrialEnd leaves the column alone.
-		keepTrial := paused(func(x *subscription.Subscription) {
-			x.TrialEnd = &trialEnd
-		})
-		expectChanged(t, "resume keeping the trial end", true)(s.ResumeSubscription(ctx, keepTrial.ID, resume(reread(t, s, keepTrial), subscription.StatusActive, nil)))
-		if got := reread(t, s, keepTrial); got.Status != subscription.StatusActive || got.TrialEnd == nil || !sameInstantToMillisecond(*got.TrialEnd, trialEnd) {
-			t.Errorf("status %q trial_end %v, want active and the trial end untouched", got.Status, got.TrialEnd)
+		// A cancel dated elsewhere stays; a nil floor is stored as none.
+		otherCancel := periodEnd.Add(-24 * time.Hour)
+		keepCancel := paused(func(x *subscription.Subscription) { x.CancelAt = &otherCancel })
+		noFloor := &subscription.Stretch{Start: periodStart, End: stretched, OriginalEnd: periodEnd}
+		expectChanged(t, "resume with a cancel inside the period", true)(s.ResumeSubscription(ctx, keepCancel.ID, subscription.Resume{
+			PausedAt: reread(t, s, keepCancel).PausedAt, Status: subscription.StatusActive, PeriodEnd: &stretched, Stretch: noFloor,
+		}))
+		got = reread(t, s, keepCancel)
+		if got.CancelAt == nil || !sameInstantToMillisecond(*got.CancelAt, otherCancel) {
+			t.Errorf("a cancel inside the period moved to %v", got.CancelAt)
 		}
+		sameStretch(t, got.Stretch, noFloor)
 
-		// A row paused before paused_at existed resumes when the caller
-		// read no paused_at either.
+		// Nil fields leave their columns alone: a row paused before
+		// paused_at existed resumes when the caller read none either.
 		legacy := storedSubscription(t, s, appID, func(x *subscription.Subscription) {
 			backdate(&x.Entity)
 			x.Status = subscription.StatusPaused
+			x.TrialEnd = &trialEnd
+			x.Stretch = stretch
 		})
-		expectChanged(t, "resume a paused subscription with no paused_at", true)(s.ResumeSubscription(ctx, legacy.ID, resume(reread(t, s, legacy), subscription.StatusActive, nil)))
+		expectChanged(t, "resume a paused subscription with no paused_at", true)(s.ResumeSubscription(ctx, legacy.ID, subscription.Resume{
+			PausedAt: reread(t, s, legacy).PausedAt, Status: subscription.StatusActive,
+		}))
+		got = reread(t, s, legacy)
+		if got.Status != subscription.StatusActive || !sameInstantToMillisecond(got.CurrentPeriodEnd, legacy.CurrentPeriodEnd) ||
+			got.TrialEnd == nil || !sameInstantToMillisecond(*got.TrialEnd, trialEnd) {
+			t.Errorf("status %q period end %v trial_end %v, want active and both untouched", got.Status, got.CurrentPeriodEnd, got.TrialEnd)
+		}
+		sameStretch(t, got.Stretch, stretch)
 
 		// A different paused_at means the row was resumed and paused again
 		// since the read: the write must miss.
 		again := paused(func(*subscription.Subscription) {})
-		stale := resume(reread(t, s, again), subscription.StatusActive, nil)
 		otherPause := pausedAt.Add(-time.Hour)
-		stale.PausedAt = &otherPause
+		stale := subscription.Resume{PausedAt: &otherPause, Status: subscription.StatusActive, PeriodEnd: &stretched}
 		expectChanged(t, "resume with a stale paused_at", false)(s.ResumeSubscription(ctx, again.ID, stale))
 		stale.PausedAt = nil
 		expectChanged(t, "resume reading no paused_at where one is set", false)(s.ResumeSubscription(ctx, again.ID, stale))
-		if got := reread(t, s, again); got.Status != subscription.StatusPaused || got.PausedAt == nil {
-			t.Errorf("a missed resume left status %q paused_at %v", got.Status, got.PausedAt)
+		if got := reread(t, s, again); got.Status != subscription.StatusPaused || got.PausedAt == nil ||
+			!sameInstantToMillisecond(got.CurrentPeriodEnd, periodEnd) {
+			t.Errorf("a missed resume left status %q paused_at %v period end %v", got.Status, got.PausedAt, got.CurrentPeriodEnd)
 		}
 
 		for _, st := range []subscription.Status{subscription.StatusActive, subscription.StatusTrialing, subscription.StatusCanceled, subscription.StatusExpired} {
 			other := withStatus(st)
-			expectChanged(t, "resume a "+string(st)+" subscription", false)(s.ResumeSubscription(ctx, other.ID, resume(reread(t, s, other), subscription.StatusActive, nil)))
-			if got := reread(t, s, other); got.Status != st || got.ResumedAt != nil {
-				t.Errorf("a refused resume moved a %s subscription to %q, resumed_at %v", st, got.Status, got.ResumedAt)
+			expectChanged(t, "resume a "+string(st)+" subscription", false)(s.ResumeSubscription(ctx, other.ID, subscription.Resume{
+				PausedAt: reread(t, s, other).PausedAt, Status: subscription.StatusActive, PeriodEnd: &stretched, Stretch: stretch,
+			}))
+			if got := reread(t, s, other); got.Status != st || got.Stretch != nil {
+				t.Errorf("a refused resume moved a %s subscription to %q, stretch %+v", st, got.Status, got.Stretch)
 			}
 		}
-		expectChanged(t, "resume an unknown subscription", false)(s.ResumeSubscription(ctx, id.NewSubscriptionID(), subscription.Resume{At: resumedAt, Status: subscription.StatusActive}))
+		expectChanged(t, "resume an unknown subscription", false)(s.ResumeSubscription(ctx, id.NewSubscriptionID(), subscription.Resume{Status: subscription.StatusActive}))
 	})
 
 	t.Run("plan", func(t *testing.T) {
@@ -315,9 +344,7 @@ func testOperatorWritesRaceTheClock(t *testing.T, s ledgerstore.Store) {
 		enacted := sync.Map{}
 		raceEach(subs,
 			func(sub *subscription.Subscription) {
-				_, err := s.ResumeSubscription(ctx, sub.ID, subscription.Resume{
-					At: now, Status: subscription.StatusActive, PeriodStart: now, PeriodEnd: now.AddDate(0, 1, 0),
-				})
+				_, err := s.ResumeSubscription(ctx, sub.ID, subscription.Resume{Status: subscription.StatusActive})
 				log.add(err)
 			},
 			func(sub *subscription.Subscription) {
@@ -342,9 +369,9 @@ func testOperatorWritesRaceTheClock(t *testing.T, s ledgerstore.Store) {
 	})
 
 	t.Run("resume against period advance and trial end", func(t *testing.T) {
-		// The clock never writes a paused row's period or trial, and a resume
-		// moves both past now, so neither clock write can match either side
-		// of the resume, and the resume always lands.
+		// The clock never writes a paused row's period or trial, and this
+		// resume moves both past now, so neither clock write can match
+		// either side of the resume, and the resume always lands.
 		trialEnd := past
 		subs := many(func(x *subscription.Subscription) {
 			endedPeriod(x)
@@ -354,13 +381,14 @@ func testOperatorWritesRaceTheClock(t *testing.T, s ledgerstore.Store) {
 			x.TrialEnd = &trialEnd
 		})
 		resumedTrial := now.AddDate(0, 0, 3)
+		stretched := now.AddDate(0, 0, 3)
 		var log errorLog
 		clockMatched := sync.Map{}
 		raceEach(subs,
 			func(sub *subscription.Subscription) {
 				ok, err := s.ResumeSubscription(ctx, sub.ID, subscription.Resume{
-					PausedAt: reread(t, s, sub).PausedAt, At: now, Status: subscription.StatusTrialing,
-					PeriodStart: now, PeriodEnd: now.AddDate(0, 1, 0), TrialEnd: &resumedTrial,
+					PausedAt: reread(t, s, sub).PausedAt, Status: subscription.StatusTrialing,
+					PeriodEnd: &stretched, TrialEnd: &resumedTrial,
 				})
 				if err == nil && !ok {
 					err = errors.New("the resume did not match " + sub.ID.String())
@@ -380,9 +408,9 @@ func testOperatorWritesRaceTheClock(t *testing.T, s ledgerstore.Store) {
 			if ok, _ := clockMatched.Load(sub.ID.String()); ok == true {
 				t.Errorf("%s: a clock write matched a paused or just-resumed row", sub.ID)
 			}
-			if got.Status != subscription.StatusTrialing || !sameInstantToMillisecond(got.CurrentPeriodStart, now) ||
+			if got.Status != subscription.StatusTrialing || !sameInstantToMillisecond(got.CurrentPeriodEnd, stretched) ||
 				got.TrialEnd == nil || !sameInstantToMillisecond(*got.TrialEnd, resumedTrial) {
-				t.Errorf("%s: status %q period from %v trial_end %v, want the resume's", sub.ID, got.Status, got.CurrentPeriodStart, got.TrialEnd)
+				t.Errorf("%s: status %q period end %v trial_end %v, want the resume's", sub.ID, got.Status, got.CurrentPeriodEnd, got.TrialEnd)
 			}
 		}
 	})

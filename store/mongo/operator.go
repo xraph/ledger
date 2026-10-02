@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"go.mongodb.org/mongo-driver/v2/bson"
+	"go.mongodb.org/mongo-driver/v2/mongo"
 
 	ledger "github.com/xraph/ledger"
 	"github.com/xraph/ledger/id"
@@ -37,6 +38,10 @@ func (s *Store) PauseSubscription(ctx context.Context, subID id.SubscriptionID, 
 		bson.M{"status": string(subscription.StatusPaused), "paused_at": at.UTC()})
 }
 
+// ResumeSubscription moves cancel_at with the period end when it equals the
+// old end, which needs the stored values inside the update, so like
+// EnactSubscriptionCancel it is a pipeline update on the driver's collection
+// and bypasses grove's operation hooks.
 func (s *Store) ResumeSubscription(ctx context.Context, subID id.SubscriptionID, r subscription.Resume) (bool, error) {
 	// A nil paused_at in the filter matches a document whose field is null
 	// or missing: one paused before the field existed.
@@ -44,19 +49,47 @@ func (s *Store) ResumeSubscription(ctx context.Context, subID id.SubscriptionID,
 	if r.PausedAt != nil {
 		pausedAt = r.PausedAt.UTC()
 	}
-	set := bson.M{
-		"status":               string(r.Status),
-		"current_period_start": r.PeriodStart.UTC(),
-		"current_period_end":   r.PeriodEnd.UTC(),
-		"paused_at":            nil,
-		"resumed_at":           r.At.UTC(),
+	set := bson.D{
+		{Key: "status", Value: string(r.Status)},
+		{Key: "paused_at", Value: nil},
+		{Key: "updated_at", Value: now()},
+	}
+	if r.PeriodEnd != nil {
+		end := r.PeriodEnd.UTC()
+		// Every field in one $set stage reads the document as it was, so
+		// cancel_at is compared with the old period end. A missing cancel_at
+		// stays missing.
+		set = append(set,
+			bson.E{Key: "cancel_at", Value: bson.M{"$cond": bson.A{
+				bson.M{"$eq": bson.A{"$cancel_at", "$current_period_end"}}, end, "$cancel_at",
+			}}},
+			bson.E{Key: "current_period_end", Value: end},
+		)
 	}
 	if r.TrialEnd != nil {
-		set["trial_end"] = r.TrialEnd.UTC()
+		set = append(set, bson.E{Key: "trial_end", Value: r.TrialEnd.UTC()})
 	}
-	return s.conditionalSubscriptionSet(ctx, "resume subscription",
+	if r.Stretch != nil {
+		start, end, originalEnd, floor := subscription.StretchColumns(r.Stretch)
+		set = append(set,
+			bson.E{Key: "stretch_start", Value: *start},
+			bson.E{Key: "stretch_end", Value: *end},
+			bson.E{Key: "stretch_original_end", Value: *originalEnd},
+		)
+		if floor != nil {
+			set = append(set, bson.E{Key: "stretch_floor", Value: *floor})
+		} else {
+			set = append(set, bson.E{Key: "stretch_floor", Value: nil})
+		}
+	}
+	res, err := s.mdb.Collection(colSubscriptions).UpdateOne(ctx,
 		bson.M{"_id": subID.String(), "status": string(subscription.StatusPaused), "paused_at": pausedAt},
-		set)
+		mongo.Pipeline{{{Key: "$set", Value: set}}},
+	)
+	if err != nil {
+		return false, fmt.Errorf("ledger/mongo: resume subscription: %w", err)
+	}
+	return res.MatchedCount > 0, nil
 }
 
 func (s *Store) ChangeSubscriptionPlan(ctx context.Context, subID id.SubscriptionID, planID id.PlanID, quantity map[string]int64) (bool, error) {

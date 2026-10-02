@@ -36,16 +36,29 @@ func (s *Store) ResumeSubscription(_ context.Context, subID id.SubscriptionID, r
 	if !ok || sub.Status != subscription.StatusPaused || !sameTime(sub.PausedAt, r.PausedAt) {
 		return false, nil
 	}
-	resumedAt := r.At.UTC()
 	sub.Status = r.Status
-	sub.CurrentPeriodStart = r.PeriodStart.UTC()
-	sub.CurrentPeriodEnd = r.PeriodEnd.UTC()
+	if r.PeriodEnd != nil {
+		end := r.PeriodEnd.UTC()
+		if sub.CancelAt != nil && sub.CancelAt.Equal(sub.CurrentPeriodEnd) {
+			cancelAt := end
+			sub.CancelAt = &cancelAt
+		}
+		sub.CurrentPeriodEnd = end
+	}
 	if r.TrialEnd != nil {
 		trialEnd := r.TrialEnd.UTC()
 		sub.TrialEnd = &trialEnd
 	}
+	if r.Stretch != nil {
+		st := *r.Stretch
+		st.Start, st.End, st.OriginalEnd = st.Start.UTC(), st.End.UTC(), st.OriginalEnd.UTC()
+		if st.Floor != nil {
+			floor := st.Floor.UTC()
+			st.Floor = &floor
+		}
+		sub.Stretch = &st
+	}
 	sub.PausedAt = nil
-	sub.ResumedAt = &resumedAt
 	sub.UpdatedAt = time.Now().UTC()
 	return true, nil
 }
