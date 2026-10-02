@@ -142,7 +142,7 @@ func (l *Ledger) advancePeriod(ctx context.Context, sub *subscription.Subscripti
 	sub.CurrentPeriodStart, sub.CurrentPeriodEnd = start, end
 	sub.Touch()
 	_ = l.store.Invalidate(ctx, sub.TenantID, sub.AppID) //nolint:errcheck // best-effort cache invalidation
-	l.plugins.EmitSubscriptionRenewed(ctx, &subscription.Renewal{Subscription: sub, Ended: ended})
+	l.plugins.EmitSubscriptionRenewed(hookContext(ctx), &subscription.Renewal{Subscription: sub, Ended: ended})
 	return true, nil
 }
 
@@ -176,7 +176,7 @@ func (l *Ledger) EnactCancels(ctx context.Context, now time.Time) ([]id.Subscrip
 				canceled.Touch()
 			}
 			_ = l.store.Invalidate(ctx, canceled.TenantID, canceled.AppID) //nolint:errcheck // best-effort cache invalidation
-			l.plugins.EmitSubscriptionCanceled(ctx, canceled)
+			l.plugins.EmitSubscriptionCanceled(hookContext(ctx), canceled)
 			ended = append(ended, sub.ID)
 			return true, nil
 		})
@@ -201,7 +201,7 @@ func (l *Ledger) EndTrials(ctx context.Context, now time.Time) ([]id.Subscriptio
 			sub.Status = subscription.StatusActive
 			sub.Touch()
 			_ = l.store.Invalidate(ctx, sub.TenantID, sub.AppID) //nolint:errcheck // best-effort cache invalidation
-			l.plugins.EmitSubscriptionTrialEnded(ctx, sub)
+			l.plugins.EmitSubscriptionTrialEnded(hookContext(ctx), sub)
 			ended = append(ended, sub.ID)
 			return true, nil
 		})
@@ -229,11 +229,27 @@ func (l *Ledger) MarkInvoicesPastDue(ctx context.Context, now time.Time) ([]id.I
 		pastDue := *inv
 		pastDue.Status = invoice.StatusPastDue
 		pastDue.Touch()
-		l.plugins.EmitInvoicePastDue(ctx, &pastDue)
+		l.plugins.EmitInvoicePastDue(hookContext(ctx), &pastDue)
 		marked = append(marked, inv.ID)
 		return true, nil
 	})
 	return marked, err
+}
+
+// hookContext is the context a lifecycle hook runs on: the run's values,
+// without its deadline or its cancel. The hook fires after its store write has
+// landed, and no later run will announce that transition again, so a run
+// that hits its deadline, or a Stop during a deploy, must not cut the
+// announcement off, nor fail the GenerateInvoice a billing plugin calls from
+// it. The registry still stops waiting on a hook after its own timeout.
+//
+// Delivery stays at most once and in-process: a crash between the write and
+// the hook, or a hook that fails, loses the announcement for good. A billing
+// plugin reconciles by listing its subscriptions and invoicing, with
+// ForPeriod, every ended period that has no invoice; ErrAlreadyExists marks
+// the ones already billed.
+func hookContext(ctx context.Context) context.Context {
+	return context.WithoutCancel(ctx)
 }
 
 // dueSubscriptions lists one batch of subscriptions due on field, across every app.
