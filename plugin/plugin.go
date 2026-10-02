@@ -282,12 +282,13 @@ type PricingStrategy interface {
 // feature whose price tiers fail validation.
 //
 // It receives the usage events for that tenant, app and feature that fall in
-// the subscription's billing period, the half-open window
-// [CurrentPeriodStart, CurrentPeriodEnd). An event stamped exactly at
-// CurrentPeriodStart is in the window, and one stamped exactly at
-// CurrentPeriodEnd belongs to the next period, so consecutive invoices never
-// bill the same event twice or skip it. A zero start or end leaves that side
-// unbounded.
+// the billed period, the half-open window [start, end): the period's own
+// bounds once it has ended, and its start to now while it is still running.
+// That is the same window the built-in sum reads, for the current period and
+// for one named with ledger.ForPeriod alike. An event stamped exactly at the
+// start is in the window, and one stamped exactly at the end belongs to the
+// next period, so consecutive invoices never bill the same event twice or
+// skip it.
 //
 // Each element of events is a *meter.UsageEvent. It is a pointer: asserting
 // the value type meter.UsageEvent fails, and an aggregator that ignores

@@ -670,32 +670,32 @@ func (l *Ledger) Remaining(ctx context.Context, featureKey string) (int64, error
 // Invoice Generation
 // ──────────────────────────────────────────────────
 
-// aggregateUsage totals a feature's usage for billing. A feature naming a
+// aggregateUsage totals a feature's usage for billing over window, the part of
+// the billed period an invoice counts (see usageWindow). A feature naming a
 // registered aggregator under metadata key "aggregator" is aggregated by the
-// plugin over the subscription's billing period; anything else goes through
-// the store. An unregistered name falls back to the store rather than
+// plugin over that window; anything else is summed from the same events
+// (usageInPeriod). An unregistered name falls back to the sum rather than
 // failing: a plan referring to a plugin that is not installed should still
 // bill.
 //
 // GenerateInvoice has already refused an empty tenant id. The plugin path
 // also refuses an empty app id, because it reads events through QueryUsage,
-// which drops the app filter when the app id is empty. The store path does
-// not need that check: store.Aggregate matches the app id exactly, so an
-// empty one only ever matches events recorded without an app.
-func (l *Ledger) aggregateUsage(ctx context.Context, sub *subscription.Subscription, pf plan.Feature, named bool) (int64, error) {
+// which drops the app filter when the app id is empty. The summing path
+// skips events from another app itself.
+func (l *Ledger) aggregateUsage(ctx context.Context, sub *subscription.Subscription, pf plan.Feature, window subscription.Period) (int64, error) {
 	name := pf.Metadata["aggregator"]
 	if name == "" {
-		return l.storeUsage(ctx, sub, pf, named)
+		return l.usageInPeriod(ctx, sub, pf, window)
 	}
 
 	agg := l.plugins.GetUsageAggregator(name)
 	if agg == nil {
-		l.logger.Warn("ledger: feature names an unregistered usage aggregator; using the store",
+		l.logger.Warn("ledger: feature names an unregistered usage aggregator; summing its events",
 			log.String("aggregator", name),
 			log.String("feature", pf.Key),
 		)
 
-		return l.storeUsage(ctx, sub, pf, named)
+		return l.usageInPeriod(ctx, sub, pf, window)
 	}
 
 	if sub.AppID == "" {
@@ -705,8 +705,8 @@ func (l *Ledger) aggregateUsage(ctx context.Context, sub *subscription.Subscript
 
 	events, err := l.store.QueryUsage(ctx, sub.TenantID, sub.AppID, meter.QueryOpts{
 		FeatureKey: pf.Key,
-		Start:      sub.CurrentPeriodStart,
-		End:        sub.CurrentPeriodEnd,
+		Start:      window.Start,
+		End:        window.End,
 	})
 	if err != nil {
 		return 0, fmt.Errorf("query usage for aggregator %q: %w", name, err)
@@ -726,28 +726,6 @@ func (l *Ledger) aggregateUsage(ctx context.Context, sub *subscription.Subscript
 	// way a negative tax amount or strategy result is refused.
 	if total < 0 {
 		return 0, fmt.Errorf("usage aggregator %q returned a negative total %d", name, total)
-	}
-
-	return total, nil
-}
-
-// storeUsage totals a feature's usage through store.Aggregate. Meter accepts
-// negative quantities (a correction, say), so the sum can come back below
-// zero. That is refused rather than billed as nothing, the same way a
-// plugin aggregator's negative total is: a silent zero would hide an
-// overage along with whatever made the total negative. A named past period is
-// totalled from its own events instead (usageInPeriod).
-func (l *Ledger) storeUsage(ctx context.Context, sub *subscription.Subscription, pf plan.Feature, named bool) (int64, error) {
-	if named {
-		return l.usageInPeriod(ctx, sub, pf)
-	}
-
-	total, err := l.store.Aggregate(ctx, sub.TenantID, sub.AppID, pf.Key, pf.Period)
-	if err != nil {
-		return 0, err
-	}
-	if total < 0 {
-		return 0, fmt.Errorf("store returned a negative total %d", total)
 	}
 
 	return total, nil
@@ -851,11 +829,17 @@ func addChecked(stage string, a, b types.Money) (types.Money, error) {
 // fee; only a feature totalled by a plugin aggregator refuses it (see
 // aggregateUsage).
 //
+// Usage is always the billed period's own: the events from its start to its
+// end, or to now while it is still running (see usageWindow). That holds for
+// the current period and for one named with ForPeriod, so two invoices for
+// consecutive periods never count the same event. A feature's reset period
+// (plan.Feature.Period) plays no part in billing; it shapes quota checks
+// alone.
+//
 // With ForPeriod it bills a period the subscription has already had instead
-// of its current one, with that period's own usage (see usageInPeriod). Only
-// usage is historical: the plan, its prices, the seat counts and the coupons
-// are all read as they are now, because Ledger keeps no history of them and
-// ChangePlan leaves the period alone.
+// of its current one. Only usage is historical: the plan, its prices, the
+// seat counts and the coupons are all read as they are now, because Ledger
+// keeps no history of them and ChangePlan leaves the period alone.
 func (l *Ledger) GenerateInvoice(ctx context.Context, subID id.SubscriptionID, opts ...InvoiceOption) (*invoice.Invoice, error) {
 	sub, err := l.store.GetSubscription(ctx, subID)
 	if err != nil {
@@ -874,7 +858,8 @@ func (l *Ledger) GenerateInvoice(ctx context.Context, subID id.SubscriptionID, o
 	// A named past period (ForPeriod) is billed on a copy of the subscription
 	// carrying that period, so the duplicate check, the invoice's dates and a
 	// plugin aggregator's window all read it from one place.
-	named, err := namedPeriod(sub, p, opts, l.now())
+	now := l.now()
+	named, err := namedPeriod(sub, p, opts, now)
 	if err != nil {
 		return nil, err
 	}
@@ -891,6 +876,7 @@ func (l *Ledger) GenerateInvoice(ctx context.Context, subID id.SubscriptionID, o
 	if existing != nil {
 		return nil, fmt.Errorf("%w: invoice %s already covers this billing period", ErrAlreadyExists, existing.ID)
 	}
+	window := usageWindow(subscription.Period{Start: sub.CurrentPeriodStart, End: sub.CurrentPeriodEnd}, now)
 
 	currency := strings.ToLower(p.Currency)
 
@@ -967,7 +953,7 @@ func (l *Ledger) GenerateInvoice(ctx context.Context, subID id.SubscriptionID, o
 			return nil, fmt.Errorf("plan %s feature %q: %w", p.ID, pf.Key, vErr)
 		}
 
-		used, aggErr := l.aggregateUsage(ctx, sub, pf, named != nil)
+		used, aggErr := l.aggregateUsage(ctx, sub, pf, window)
 		if aggErr != nil {
 			return nil, fmt.Errorf("aggregate usage for feature %q: %w", pf.Key, aggErr)
 		}

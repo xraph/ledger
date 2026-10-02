@@ -125,16 +125,31 @@ func reproduces(want subscription.Period, period plan.Period, nextStart, nextEnd
 	return s.Equal(nextStart) && e.Equal(nextEnd)
 }
 
-// usageInPeriod totals a feature's usage over the subscription's period,
-// [start, end), from the events themselves. A named past period cannot use
-// store.Aggregate, which counts from the start of the calendar period at the
-// time of the call. QueryUsage drops its app filter when the app id is empty,
-// so events from another app are skipped here.
-func (l *Ledger) usageInPeriod(ctx context.Context, sub *subscription.Subscription, pf plan.Feature) (int64, error) {
+// usageWindow is the part of a billed period whose usage an invoice counts,
+// [start, end) once the period has ended and [start, now) while it is still
+// running. Every invoice reads this one window, whether it bills the current
+// period or names one, so consecutive invoices never count an event twice and
+// never skip one. A calendar window (store.Aggregate) would overlap the
+// periods of any subscription that does not renew on the 1st.
+func usageWindow(billed subscription.Period, now time.Time) subscription.Period {
+	if now.Before(billed.End) {
+		billed.End = now
+	}
+	return billed
+}
+
+// usageInPeriod totals a feature's usage over window, from the events
+// themselves. QueryUsage drops its app filter when the app id is empty, so
+// events from another app are skipped here. A window that ends at or before
+// its start holds no usage.
+func (l *Ledger) usageInPeriod(ctx context.Context, sub *subscription.Subscription, pf plan.Feature, window subscription.Period) (int64, error) {
+	if !window.End.After(window.Start) {
+		return 0, nil
+	}
 	events, err := l.store.QueryUsage(ctx, sub.TenantID, sub.AppID, meter.QueryOpts{
 		FeatureKey: pf.Key,
-		Start:      sub.CurrentPeriodStart,
-		End:        sub.CurrentPeriodEnd,
+		Start:      window.Start,
+		End:        window.End,
 	})
 	if err != nil {
 		return 0, err
@@ -145,6 +160,10 @@ func (l *Ledger) usageInPeriod(ctx context.Context, sub *subscription.Subscripti
 			total += e.Quantity
 		}
 	}
+	// Meter accepts negative quantities (a correction, say), so the sum can
+	// come back below zero. That is refused rather than billed as nothing: a
+	// silent zero would hide an overage along with whatever made the total
+	// negative.
 	if total < 0 {
 		return 0, fmt.Errorf("usage for the period totals %d, below zero", total)
 	}
