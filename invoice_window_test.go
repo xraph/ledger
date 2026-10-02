@@ -32,7 +32,7 @@ func windowFixture(t *testing.T) (l *ledger.Ledger, s *memory.Store, sub *subscr
 
 func ingestCalls(t *testing.T, s *memory.Store, sub *subscription.Subscription, calls map[time.Time]int64) {
 	t.Helper()
-	var events []*meter.UsageEvent
+	events := make([]*meter.UsageEvent, 0, len(calls))
 	for ts, qty := range calls {
 		events = append(events, &meter.UsageEvent{
 			ID: id.NewUsageEventID(), TenantID: sub.TenantID, AppID: sub.AppID,
