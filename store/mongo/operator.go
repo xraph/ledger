@@ -3,6 +3,7 @@ package mongo
 import (
 	"context"
 	"fmt"
+	"time"
 
 	"go.mongodb.org/mongo-driver/v2/bson"
 
@@ -27,19 +28,35 @@ func (s *Store) conditionalSubscriptionSet(ctx context.Context, what string, fil
 	return res.MatchedCount() > 0, nil
 }
 
-func (s *Store) PauseSubscription(ctx context.Context, subID id.SubscriptionID) (bool, error) {
+func (s *Store) PauseSubscription(ctx context.Context, subID id.SubscriptionID, at time.Time) (bool, error) {
 	return s.conditionalSubscriptionSet(ctx, "pause subscription",
 		bson.M{
 			"_id":    subID.String(),
 			"status": bson.M{"$in": []string{string(subscription.StatusActive), string(subscription.StatusTrialing)}},
 		},
-		bson.M{"status": string(subscription.StatusPaused)})
+		bson.M{"status": string(subscription.StatusPaused), "paused_at": at.UTC()})
 }
 
-func (s *Store) ResumeSubscription(ctx context.Context, subID id.SubscriptionID) (bool, error) {
+func (s *Store) ResumeSubscription(ctx context.Context, subID id.SubscriptionID, r subscription.Resume) (bool, error) {
+	// A nil paused_at in the filter matches a document whose field is null
+	// or missing: one paused before the field existed.
+	var pausedAt any
+	if r.PausedAt != nil {
+		pausedAt = r.PausedAt.UTC()
+	}
+	set := bson.M{
+		"status":               string(r.Status),
+		"current_period_start": r.PeriodStart.UTC(),
+		"current_period_end":   r.PeriodEnd.UTC(),
+		"paused_at":            nil,
+		"resumed_at":           r.At.UTC(),
+	}
+	if r.TrialEnd != nil {
+		set["trial_end"] = r.TrialEnd.UTC()
+	}
 	return s.conditionalSubscriptionSet(ctx, "resume subscription",
-		bson.M{"_id": subID.String(), "status": string(subscription.StatusPaused)},
-		bson.M{"status": string(subscription.StatusActive)})
+		bson.M{"_id": subID.String(), "status": string(subscription.StatusPaused), "paused_at": pausedAt},
+		set)
 }
 
 func (s *Store) ChangeSubscriptionPlan(ctx context.Context, subID id.SubscriptionID, planID id.PlanID, quantity map[string]int64) (bool, error) {

@@ -119,7 +119,8 @@ type OnSubscriptionCancelScheduled interface {
 }
 
 // OnSubscriptionTrialEnded is called when the lifecycle clock ends a trial and
-// the subscription becomes active.
+// the subscription becomes active. A pause holds the trial: a resume moves its
+// end on by the length of the pause, and this fires once that later end passes.
 type OnSubscriptionTrialEnded interface {
 	Plugin
 	OnSubscriptionTrialEnded(ctx context.Context, sub interface{}) error
@@ -132,6 +133,8 @@ type OnSubscriptionTrialEnded interface {
 // none of them; a plugin that invoices at rollover calls GenerateInvoice with
 // ledger.ForPeriod for each. After a change to a plan's billing period the
 // first rollover can list a period of the old cadence, which ForPeriod refuses.
+// A paused subscription never rolls, and a resume restarts its period at the
+// moment of the resume, so no month spent paused is ever listed.
 type OnSubscriptionRenewed interface {
 	Plugin
 	OnSubscriptionRenewed(ctx context.Context, renewal interface{}) error

@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"slices"
+	"time"
 
 	"github.com/xraph/ledger/id"
 	"github.com/xraph/ledger/invoice"
@@ -102,17 +103,106 @@ func (l *Ledger) ChangePlan(ctx context.Context, subID id.SubscriptionID, planID
 	return sub, nil
 }
 
-// PauseSubscription pauses an active or trialing subscription.
+// PauseSubscription pauses an active or trialing subscription and records
+// when, in paused_at. While it is paused the lifecycle clock leaves its
+// period and its trial alone, so the billing cycle stands still until
+// ResumeSubscription.
 func (l *Ledger) PauseSubscription(ctx context.Context, subID id.SubscriptionID) (*subscription.Subscription, error) {
-	return l.transitionSubscription(ctx, subID, subscription.StatusPaused, l.store.PauseSubscription,
+	pause := func(ctx context.Context, subID id.SubscriptionID) (bool, error) {
+		return l.store.PauseSubscription(ctx, subID, l.now())
+	}
+	return l.transitionSubscription(ctx, subID, subscription.StatusPaused, pause,
 		subscription.StatusActive, subscription.StatusTrialing)
 }
 
+// resumeAttempts bounds how often ResumeSubscription starts again when a
+// second pause lands between its read and its write.
+const resumeAttempts = 3
+
 // ResumeSubscription resumes a paused subscription. A subscription the
 // lifecycle clock canceled while it was paused stays canceled.
+//
+// A pause freezes the billing cycle, so the resume restarts it: the current
+// period begins now and runs one billing period of the plan, renewing on
+// today's day of the month from then on. The months spent paused are never
+// listed in a Renewal and cannot be invoiced with ForPeriod, and neither can
+// any period before the resume. Invoice the period that was running when the
+// subscription was paused before you resume it, while it is still the
+// current one.
+//
+// A trial still running when the subscription was paused resumes as a trial,
+// and its end moves on by the length of the pause, so the customer gets the
+// trial days they had left; the clock ends it, and fires
+// OnSubscriptionTrialEnded, once that later date passes. A subscription
+// paused before Ledger recorded paused_at has no pause start, so its trial
+// end stays where it was and it resumes as a trial only if that end is still
+// ahead.
+//
+// Everything is one conditional store write that lands only while the
+// subscription is still paused and still carries the paused_at read here.
 func (l *Ledger) ResumeSubscription(ctx context.Context, subID id.SubscriptionID) (*subscription.Subscription, error) {
-	return l.transitionSubscription(ctx, subID, subscription.StatusActive, l.store.ResumeSubscription,
-		subscription.StatusPaused)
+	for range resumeAttempts {
+		sub, err := l.store.GetSubscription(ctx, subID)
+		if err != nil {
+			return nil, err
+		}
+		if sub.Status != subscription.StatusPaused {
+			return nil, fmt.Errorf("%w: cannot move a %s subscription to %s", ErrInvalidInput, sub.Status, subscription.StatusActive)
+		}
+		p, err := l.store.GetPlan(ctx, sub.PlanID)
+		if err != nil {
+			return nil, err
+		}
+
+		changed, err := l.store.ResumeSubscription(ctx, subID, resumeOf(sub, p, l.now()))
+		if err != nil {
+			return nil, err
+		}
+		sub, err = l.store.GetSubscription(ctx, subID)
+		if err != nil {
+			return nil, err
+		}
+		if changed {
+			_ = l.store.Invalidate(ctx, sub.TenantID, sub.AppID) //nolint:errcheck // best-effort cache invalidation
+			return sub, nil
+		}
+		if sub.Status != subscription.StatusPaused {
+			return nil, fmt.Errorf("%w: cannot move a %s subscription to %s", ErrInvalidInput, sub.Status, subscription.StatusActive)
+		}
+		// Resumed and paused again since the read: start over from the new
+		// pause.
+	}
+	return nil, fmt.Errorf("%w: subscription %s was resumed and paused again while this resume was being worked out; try again", ErrInvalidInput, subID)
+}
+
+// resumeOf works out what resuming sub at now writes: a fresh period from now
+// on the plan's billing period, the trial end moved on by the length of the
+// pause, and trialing or active.
+func resumeOf(sub *subscription.Subscription, p *plan.Plan, now time.Time) subscription.Resume {
+	now = now.UTC()
+	r := subscription.Resume{
+		PausedAt:    sub.PausedAt,
+		At:          now,
+		Status:      subscription.StatusActive,
+		PeriodStart: now,
+		PeriodEnd:   firstPeriodEnd(now, billingPeriod(p)),
+	}
+	if sub.TrialEnd == nil {
+		return r
+	}
+	pauseStart := now // unknown for a pause from before paused_at existed
+	if sub.PausedAt != nil {
+		pauseStart = sub.PausedAt.UTC()
+	}
+	if !sub.TrialEnd.After(pauseStart) {
+		return r // the trial had ended before the pause
+	}
+	r.Status = subscription.StatusTrialing
+	if paused := now.Sub(pauseStart); paused > 0 {
+		trialEnd := sub.TrialEnd.UTC().Add(paused)
+		r.TrialEnd = &trialEnd
+	}
+	return r
 }
 
 // transitionSubscription moves a subscription whose status is one of from to

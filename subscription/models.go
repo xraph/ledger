@@ -31,10 +31,19 @@ type Subscription struct {
 	CanceledAt         *time.Time        `json:"canceled_at,omitempty"`
 	CancelAt           *time.Time        `json:"cancel_at,omitempty"`
 	EndedAt            *time.Time        `json:"ended_at,omitempty"`
-	AppID              string            `json:"app_id"`
-	ProviderID         string            `json:"provider_id,omitempty"`
-	ProviderName       string            `json:"provider_name,omitempty"`
-	Metadata           map[string]string `json:"metadata,omitempty"`
+	// PausedAt is when the subscription was paused. It is set while the
+	// status is paused and cleared by a resume, which moves the trial end on
+	// by the length of the pause. A subscription paused before this field
+	// existed has none.
+	PausedAt *time.Time `json:"paused_at,omitempty"`
+	// ResumedAt is when the subscription was last resumed. A resume restarts
+	// the billing period there, so no period before it can be invoiced by
+	// name: the time in between was spent paused.
+	ResumedAt    *time.Time        `json:"resumed_at,omitempty"`
+	AppID        string            `json:"app_id"`
+	ProviderID   string            `json:"provider_id,omitempty"`
+	ProviderName string            `json:"provider_name,omitempty"`
+	Metadata     map[string]string `json:"metadata,omitempty"`
 
 	// Quantity holds the current count for each quantity-priced plan
 	// feature, keyed by feature key. Seats are the usual case.
@@ -50,6 +59,28 @@ type Subscription struct {
 type Period struct {
 	Start time.Time `json:"start"`
 	End   time.Time `json:"end"`
+}
+
+// Resume is what a resume writes, in one conditional store write that lands
+// only while the subscription is still paused and still holds the PausedAt
+// the engine read (nil: none). Everything here is worked out by the engine
+// from that read, so a second pause and resume in between must not let it
+// land.
+type Resume struct {
+	// PausedAt is the paused_at the engine read, nil when there was none.
+	PausedAt *time.Time
+	// At is the moment of the resume, stored as resumed_at. paused_at is
+	// cleared.
+	At time.Time
+	// Status is what the subscription resumes to: trialing when its trial
+	// was still running when it was paused, active otherwise.
+	Status Status
+	// PeriodStart and PeriodEnd are the period the resume starts.
+	PeriodStart time.Time
+	PeriodEnd   time.Time
+	// TrialEnd is the trial end moved on by the length of the pause, or nil
+	// to leave trial_end as it is.
+	TrialEnd *time.Time
 }
 
 // Renewal is what OnSubscriptionRenewed receives when the lifecycle clock

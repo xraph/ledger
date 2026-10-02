@@ -33,14 +33,14 @@ func (c *clockBetween) CancelSubscription(ctx context.Context, subID id.Subscrip
 	return c.Store.CancelSubscription(ctx, subID, immediately)
 }
 
-func (c *clockBetween) PauseSubscription(ctx context.Context, subID id.SubscriptionID) (bool, error) {
+func (c *clockBetween) PauseSubscription(ctx context.Context, subID id.SubscriptionID, at time.Time) (bool, error) {
 	c.run()
-	return c.Store.PauseSubscription(ctx, subID)
+	return c.Store.PauseSubscription(ctx, subID, at)
 }
 
-func (c *clockBetween) ResumeSubscription(ctx context.Context, subID id.SubscriptionID) (bool, error) {
+func (c *clockBetween) ResumeSubscription(ctx context.Context, subID id.SubscriptionID, r subscription.Resume) (bool, error) {
 	c.run()
-	return c.Store.ResumeSubscription(ctx, subID)
+	return c.Store.ResumeSubscription(ctx, subID, r)
 }
 
 func (c *clockBetween) ChangeSubscriptionPlan(ctx context.Context, subID id.SubscriptionID, planID id.PlanID, quantity map[string]int64) (bool, error) {

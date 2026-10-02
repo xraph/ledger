@@ -334,5 +334,26 @@ DROP INDEX IF EXISTS idx_ledger_invoices_status_due;
 				return err
 			},
 		},
+		&migrate.Migration{
+			// paused_at holds the start of a pause, so a resume can move the
+			// trial end on by its length; resumed_at is where the billing
+			// period restarted, so no period spent paused can be named.
+			Name:    "add_subscription_pause_times",
+			Version: "20240101000012",
+			Up: func(ctx context.Context, exec migrate.Executor) error {
+				_, err := exec.Exec(ctx, `
+ALTER TABLE ledger_subscriptions ADD COLUMN IF NOT EXISTS paused_at TIMESTAMPTZ;
+ALTER TABLE ledger_subscriptions ADD COLUMN IF NOT EXISTS resumed_at TIMESTAMPTZ;
+`)
+				return err
+			},
+			Down: func(ctx context.Context, exec migrate.Executor) error {
+				_, err := exec.Exec(ctx, `
+ALTER TABLE ledger_subscriptions DROP COLUMN IF EXISTS paused_at;
+ALTER TABLE ledger_subscriptions DROP COLUMN IF EXISTS resumed_at;
+`)
+				return err
+			},
+		},
 	)
 }

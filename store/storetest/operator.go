@@ -72,45 +72,122 @@ func testOperatorWritesAreConditional(t *testing.T, s ledgerstore.Store) {
 	}
 
 	t.Run("pause", func(t *testing.T) {
+		pausedAt := now.Add(-90 * time.Minute).Add(123456789 * time.Nanosecond)
 		for _, st := range []subscription.Status{subscription.StatusActive, subscription.StatusTrialing} {
 			sub := withStatus(st)
 			before := time.Now()
-			expectChanged(t, "pause a "+string(st)+" subscription", true)(s.PauseSubscription(ctx, sub.ID))
+			expectChanged(t, "pause a "+string(st)+" subscription", true)(s.PauseSubscription(ctx, sub.ID, pausedAt))
 			after := time.Now()
 			got := reread(t, s, sub)
 			if got.Status != subscription.StatusPaused {
 				t.Errorf("a %s subscription paused to %q", st, got.Status)
 			}
+			if got.PausedAt == nil || !sameInstantToMillisecond(*got.PausedAt, pausedAt) {
+				t.Errorf("a %s subscription paused with paused_at %v, want %v", st, got.PausedAt, pausedAt)
+			}
+			if !sameInstantToMillisecond(got.CurrentPeriodEnd, sub.CurrentPeriodEnd) {
+				t.Errorf("a pause moved the period end to %v", got.CurrentPeriodEnd)
+			}
 			requireStampedDuring(t, "updated_at", got.UpdatedAt, before, after)
 		}
 		for _, st := range []subscription.Status{subscription.StatusPaused, subscription.StatusPastDue, subscription.StatusCanceled, subscription.StatusExpired} {
 			sub := withStatus(st)
-			expectChanged(t, "pause a "+string(st)+" subscription", false)(s.PauseSubscription(ctx, sub.ID))
-			if got := reread(t, s, sub); got.Status != st {
-				t.Errorf("a refused pause moved a %s subscription to %q", st, got.Status)
+			expectChanged(t, "pause a "+string(st)+" subscription", false)(s.PauseSubscription(ctx, sub.ID, pausedAt))
+			got := reread(t, s, sub)
+			if got.Status != st || got.PausedAt != nil {
+				t.Errorf("a refused pause moved a %s subscription to %q, paused_at %v", st, got.Status, got.PausedAt)
 			}
 		}
-		expectChanged(t, "pause an unknown subscription", false)(s.PauseSubscription(ctx, id.NewSubscriptionID()))
+		expectChanged(t, "pause an unknown subscription", false)(s.PauseSubscription(ctx, id.NewSubscriptionID(), pausedAt))
 	})
 
 	t.Run("resume", func(t *testing.T) {
-		sub := withStatus(subscription.StatusPaused)
-		before := time.Now()
-		expectChanged(t, "resume a paused subscription", true)(s.ResumeSubscription(ctx, sub.ID))
-		after := time.Now()
-		got := reread(t, s, sub)
-		if got.Status != subscription.StatusActive {
-			t.Errorf("a resumed subscription is %q", got.Status)
-		}
-		requireStampedDuring(t, "updated_at", got.UpdatedAt, before, after)
-		for _, st := range []subscription.Status{subscription.StatusActive, subscription.StatusTrialing, subscription.StatusCanceled, subscription.StatusExpired} {
-			other := withStatus(st)
-			expectChanged(t, "resume a "+string(st)+" subscription", false)(s.ResumeSubscription(ctx, other.ID))
-			if got := reread(t, s, other); got.Status != st {
-				t.Errorf("a refused resume moved a %s subscription to %q", st, got.Status)
+		// Sub-second values, read back from the store, must match the
+		// paused_at the store holds on every backend, sqlite's text included.
+		pausedAt := now.Add(-90 * 24 * time.Hour).Add(500 * time.Millisecond)
+		resumedAt := now.Add(123456789 * time.Nanosecond)
+		trialEnd := now.Add(10 * 24 * time.Hour)
+		resume := func(read *subscription.Subscription, status subscription.Status, trial *time.Time) subscription.Resume {
+			return subscription.Resume{
+				PausedAt: read.PausedAt, At: resumedAt, Status: status,
+				PeriodStart: resumedAt, PeriodEnd: resumedAt.AddDate(0, 1, 0), TrialEnd: trial,
 			}
 		}
-		expectChanged(t, "resume an unknown subscription", false)(s.ResumeSubscription(ctx, id.NewSubscriptionID()))
+		paused := func(edit func(*subscription.Subscription)) *subscription.Subscription {
+			return storedSubscription(t, s, appID, func(x *subscription.Subscription) {
+				backdate(&x.Entity)
+				x.Status = subscription.StatusPaused
+				p := pausedAt
+				x.PausedAt = &p
+				edit(x)
+			})
+		}
+
+		sub := paused(func(x *subscription.Subscription) {
+			x.CurrentPeriodStart, x.CurrentPeriodEnd = pausedAt.AddDate(0, -1, 0), pausedAt.AddDate(0, 0, 3)
+			oldTrial := pausedAt.Add(time.Hour)
+			x.TrialEnd = &oldTrial
+		})
+		read := reread(t, s, sub)
+		before := time.Now()
+		expectChanged(t, "resume a paused subscription", true)(s.ResumeSubscription(ctx, sub.ID, resume(read, subscription.StatusTrialing, &trialEnd)))
+		after := time.Now()
+		got := reread(t, s, sub)
+		if got.Status != subscription.StatusTrialing {
+			t.Errorf("a resumed subscription is %q, want the status it was given", got.Status)
+		}
+		if !sameInstantToMillisecond(got.CurrentPeriodStart, resumedAt) || !sameInstantToMillisecond(got.CurrentPeriodEnd, resumedAt.AddDate(0, 1, 0)) {
+			t.Errorf("a resumed period runs %v to %v, want it restarted at %v", got.CurrentPeriodStart, got.CurrentPeriodEnd, resumedAt)
+		}
+		if got.TrialEnd == nil || !sameInstantToMillisecond(*got.TrialEnd, trialEnd) {
+			t.Errorf("trial_end %v, want the moved %v", got.TrialEnd, trialEnd)
+		}
+		if got.PausedAt != nil {
+			t.Errorf("paused_at %v survived the resume", got.PausedAt)
+		}
+		if got.ResumedAt == nil || !sameInstantToMillisecond(*got.ResumedAt, resumedAt) {
+			t.Errorf("resumed_at %v, want %v", got.ResumedAt, resumedAt)
+		}
+		requireStampedDuring(t, "updated_at", got.UpdatedAt, before, after)
+
+		// A nil TrialEnd leaves the column alone.
+		keepTrial := paused(func(x *subscription.Subscription) {
+			x.TrialEnd = &trialEnd
+		})
+		expectChanged(t, "resume keeping the trial end", true)(s.ResumeSubscription(ctx, keepTrial.ID, resume(reread(t, s, keepTrial), subscription.StatusActive, nil)))
+		if got := reread(t, s, keepTrial); got.Status != subscription.StatusActive || got.TrialEnd == nil || !sameInstantToMillisecond(*got.TrialEnd, trialEnd) {
+			t.Errorf("status %q trial_end %v, want active and the trial end untouched", got.Status, got.TrialEnd)
+		}
+
+		// A row paused before paused_at existed resumes when the caller
+		// read no paused_at either.
+		legacy := storedSubscription(t, s, appID, func(x *subscription.Subscription) {
+			backdate(&x.Entity)
+			x.Status = subscription.StatusPaused
+		})
+		expectChanged(t, "resume a paused subscription with no paused_at", true)(s.ResumeSubscription(ctx, legacy.ID, resume(reread(t, s, legacy), subscription.StatusActive, nil)))
+
+		// A different paused_at means the row was resumed and paused again
+		// since the read: the write must miss.
+		again := paused(func(*subscription.Subscription) {})
+		stale := resume(reread(t, s, again), subscription.StatusActive, nil)
+		otherPause := pausedAt.Add(-time.Hour)
+		stale.PausedAt = &otherPause
+		expectChanged(t, "resume with a stale paused_at", false)(s.ResumeSubscription(ctx, again.ID, stale))
+		stale.PausedAt = nil
+		expectChanged(t, "resume reading no paused_at where one is set", false)(s.ResumeSubscription(ctx, again.ID, stale))
+		if got := reread(t, s, again); got.Status != subscription.StatusPaused || got.PausedAt == nil {
+			t.Errorf("a missed resume left status %q paused_at %v", got.Status, got.PausedAt)
+		}
+
+		for _, st := range []subscription.Status{subscription.StatusActive, subscription.StatusTrialing, subscription.StatusCanceled, subscription.StatusExpired} {
+			other := withStatus(st)
+			expectChanged(t, "resume a "+string(st)+" subscription", false)(s.ResumeSubscription(ctx, other.ID, resume(reread(t, s, other), subscription.StatusActive, nil)))
+			if got := reread(t, s, other); got.Status != st || got.ResumedAt != nil {
+				t.Errorf("a refused resume moved a %s subscription to %q, resumed_at %v", st, got.Status, got.ResumedAt)
+			}
+		}
+		expectChanged(t, "resume an unknown subscription", false)(s.ResumeSubscription(ctx, id.NewSubscriptionID(), subscription.Resume{At: resumedAt, Status: subscription.StatusActive}))
 	})
 
 	t.Run("plan", func(t *testing.T) {
@@ -238,7 +315,9 @@ func testOperatorWritesRaceTheClock(t *testing.T, s ledgerstore.Store) {
 		enacted := sync.Map{}
 		raceEach(subs,
 			func(sub *subscription.Subscription) {
-				_, err := s.ResumeSubscription(ctx, sub.ID)
+				_, err := s.ResumeSubscription(ctx, sub.ID, subscription.Resume{
+					At: now, Status: subscription.StatusActive, PeriodStart: now, PeriodEnd: now.AddDate(0, 1, 0),
+				})
 				log.add(err)
 			},
 			func(sub *subscription.Subscription) {
@@ -258,6 +337,52 @@ func testOperatorWritesRaceTheClock(t *testing.T, s ledgerstore.Store) {
 			// Paused or resumed, the cancel was due, so the clock enacted it.
 			if ok, _ := enacted.Load(sub.ID.String()); ok != true {
 				t.Errorf("%s: the enactment did not match", sub.ID)
+			}
+		}
+	})
+
+	t.Run("resume against period advance and trial end", func(t *testing.T) {
+		// The clock never writes a paused row's period or trial, and a resume
+		// moves both past now, so neither clock write can match either side
+		// of the resume, and the resume always lands.
+		trialEnd := past
+		subs := many(func(x *subscription.Subscription) {
+			endedPeriod(x)
+			x.Status = subscription.StatusPaused
+			p := past.AddDate(0, 0, -3)
+			x.PausedAt = &p
+			x.TrialEnd = &trialEnd
+		})
+		resumedTrial := now.AddDate(0, 0, 3)
+		var log errorLog
+		clockMatched := sync.Map{}
+		raceEach(subs,
+			func(sub *subscription.Subscription) {
+				ok, err := s.ResumeSubscription(ctx, sub.ID, subscription.Resume{
+					PausedAt: reread(t, s, sub).PausedAt, At: now, Status: subscription.StatusTrialing,
+					PeriodStart: now, PeriodEnd: now.AddDate(0, 1, 0), TrialEnd: &resumedTrial,
+				})
+				if err == nil && !ok {
+					err = errors.New("the resume did not match " + sub.ID.String())
+				}
+				log.add(err)
+			},
+			func(sub *subscription.Subscription) {
+				advanced, err := s.AdvanceSubscriptionPeriod(ctx, sub.ID, past, next, now)
+				log.add(err)
+				ended, err := s.EndSubscriptionTrial(ctx, sub.ID, now)
+				log.add(err)
+				clockMatched.Store(sub.ID.String(), advanced || ended)
+			})
+		log.check(t)
+		for _, sub := range subs {
+			got := reread(t, s, sub)
+			if ok, _ := clockMatched.Load(sub.ID.String()); ok == true {
+				t.Errorf("%s: a clock write matched a paused or just-resumed row", sub.ID)
+			}
+			if got.Status != subscription.StatusTrialing || !sameInstantToMillisecond(got.CurrentPeriodStart, now) ||
+				got.TrialEnd == nil || !sameInstantToMillisecond(*got.TrialEnd, resumedTrial) {
+				t.Errorf("%s: status %q period from %v trial_end %v, want the resume's", sub.ID, got.Status, got.CurrentPeriodStart, got.TrialEnd)
 			}
 		}
 	})
@@ -300,7 +425,7 @@ func testOperatorWritesRaceTheClock(t *testing.T, s ledgerstore.Store) {
 		advanced := sync.Map{}
 		raceEach(subs,
 			func(sub *subscription.Subscription) {
-				ok, err := s.PauseSubscription(ctx, sub.ID)
+				ok, err := s.PauseSubscription(ctx, sub.ID, now)
 				if err == nil && !ok {
 					err = errors.New("the pause did not match " + sub.ID.String())
 				}

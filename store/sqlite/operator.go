@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"time"
 
 	ledger "github.com/xraph/ledger"
 	"github.com/xraph/ledger/id"
@@ -13,22 +14,37 @@ import (
 // The operator writes that can race the lifecycle clock. Each is one
 // conditional UPDATE that names only its own columns; see store.Store.
 
-func (s *Store) PauseSubscription(ctx context.Context, subID id.SubscriptionID) (bool, error) {
+func (s *Store) PauseSubscription(ctx context.Context, subID id.SubscriptionID, at time.Time) (bool, error) {
 	return changed(s.sdb.NewUpdate((*subscriptionModel)(nil)).
 		Set("status = ?", string(subscription.StatusPaused)).
+		Set("paused_at = ?", at.UTC()).
 		Set("updated_at = ?", now()).
 		Where("id = ?", subID.String()).
 		Where("status IN (?, ?)", string(subscription.StatusActive), string(subscription.StatusTrialing)).
 		Exec(ctx))
 }
 
-func (s *Store) ResumeSubscription(ctx context.Context, subID id.SubscriptionID) (bool, error) {
-	return changed(s.sdb.NewUpdate((*subscriptionModel)(nil)).
-		Set("status = ?", string(subscription.StatusActive)).
-		Set("updated_at = ?", now()).
-		Where("id = ?", subID.String()).
-		Where("status = ?", string(subscription.StatusPaused)).
-		Exec(ctx))
+func (s *Store) ResumeSubscription(ctx context.Context, subID id.SubscriptionID, r subscription.Resume) (bool, error) {
+	q := s.sdb.NewUpdate((*subscriptionModel)(nil)).
+		Set("status = ?", string(r.Status)).
+		Set("current_period_start = ?", r.PeriodStart.UTC()).
+		Set("current_period_end = ?", r.PeriodEnd.UTC()).
+		Set("paused_at = NULL").
+		Set("resumed_at = ?", r.At.UTC()).
+		Set("updated_at = ?", now())
+	if r.TrialEnd != nil {
+		q = q.Set("trial_end = ?", r.TrialEnd.UTC())
+	}
+	q = q.Where("id = ?", subID.String()).
+		Where("status = ?", string(subscription.StatusPaused))
+	if r.PausedAt == nil {
+		q = q.Where("paused_at IS NULL")
+	} else {
+		// The value round-trips from this row, read a moment ago, so it
+		// binds in the form the column holds.
+		q = q.Where("paused_at = ?", r.PausedAt.UTC())
+	}
+	return changed(q.Exec(ctx))
 }
 
 func (s *Store) ChangeSubscriptionPlan(ctx context.Context, subID id.SubscriptionID, planID id.PlanID, quantity map[string]int64) (bool, error) {

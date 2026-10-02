@@ -330,5 +330,24 @@ DROP INDEX IF EXISTS idx_ledger_invoices_status_due;
 				return err
 			},
 		},
+		&migrate.Migration{
+			// paused_at holds the start of a pause, so a resume can move the
+			// trial end on by its length; resumed_at is where the billing
+			// period restarted, so no period spent paused can be named.
+			Name:    "add_subscription_pause_times",
+			Version: "20240101000012",
+			Up: func(ctx context.Context, exec migrate.Executor) error {
+				_, err := exec.Exec(ctx, `
+ALTER TABLE ledger_subscriptions ADD COLUMN paused_at TEXT;
+ALTER TABLE ledger_subscriptions ADD COLUMN resumed_at TEXT;
+`)
+				return err
+			},
+			Down: func(_ context.Context, _ migrate.Executor) error {
+				// SQLite does not support DROP COLUMN in older versions;
+				// these columns are harmless if left in place.
+				return nil
+			},
+		},
 	)
 }

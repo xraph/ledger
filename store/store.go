@@ -64,10 +64,16 @@ type Store interface {
 	// canceled. The bool ones report whether a row matched; a missing row is
 	// false with no error, and the caller re-reads to learn why.
 	//
-	// PauseSubscription sets status to paused when it is active or trialing.
-	PauseSubscription(ctx context.Context, subID id.SubscriptionID) (bool, error)
-	// ResumeSubscription sets status to active when it is paused.
-	ResumeSubscription(ctx context.Context, subID id.SubscriptionID) (bool, error)
+	// PauseSubscription sets status to paused and paused_at to at when the
+	// status is active or trialing.
+	PauseSubscription(ctx context.Context, subID id.SubscriptionID, at time.Time) (bool, error)
+	// ResumeSubscription applies r when the status is paused and paused_at
+	// still equals r.PausedAt (is null when r.PausedAt is nil): it sets the
+	// status to r.Status, the current period to [r.PeriodStart,
+	// r.PeriodEnd), trial_end to r.TrialEnd unless that is nil, resumed_at
+	// to r.At, and clears paused_at. The lifecycle clock never writes a
+	// paused row's period or trial, so nothing it does can be lost here.
+	ResumeSubscription(ctx context.Context, subID id.SubscriptionID, r subscription.Resume) (bool, error)
 	// ChangeSubscriptionPlan sets plan_id and quantity when the status is
 	// neither canceled nor expired. A nil quantity is stored as empty.
 	ChangeSubscriptionPlan(ctx context.Context, subID id.SubscriptionID, planID id.PlanID, quantity map[string]int64) (bool, error)

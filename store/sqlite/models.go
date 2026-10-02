@@ -137,6 +137,8 @@ type subscriptionModel struct {
 	CanceledAt         *time.Time `grove:"canceled_at"`
 	CancelAt           *time.Time `grove:"cancel_at"`
 	EndedAt            *time.Time `grove:"ended_at"`
+	PausedAt           *time.Time `grove:"paused_at"`
+	ResumedAt          *time.Time `grove:"resumed_at"`
 	AppID              string     `grove:"app_id"`
 	ProviderID         string     `grove:"provider_id"`
 	ProviderName       string     `grove:"provider_name"`
@@ -167,6 +169,8 @@ func toSubscriptionModel(s *subscription.Subscription) *subscriptionModel {
 		CanceledAt:         utcPtr(s.CanceledAt),
 		CancelAt:           utcPtr(s.CancelAt),
 		EndedAt:            utcPtr(s.EndedAt),
+		PausedAt:           utcPtr(s.PausedAt),
+		ResumedAt:          utcPtr(s.ResumedAt),
 		AppID:              s.AppID,
 		ProviderID:         s.ProviderID,
 		ProviderName:       s.ProviderName,
@@ -216,6 +220,8 @@ func fromSubscriptionModel(m *subscriptionModel) (*subscription.Subscription, er
 		CanceledAt:         m.CanceledAt,
 		CancelAt:           m.CancelAt,
 		EndedAt:            m.EndedAt,
+		PausedAt:           m.PausedAt,
+		ResumedAt:          m.ResumedAt,
 		AppID:              m.AppID,
 		ProviderID:         m.ProviderID,
 		ProviderName:       m.ProviderName,

@@ -21,8 +21,10 @@ type invoiceConfig struct {
 // had, not its current one: the period the lifecycle clock just rolled over,
 // say, or one a catch-up skipped (OnSubscriptionRenewed lists them). The period
 // must be the current one or one before it on the subscription's cadence, must
-// have started, and must end after the subscription was created; anything else
-// is refused with ErrInvalidInput. A second live invoice for the same period is
+// have started, must end after the subscription was created, and must not
+// start before the subscription was last resumed (a resume restarts the
+// cycle, so the months spent paused are never a period); anything else is
+// refused with ErrInvalidInput. A second live invoice for the same period is
 // refused with ErrAlreadyExists, as for the current period. Nothing calls this
 // on its own: Ledger never bills a period automatically.
 //
@@ -62,13 +64,19 @@ func namedPeriod(sub *subscription.Subscription, p *plan.Plan, opts []InvoiceOpt
 // its current one. No history is stored, so it walks back from the current
 // period one billing period at a time, on the anchor day the clock renews on,
 // until it reaches the period that ends where want ends. The period must also
-// have started by now and ended after the subscription was created. A plan
+// have started by now and ended after the subscription was created, and it
+// must not start before the last resume, which restarted the cycle. A plan
 // billed "none", or one whose period Ledger does not know, has only its
 // current period.
 func periodBelongsTo(sub *subscription.Subscription, period plan.Period, want subscription.Period, now time.Time) bool {
 	// The start-before-end check is a cheap early exit: the walk below can
 	// never match a period that is empty or runs backwards, so it is redundant.
 	if !want.Start.Before(want.End) || want.Start.After(now) || !want.End.After(sub.CreatedAt) {
+		return false
+	}
+	// A resume restarted the cycle: every period before it was spent paused,
+	// or belongs to the cycle the pause ended.
+	if sub.ResumedAt != nil && want.Start.Before(*sub.ResumedAt) {
 		return false
 	}
 	if period != plan.PeriodMonthly && period != plan.PeriodYearly {
@@ -103,11 +111,15 @@ func periodBelongsTo(sub *subscription.Subscription, period plan.Period, want su
 
 // clampedFirstStart returns where the subscription's first period started when
 // it began on a day the month it ended in does not have: a yearly subscription
-// created on 29 February has a first period ending on the 28th. The start is
-// the subscription's creation day, one period before end, and ok is false
-// unless end is a month's last day and the creation day is later than it.
+// created (or resumed) on 29 February has a first period ending on the 28th.
+// The start is that day, one period before end, and ok is false unless end is
+// a month's last day and that day is later than it.
 func clampedFirstStart(sub *subscription.Subscription, period plan.Period, end time.Time) (first time.Time, ok bool) {
+	// The cycle began at creation, or at the last resume, which restarted it.
 	created := sub.CreatedAt.UTC()
+	if sub.ResumedAt != nil {
+		created = sub.ResumedAt.UTC()
+	}
 	if end.Day() != daysIn(end.Year(), end.Month()) || created.Day() <= end.Day() {
 		return time.Time{}, false
 	}

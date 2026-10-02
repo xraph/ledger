@@ -13,7 +13,7 @@ import (
 // precondition and writes its own fields under the store's lock, as the
 // database stores do in one conditional statement.
 
-func (s *Store) PauseSubscription(_ context.Context, subID id.SubscriptionID) (bool, error) {
+func (s *Store) PauseSubscription(_ context.Context, subID id.SubscriptionID, at time.Time) (bool, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
@@ -21,22 +21,42 @@ func (s *Store) PauseSubscription(_ context.Context, subID id.SubscriptionID) (b
 	if !ok || (sub.Status != subscription.StatusActive && sub.Status != subscription.StatusTrialing) {
 		return false, nil
 	}
+	pausedAt := at.UTC()
 	sub.Status = subscription.StatusPaused
+	sub.PausedAt = &pausedAt
 	sub.UpdatedAt = time.Now().UTC()
 	return true, nil
 }
 
-func (s *Store) ResumeSubscription(_ context.Context, subID id.SubscriptionID) (bool, error) {
+func (s *Store) ResumeSubscription(_ context.Context, subID id.SubscriptionID, r subscription.Resume) (bool, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
 	sub, ok := s.subscriptions[subID.String()]
-	if !ok || sub.Status != subscription.StatusPaused {
+	if !ok || sub.Status != subscription.StatusPaused || !sameTime(sub.PausedAt, r.PausedAt) {
 		return false, nil
 	}
-	sub.Status = subscription.StatusActive
+	resumedAt := r.At.UTC()
+	sub.Status = r.Status
+	sub.CurrentPeriodStart = r.PeriodStart.UTC()
+	sub.CurrentPeriodEnd = r.PeriodEnd.UTC()
+	if r.TrialEnd != nil {
+		trialEnd := r.TrialEnd.UTC()
+		sub.TrialEnd = &trialEnd
+	}
+	sub.PausedAt = nil
+	sub.ResumedAt = &resumedAt
 	sub.UpdatedAt = time.Now().UTC()
 	return true, nil
+}
+
+// sameTime reports whether two optional times are both unset or the same
+// instant.
+func sameTime(a, b *time.Time) bool {
+	if a == nil || b == nil {
+		return a == nil && b == nil
+	}
+	return a.Equal(*b)
 }
 
 func (s *Store) ChangeSubscriptionPlan(_ context.Context, subID id.SubscriptionID, planID id.PlanID, quantity map[string]int64) (bool, error) {
