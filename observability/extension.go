@@ -11,23 +11,27 @@ import (
 
 // Ensure MetricsExtension implements required interfaces.
 var (
-	_ plugin.Plugin                 = (*MetricsExtension)(nil)
-	_ plugin.OnInit                 = (*MetricsExtension)(nil)
-	_ plugin.OnPlanCreated          = (*MetricsExtension)(nil)
-	_ plugin.OnPlanUpdated          = (*MetricsExtension)(nil)
-	_ plugin.OnPlanArchived         = (*MetricsExtension)(nil)
-	_ plugin.OnSubscriptionCreated  = (*MetricsExtension)(nil)
-	_ plugin.OnSubscriptionChanged  = (*MetricsExtension)(nil)
-	_ plugin.OnSubscriptionCanceled = (*MetricsExtension)(nil)
-	_ plugin.OnSubscriptionExpired  = (*MetricsExtension)(nil)
-	_ plugin.OnUsageIngested        = (*MetricsExtension)(nil)
-	_ plugin.OnUsageFlushed         = (*MetricsExtension)(nil)
-	_ plugin.OnEntitlementChecked   = (*MetricsExtension)(nil)
-	_ plugin.OnQuotaExceeded        = (*MetricsExtension)(nil)
-	_ plugin.OnInvoiceGenerated     = (*MetricsExtension)(nil)
-	_ plugin.OnInvoiceFinalized     = (*MetricsExtension)(nil)
-	_ plugin.OnInvoicePaid          = (*MetricsExtension)(nil)
-	_ plugin.OnProviderSync         = (*MetricsExtension)(nil)
+	_ plugin.Plugin                        = (*MetricsExtension)(nil)
+	_ plugin.OnInit                        = (*MetricsExtension)(nil)
+	_ plugin.OnPlanCreated                 = (*MetricsExtension)(nil)
+	_ plugin.OnPlanUpdated                 = (*MetricsExtension)(nil)
+	_ plugin.OnPlanArchived                = (*MetricsExtension)(nil)
+	_ plugin.OnSubscriptionCreated         = (*MetricsExtension)(nil)
+	_ plugin.OnSubscriptionChanged         = (*MetricsExtension)(nil)
+	_ plugin.OnSubscriptionCanceled        = (*MetricsExtension)(nil)
+	_ plugin.OnSubscriptionExpired         = (*MetricsExtension)(nil)
+	_ plugin.OnSubscriptionRenewed         = (*MetricsExtension)(nil)
+	_ plugin.OnSubscriptionTrialEnded      = (*MetricsExtension)(nil)
+	_ plugin.OnSubscriptionCancelScheduled = (*MetricsExtension)(nil)
+	_ plugin.OnInvoicePastDue              = (*MetricsExtension)(nil)
+	_ plugin.OnUsageIngested               = (*MetricsExtension)(nil)
+	_ plugin.OnUsageFlushed                = (*MetricsExtension)(nil)
+	_ plugin.OnEntitlementChecked          = (*MetricsExtension)(nil)
+	_ plugin.OnQuotaExceeded               = (*MetricsExtension)(nil)
+	_ plugin.OnInvoiceGenerated            = (*MetricsExtension)(nil)
+	_ plugin.OnInvoiceFinalized            = (*MetricsExtension)(nil)
+	_ plugin.OnInvoicePaid                 = (*MetricsExtension)(nil)
+	_ plugin.OnProviderSync                = (*MetricsExtension)(nil)
 )
 
 // Counter interface for metric counters.
@@ -63,6 +67,12 @@ type MetricsExtension struct {
 	SubscriptionDowngraded Counter
 	SubscriptionCanceled   Counter
 	SubscriptionExpired    Counter
+	// The lifecycle clock's transitions, and scheduled cancels, which
+	// SubscriptionCanceled no longer counts: it counts cancels that took
+	// effect.
+	SubscriptionRenewed         Counter
+	SubscriptionTrialEnded      Counter
+	SubscriptionCancelScheduled Counter
 
 	// Usage metrics
 	UsageEventsIngested Counter
@@ -81,6 +91,7 @@ type MetricsExtension struct {
 	InvoiceFinalized Counter
 	InvoicePaid      Counter
 	InvoiceVoided    Counter
+	InvoicePastDue   Counter
 	InvoiceTotal     Histogram
 
 	// Provider metrics
@@ -106,11 +117,14 @@ func NewMetricsExtension(factory MetricFactory) *MetricsExtension {
 		PlanArchived: factory.Counter("ledger.plan.archived"),
 
 		// Subscription metrics
-		SubscriptionCreated:    factory.Counter("ledger.subscription.created"),
-		SubscriptionUpgraded:   factory.Counter("ledger.subscription.upgraded"),
-		SubscriptionDowngraded: factory.Counter("ledger.subscription.downgraded"),
-		SubscriptionCanceled:   factory.Counter("ledger.subscription.canceled"),
-		SubscriptionExpired:    factory.Counter("ledger.subscription.expired"),
+		SubscriptionCreated:         factory.Counter("ledger.subscription.created"),
+		SubscriptionUpgraded:        factory.Counter("ledger.subscription.upgraded"),
+		SubscriptionDowngraded:      factory.Counter("ledger.subscription.downgraded"),
+		SubscriptionCanceled:        factory.Counter("ledger.subscription.canceled"),
+		SubscriptionExpired:         factory.Counter("ledger.subscription.expired"),
+		SubscriptionRenewed:         factory.Counter("ledger.subscription.renewed"),
+		SubscriptionTrialEnded:      factory.Counter("ledger.subscription.trial_ended"),
+		SubscriptionCancelScheduled: factory.Counter("ledger.subscription.cancel_scheduled"),
 
 		// Usage metrics
 		UsageEventsIngested: factory.Counter("ledger.usage.events.ingested"),
@@ -129,6 +143,7 @@ func NewMetricsExtension(factory MetricFactory) *MetricsExtension {
 		InvoiceFinalized: factory.Counter("ledger.invoice.finalized"),
 		InvoicePaid:      factory.Counter("ledger.invoice.paid"),
 		InvoiceVoided:    factory.Counter("ledger.invoice.voided"),
+		InvoicePastDue:   factory.Counter("ledger.invoice.past_due"),
 		InvoiceTotal:     factory.Histogram("ledger.invoice.total_amount"),
 
 		// Provider metrics
@@ -195,6 +210,31 @@ func (m *MetricsExtension) OnSubscriptionChanged(_ context.Context, _, _, _ inte
 // OnSubscriptionCanceled implements plugin.OnSubscriptionCanceled.
 func (m *MetricsExtension) OnSubscriptionCanceled(_ context.Context, _ interface{}) error {
 	m.SubscriptionCanceled.Inc()
+	return nil
+}
+
+// OnSubscriptionRenewed implements plugin.OnSubscriptionRenewed: one count per
+// move, however many periods it ended.
+func (m *MetricsExtension) OnSubscriptionRenewed(_ context.Context, _ interface{}) error {
+	m.SubscriptionRenewed.Inc()
+	return nil
+}
+
+// OnSubscriptionTrialEnded implements plugin.OnSubscriptionTrialEnded.
+func (m *MetricsExtension) OnSubscriptionTrialEnded(_ context.Context, _ interface{}) error {
+	m.SubscriptionTrialEnded.Inc()
+	return nil
+}
+
+// OnSubscriptionCancelScheduled implements plugin.OnSubscriptionCancelScheduled.
+func (m *MetricsExtension) OnSubscriptionCancelScheduled(_ context.Context, _ interface{}) error {
+	m.SubscriptionCancelScheduled.Inc()
+	return nil
+}
+
+// OnInvoicePastDue implements plugin.OnInvoicePastDue.
+func (m *MetricsExtension) OnInvoicePastDue(_ context.Context, _ interface{}) error {
+	m.InvoicePastDue.Inc()
 	return nil
 }
 

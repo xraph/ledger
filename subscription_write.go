@@ -109,7 +109,7 @@ func (l *Ledger) ChangePlan(ctx context.Context, subID id.SubscriptionID, planID
 // ResumeSubscription.
 func (l *Ledger) PauseSubscription(ctx context.Context, subID id.SubscriptionID) (*subscription.Subscription, error) {
 	pause := func(ctx context.Context, subID id.SubscriptionID) (bool, error) {
-		return l.store.PauseSubscription(ctx, subID, l.now())
+		return l.store.PauseSubscription(ctx, subID, l.stamp())
 	}
 	return l.transitionSubscription(ctx, subID, subscription.StatusPaused, pause,
 		subscription.StatusActive, subscription.StatusTrialing)
@@ -154,7 +154,7 @@ func (l *Ledger) ResumeSubscription(ctx context.Context, subID id.SubscriptionID
 			return nil, err
 		}
 
-		changed, err := l.store.ResumeSubscription(ctx, subID, resumeOf(sub, p, l.now()))
+		changed, err := l.store.ResumeSubscription(ctx, subID, resumeOf(sub, p, l.stamp()))
 		if err != nil {
 			return nil, err
 		}

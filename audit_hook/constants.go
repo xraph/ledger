@@ -14,6 +14,8 @@ const (
 	ActionSubscriptionCanceled        = "subscription.canceled"
 	ActionSubscriptionCancelScheduled = "subscription.cancel_scheduled"
 	ActionSubscriptionExpired         = "subscription.expired"
+	ActionSubscriptionRenewed         = "subscription.renewed"
+	ActionSubscriptionTrialEnded      = "subscription.trial_ended"
 
 	// Usage actions
 	ActionUsageIngested = "usage.ingested"
@@ -31,6 +33,7 @@ const (
 	ActionInvoicePaid      = "invoice.paid"
 	ActionInvoiceFailed    = "invoice.failed"
 	ActionInvoiceVoided    = "invoice.voided"
+	ActionInvoicePastDue   = "invoice.past_due"
 
 	// Provider actions
 	ActionProviderSync     = "provider.sync"

@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"slices"
 	"time"
 
 	"github.com/xraph/ledger/id"
@@ -141,10 +142,11 @@ func (l *Ledger) advancePeriod(ctx context.Context, sub *subscription.Subscripti
 	if !changed {
 		return false, nil
 	}
-	sub.CurrentPeriodStart, sub.CurrentPeriodEnd = start, end
-	sub.Touch()
-	_ = l.store.Invalidate(ctx, sub.TenantID, sub.AppID) //nolint:errcheck // best-effort cache invalidation
-	l.plugins.EmitSubscriptionRenewed(hookContext(ctx), &subscription.Renewal{Subscription: sub, Ended: ended})
+	renewed := l.storedOr(ctx, sub, func(x *subscription.Subscription) {
+		x.CurrentPeriodStart, x.CurrentPeriodEnd = start, end
+	})
+	_ = l.store.Invalidate(ctx, renewed.TenantID, renewed.AppID) //nolint:errcheck // best-effort cache invalidation
+	l.plugins.EmitSubscriptionRenewed(hookContext(ctx), &subscription.Renewal{Subscription: renewed, Ended: ended})
 	return true, nil
 }
 
@@ -154,33 +156,44 @@ func (l *Ledger) advancePeriod(ctx context.Context, sub *subscription.Subscripti
 // row read back after the write: an operator's scheduled cancel landing
 // between the list and the write moves cancel_at, and the stored canceled_at
 // is the one that counts.
+//
+// A running subscription whose period ended before its cancel_at is caught up
+// first, as AdvancePeriods would, so the cancel ends the period it falls in
+// and the periods before it are announced. Inside one Advance the period step
+// has already done that; this covers another replica's cancel step landing
+// between this replica's period list and its write, and a caller running
+// EnactCancels on its own. The advance is conditional like any other, so a
+// row another replica already moved is left alone.
 func (l *Ledger) EnactCancels(ctx context.Context, now time.Time) ([]id.SubscriptionID, error) {
 	now = now.UTC()
+	plans := map[string]*plan.Plan{}
 	var ended []id.SubscriptionID
 	err := eachDue(ctx, l.dueSubscriptions(subscription.DueCancel, cancellableStatuses, now),
 		func(sub *subscription.Subscription) (bool, error) {
+			var advanceErr error
+			if slices.Contains(runningStatuses, sub.Status) && !sub.CurrentPeriodEnd.After(now) {
+				// An error here still lets the cancel through: its date has
+				// passed, whatever is wrong with the period.
+				_, advanceErr = l.advancePeriod(ctx, sub, now, plans)
+			}
 			changed, err := l.store.EnactSubscriptionCancel(ctx, sub.ID, now)
 			if err != nil {
-				return false, fmt.Errorf("cancel subscription %s: %w", sub.ID, err)
+				return false, errors.Join(advanceErr, fmt.Errorf("cancel subscription %s: %w", sub.ID, err))
 			}
 			if !changed {
-				return false, nil
+				return false, advanceErr
 			}
-			canceled, readErr := l.store.GetSubscription(ctx, sub.ID)
-			if readErr != nil {
-				// The cancel is written; announce it from the listed row.
-				canceled = sub
-				if sub.CancelAt != nil {
-					canceledAt := *sub.CancelAt
-					canceled.CanceledAt = &canceledAt
+			canceled := l.storedOr(ctx, sub, func(x *subscription.Subscription) {
+				if x.CancelAt != nil {
+					canceledAt := *x.CancelAt
+					x.CanceledAt = &canceledAt
 				}
-				canceled.Status = subscription.StatusCanceled
-				canceled.Touch()
-			}
+				x.Status = subscription.StatusCanceled
+			})
 			_ = l.store.Invalidate(ctx, canceled.TenantID, canceled.AppID) //nolint:errcheck // best-effort cache invalidation
 			l.plugins.EmitSubscriptionCanceled(hookContext(ctx), canceled)
 			ended = append(ended, sub.ID)
-			return true, nil
+			return true, advanceErr
 		})
 	return ended, err
 }
@@ -200,10 +213,11 @@ func (l *Ledger) EndTrials(ctx context.Context, now time.Time) ([]id.Subscriptio
 			if !changed {
 				return false, nil
 			}
-			sub.Status = subscription.StatusActive
-			sub.Touch()
-			_ = l.store.Invalidate(ctx, sub.TenantID, sub.AppID) //nolint:errcheck // best-effort cache invalidation
-			l.plugins.EmitSubscriptionTrialEnded(hookContext(ctx), sub)
+			active := l.storedOr(ctx, sub, func(x *subscription.Subscription) {
+				x.Status = subscription.StatusActive
+			})
+			_ = l.store.Invalidate(ctx, active.TenantID, active.AppID) //nolint:errcheck // best-effort cache invalidation
+			l.plugins.EmitSubscriptionTrialEnded(hookContext(ctx), active)
 			ended = append(ended, sub.ID)
 			return true, nil
 		})
@@ -227,15 +241,35 @@ func (l *Ledger) MarkInvoicesPastDue(ctx context.Context, now time.Time) ([]id.I
 		if !changed {
 			return false, nil
 		}
-		// A copy: the memory store hands out its own pointer.
+		// The invoice as stored, falling back to the listed one with its new
+		// status. A copy either way: the memory store hands out its own
+		// pointer.
 		pastDue := *inv
 		pastDue.Status = invoice.StatusPastDue
 		pastDue.Touch()
+		if stored, readErr := l.store.GetInvoice(ctx, inv.ID); readErr == nil {
+			pastDue = *stored
+		}
 		l.plugins.EmitInvoicePastDue(hookContext(ctx), &pastDue)
 		marked = append(marked, inv.ID)
 		return true, nil
 	})
 	return marked, err
+}
+
+// storedOr reads a subscription back after a write matched, so a hook
+// announces the row as stored: its updated_at, and whatever another writer
+// changed beside the write, such as a plan change landing between the list
+// and the write. If the read fails the write still happened, so the listed
+// row stands in, with apply making the change the write made.
+func (l *Ledger) storedOr(ctx context.Context, listed *subscription.Subscription, apply func(*subscription.Subscription)) *subscription.Subscription {
+	if stored, err := l.store.GetSubscription(ctx, listed.ID); err == nil {
+		return stored
+	}
+	fallback := *listed
+	apply(&fallback)
+	fallback.Touch()
+	return &fallback
 }
 
 // hookContext is the context a lifecycle hook runs on: the run's values,

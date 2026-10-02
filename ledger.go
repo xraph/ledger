@@ -141,6 +141,13 @@ func (l *Ledger) LifecycleInterval() time.Duration { return l.lifecycleInterval 
 // now is the engine's current time, in UTC, from the configured clock.
 func (l *Ledger) now() time.Time { return l.clock().UTC() }
 
+// stamp is now cut to the millisecond, for a time the engine stores and hands
+// back to the caller: a subscription's creation and first period, a pause, a
+// resume. Mongo keeps milliseconds and postgres microseconds, so a nanosecond
+// value would come back from the store different from the one the caller
+// holds, and a period named from the caller's copy would not match.
+func (l *Ledger) stamp() time.Time { return l.now().Truncate(time.Millisecond) }
+
 // WithoutMigrate makes Start skip the store migration and start only the
 // background workers, for a deployment that migrates its schema separately.
 func WithoutMigrate() Option {
@@ -344,8 +351,10 @@ func (l *Ledger) CreateSubscription(ctx context.Context, sub *subscription.Subsc
 		sub.ID = id.NewSubscriptionID()
 	}
 	// Stamped from the engine's clock, so a subscription created under
-	// WithClock has its first period and its trial on that clock's dates.
-	created := l.now()
+	// WithClock has its first period and its trial on that clock's dates,
+	// and cut to the millisecond, so the struct the caller keeps matches the
+	// row on every backend.
+	created := l.stamp()
 	sub.Entity = types.Entity{CreatedAt: created, UpdatedAt: created}
 
 	// Set the first period from the plan's billing period (see
@@ -428,12 +437,17 @@ func (l *Ledger) CancelSubscription(ctx context.Context, subID id.SubscriptionID
 	if err != nil {
 		return err
 	}
-	sub.CancelAt = &cancelAt
-	if immediately {
-		canceledAt := cancelAt
-		sub.Status = subscription.StatusCanceled
-		sub.CanceledAt = &canceledAt
-	}
+	// The hooks get the row as stored, which carries the store's updated_at
+	// and anything written beside the cancel, such as a period the clock
+	// advanced. The row read above stands in only if the read fails.
+	sub = l.storedOr(ctx, sub, func(x *subscription.Subscription) {
+		x.CancelAt = &cancelAt
+		if immediately {
+			canceledAt := cancelAt
+			x.Status = subscription.StatusCanceled
+			x.CanceledAt = &canceledAt
+		}
+	})
 
 	// Invalidate entitlement cache
 	_ = l.store.Invalidate(ctx, sub.TenantID, sub.AppID) //nolint:errcheck // best-effort cache invalidation
