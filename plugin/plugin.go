@@ -133,16 +133,19 @@ type OnSubscriptionTrialEnded interface {
 // none of them; a plugin that invoices at rollover calls GenerateInvoice with
 // ledger.ForPeriod for each. After a change to a plan's billing period the
 // first rollover can list a period of the old cadence, which ForPeriod refuses.
-// A paused subscription never rolls, and a resume restarts its period at the
-// moment of the resume, so no month spent paused is ever listed.
+// A paused subscription never rolls. A resume stretches its period by the
+// length of the pause, and the stretched period is listed here, once, when its
+// new end passes.
 //
 // Like every hook the lifecycle clock fires (this one, OnSubscriptionCanceled
 // from an enacted cancel, OnSubscriptionTrialEnded and OnInvoicePastDue), it
 // is delivered at most once, in the process whose store write landed, after
 // that write. ctx carries the run's values but not its deadline or its
-// cancel, so a slow run or a Stop does not cut the call off. A crash between
-// the write and the call, a hook that returns an error, or one the registry
-// stops waiting for loses the announcement: no later run repeats it. To
+// cancel, so a slow run or a Stop does not cut the call off. The registry
+// stops waiting for a hook after its timeout, but the hook keeps running on
+// that live context and may still finish; what is lost then is its error,
+// which nobody sees. A crash between the write and the call, or a hook that
+// fails, loses the announcement: no later run repeats it. To
 // reconcile, list your subscriptions and, for each, walk back from its
 // current period with ledger.ForPeriod, invoicing every ended period that has
 // no invoice; ErrAlreadyExists marks the ones you already billed.

@@ -277,7 +277,9 @@ func (l *Ledger) storedOr(ctx context.Context, listed *subscription.Subscription
 // landed, and no later run will announce that transition again, so a run
 // that hits its deadline, or a Stop during a deploy, must not cut the
 // announcement off, nor fail the GenerateInvoice a billing plugin calls from
-// it. The registry still stops waiting on a hook after its own timeout.
+// it. The registry still stops waiting on a hook after its own timeout, but
+// the hook carries on, on this live context, and may still finish; only its
+// error goes unseen.
 //
 // Delivery stays at most once and in-process: a crash between the write and
 // the hook, or a hook that fails, loses the announcement for good. A billing
