@@ -353,5 +353,19 @@ ALTER TABLE ledger_subscriptions ADD COLUMN stretch_floor TEXT;
 				return nil
 			},
 		},
+		&migrate.Migration{
+			// SQLite compares times as text, so a row written in a local
+			// zone, with a monotonic reading, or by a column default
+			// sorted wrong against the UTC text every query binds. This
+			// rewrites those rows into the UTC form (see normalizeTimeText).
+			Name:    "normalize_time_text",
+			Version: "20240101000013",
+			Up:      normalizeTimeText,
+			Down: func(_ context.Context, _ migrate.Executor) error {
+				// The original text is gone, and the UTC form is the one
+				// every release reads.
+				return nil
+			},
+		},
 	)
 }
