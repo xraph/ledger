@@ -63,12 +63,12 @@ type Period struct {
 
 // Stretch is the most recent billing period a resume stretched: it began at
 // Start, was due to end at OriginalEnd, and ends at End once every pause in
-// it is added on. The periods after it renew on End's day; the ones before it
-// ran on the cadence that led to OriginalEnd. Floor is where that earlier
-// cadence began when an older stretch came before it (the older stretch's
-// End): periods before Floor cannot be proved, since only one stretch is
-// remembered. A nil Floor means the earlier cadence runs back to the
-// subscription's creation.
+// it is added on. The periods after it follow the clock's anchor from End
+// (whatever nextPeriod gives); the ones before it ran on the cadence that led
+// to OriginalEnd. Floor is where that earlier cadence began when an older
+// stretch came before it (the older stretch's End): periods before Floor
+// cannot be proved, since only one stretch is remembered. A nil Floor means
+// the earlier cadence runs back to the subscription's creation.
 type Stretch struct {
 	Start       time.Time
 	End         time.Time

@@ -126,10 +126,11 @@ const resumeAttempts = 3
 // length of the pause: current_period_end moves on by now minus paused_at,
 // and current_period_start stays. The stretched period carries one base fee
 // and is billed once its new end passes, like any other; the lifecycle clock
-// lists it in Renewal.Ended then, and the periods after it renew on its new
-// end's day. A cancel scheduled for the period end moves with it. Ledger
-// remembers the most recent stretch (Subscription.Stretch), so ForPeriod can
-// still prove the periods on both sides of it.
+// lists it in Renewal.Ended then, and the periods after it follow the
+// clock's anchor from its new end, usually that end's day of the month. A
+// cancel scheduled for the period end moves with it. Ledger remembers the
+// most recent stretch (Subscription.Stretch), so ForPeriod can still prove
+// the periods on both sides of it.
 //
 // A trial still running when the subscription was paused resumes as a trial,
 // and its end moves on by the same length, so the customer gets the trial

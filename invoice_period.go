@@ -71,11 +71,16 @@ func namedPeriod(sub *subscription.Subscription, p *plan.Plan, opts []InvoiceOpt
 // current period.
 //
 // A resume stretches a period, which breaks the cadence: the periods after a
-// stretched one renew on its new end's day, and the ones before it on the
-// day that led to its original end. Only the most recent stretch is
-// remembered (Subscription.Stretch). The walk crosses it exactly, and stops
-// at its Floor, the end of an older stretch, below which nothing can be
-// proved. Anything it cannot prove is refused, never guessed.
+// stretched one follow the clock's anchor from its new end (whatever
+// nextPeriod gives), and the ones before it ran on the cadence that led to
+// its original end. Only the most recent stretch is remembered
+// (Subscription.Stretch). The periods after it are rebuilt forwards with
+// nextPeriod, exactly as the clock built them, because a walk back from a
+// later period can land beside the real one when an anchor was lost (a yearly
+// stretch ending on 29 February settles on the 28th). The periods before it
+// walk back on the old cadence, or, when an older stretch's end is the Floor,
+// are rebuilt forwards from there. Below the Floor nothing can be proved.
+// Anything that cannot be proved is refused, never guessed.
 func periodBelongsTo(sub *subscription.Subscription, period plan.Period, want subscription.Period, now time.Time) bool {
 	// The start-before-end check is a cheap early exit: the walk below can
 	// never match a period that is empty or runs backwards, so it is redundant.
@@ -85,46 +90,88 @@ func periodBelongsTo(sub *subscription.Subscription, period plan.Period, want su
 	if period != plan.PeriodMonthly && period != plan.PeriodYearly {
 		return false
 	}
-	start, end := sub.CurrentPeriodStart.UTC(), sub.CurrentPeriodEnd.UTC()
+	current := subscription.Period{Start: sub.CurrentPeriodStart.UTC(), End: sub.CurrentPeriodEnd.UTC()}
 	st := sub.Stretch
 	if st == nil {
-		return walkBack(sub, period, want, start, end, true)
+		return walkBack(sub, period, want, current.Start, current.End, true)
 	}
 
-	stStart, stEnd := st.Start.UTC(), st.End.UTC()
-	switch {
-	case start.Equal(stStart) && end.Equal(stEnd):
-		// The current period is the stretched one.
-	case !start.Before(stEnd):
-		// On the cadence after the stretch: walk back to the stretched end,
-		// then step over the stretched period in one go.
-		months, day := periodMonths(period), anchorDay(start, end)
-		for range maxCatchUpPeriods {
-			if start.Equal(want.End) {
-				if start.Equal(stEnd) {
-					return want.Start.Equal(stStart)
-				}
-				return shiftMonths(start, -months, day).Equal(want.Start)
-			}
-			if start.Before(want.End) || start.Equal(stEnd) {
-				break
-			}
-			prev := shiftMonths(start, -months, day)
-			if prev.Before(stEnd) {
-				return false // the cadence does not meet the stretched end: prove nothing
-			}
-			start = prev
-		}
-		if !start.Equal(stEnd) {
-			return false
-		}
-	default:
-		return false // the stretch does not line up with the current period
-	}
-	if st.Floor != nil && want.Start.Before(st.Floor.UTC()) {
+	stretched := subscription.Period{Start: st.Start.UTC(), End: st.End.UTC()}
+	// The stretched period and every one the clock built after it, up to the
+	// current one. If they do not lead there, the record does not describe
+	// this subscription, and nothing is proved.
+	after, ok := forwardTo(stretched, current, period)
+	if !ok {
 		return false
 	}
-	return walkBack(sub, period, want, stStart, st.OriginalEnd.UTC(), st.Floor == nil)
+	for _, p := range after {
+		if p.Start.Equal(want.Start) && p.End.Equal(want.End) {
+			return true
+		}
+	}
+	if want.End.After(stretched.Start) {
+		return false
+	}
+
+	before := subscription.Period{Start: stretched.Start, End: st.OriginalEnd.UTC()}
+	if st.Floor == nil {
+		return walkBack(sub, period, want, before.Start, before.End, true)
+	}
+	floor := st.Floor.UTC()
+	if want.Start.Before(floor) {
+		return false
+	}
+	return onFloorCadence(floor, before, period, want)
+}
+
+// forwardTo lists the periods the clock builds from first, with nextPeriod,
+// up to and including target, and reports whether it reaches target exactly.
+func forwardTo(first, target subscription.Period, period plan.Period) ([]subscription.Period, bool) {
+	var out []subscription.Period
+	p := first
+	for range maxCatchUpPeriods {
+		out = append(out, p)
+		if !p.Start.Before(target.Start) {
+			return out, p.Start.Equal(target.Start) && p.End.Equal(target.End)
+		}
+		p.Start, p.End = nextPeriod(p.Start, p.End, period)
+	}
+	return nil, false
+}
+
+// onFloorCadence reports whether want is one of the periods from floor up to
+// next, the period the cadence led to. That cadence began at floor, the end
+// of an older stretch, on an anchor day Ledger did not keep: floor's own day,
+// or, when floor is a month's last day, any later day the older stretch's
+// start could have had. Each candidate is rebuilt forwards as the clock
+// would have, and want counts only if every candidate that reaches next
+// exactly contains it.
+func onFloorCadence(floor time.Time, next subscription.Period, period plan.Period, want subscription.Period) bool {
+	days := []int{floor.Day()}
+	if floor.Day() == daysIn(floor.Year(), floor.Month()) {
+		for d := floor.Day() + 1; d <= 31; d++ {
+			days = append(days, d)
+		}
+	}
+	reached := 0
+	for _, day := range days {
+		first := subscription.Period{Start: floor, End: shiftMonths(floor, periodMonths(period), day)}
+		chain, ok := forwardTo(first, next, period)
+		if !ok {
+			continue
+		}
+		reached++
+		found := false
+		for _, p := range chain {
+			if p.Start.Equal(want.Start) && p.End.Equal(want.End) {
+				found = true
+			}
+		}
+		if !found {
+			return false
+		}
+	}
+	return reached > 0
 }
 
 // walkBack reports whether want is one of the periods before [start, end) on
