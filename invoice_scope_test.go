@@ -72,8 +72,8 @@ func TestGenerateInvoiceRefusesAnEmptyTenantWithAPluginAggregator(t *testing.T) 
 	agg := &summingAggregator{}
 	l, s, sub := hookFixture(t, useSumAggregator, agg)
 
-	ingest(t, s, &subscription.Subscription{TenantID: "tenant_a", AppID: sub.AppID}, "api_calls", 10)
-	ingest(t, s, &subscription.Subscription{TenantID: "tenant_b", AppID: sub.AppID}, "api_calls", 20)
+	ingestAPICalls(t, s, &subscription.Subscription{TenantID: "tenant_a", AppID: sub.AppID}, 10)
+	ingestAPICalls(t, s, &subscription.Subscription{TenantID: "tenant_b", AppID: sub.AppID}, 20)
 
 	orphan := storeSubscriptionLike(t, s, sub, "", sub.AppID)
 
@@ -155,7 +155,7 @@ func TestGenerateInvoiceRefusesAnEmptyAppIDWithAPluginAggregator(t *testing.T) {
 	agg := &summingAggregator{}
 	l, s, sub := hookFixture(t, useSumAggregator, agg)
 
-	ingest(t, s, &subscription.Subscription{TenantID: "tenant_2", AppID: "app_other"}, "api_calls", 10)
+	ingestAPICalls(t, s, &subscription.Subscription{TenantID: "tenant_2", AppID: "app_other"}, 10)
 	noApp := storeSubscriptionLike(t, s, sub, "tenant_2", "")
 
 	inv, err := l.GenerateInvoice(context.Background(), noApp.ID)

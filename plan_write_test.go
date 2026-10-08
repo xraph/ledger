@@ -230,7 +230,7 @@ func TestUpdatePlanAcceptsALegacyUppercaseCurrency(t *testing.T) {
 		t.Fatalf("GetPlan: %v", err)
 	}
 	edit.Name = "Legacy renamed"
-	if err := l.UpdatePlan(ctx, edit); err != nil {
+	if err = l.UpdatePlan(ctx, edit); err != nil {
 		t.Fatalf("UpdatePlan: %v", err)
 	}
 	got, err := l.GetPlan(ctx, legacy.ID)

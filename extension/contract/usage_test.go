@@ -13,10 +13,11 @@ import (
 	"github.com/xraph/ledger/provider"
 )
 
-func ingestEvent(t *testing.T, h *harness, app, tenant, key string, qty int64) {
+// ingestAPICalls records qty api_calls for tenant in app.
+func ingestAPICalls(t *testing.T, h *harness, app, tenant string, qty int64) {
 	t.Helper()
 	if err := h.store.IngestBatch(context.Background(), []*meter.UsageEvent{{
-		ID: id.NewUsageEventID(), TenantID: tenant, AppID: app, FeatureKey: key, Quantity: qty, Timestamp: time.Now().UTC(),
+		ID: id.NewUsageEventID(), TenantID: tenant, AppID: app, FeatureKey: "api_calls", Quantity: qty, Timestamp: time.Now().UTC(),
 	}}); err != nil {
 		t.Fatalf("IngestBatch: %v", err)
 	}
@@ -34,9 +35,9 @@ func TestUsageManifest(t *testing.T) {
 
 func TestUsageEventsStayInTheApp(t *testing.T) {
 	h := newHarness(t)
-	ingestEvent(t, h, "app_a", "acme", "api_calls", 5)
-	ingestEvent(t, h, "app_a", "globex", "api_calls", 7)
-	ingestEvent(t, h, "app_b", "acme", "api_calls", 999)
+	ingestAPICalls(t, h, "app_a", "acme", 5)
+	ingestAPICalls(t, h, "app_a", "globex", 7)
+	ingestAPICalls(t, h, "app_b", "acme", 999)
 
 	all := mustCall(h, "app_a", usageEvents, UsageEventsInput{})
 	if len(all.Items) != 2 {
@@ -55,8 +56,8 @@ func TestUsageEventsStayInTheApp(t *testing.T) {
 
 func TestUsageAggregateNeedsATenant(t *testing.T) {
 	h := newHarness(t)
-	ingestEvent(t, h, "app_a", "acme", "api_calls", 5)
-	ingestEvent(t, h, "app_a", "acme", "api_calls", 6)
+	ingestAPICalls(t, h, "app_a", "acme", 5)
+	ingestAPICalls(t, h, "app_a", "acme", 6)
 
 	got := mustCall(h, "app_a", usageAggregate, UsageAggregateInput{TenantID: "acme", FeatureKeys: []string{"api_calls"}, Period: "monthly"})
 	if got.Totals["api_calls"] != 11 {
@@ -76,7 +77,7 @@ func TestUsageAggregateNeedsATenant(t *testing.T) {
 func TestEntitlementsCheckAndInvalidate(t *testing.T) {
 	h := newHarness(t)
 	h.subscribe("app_a", "acme", h.activePlan("app_a", "p"))
-	ingestEvent(t, h, "app_a", "acme", "api_calls", 400)
+	ingestAPICalls(t, h, "app_a", "acme", 400)
 
 	got := mustCall(h, "app_a", entitlementsCheck, EntitlementCheckInput{TenantID: "acme", FeatureKey: "api_calls"})
 	if !got.Allowed || got.Used != 400 || got.Limit != 1000 {
@@ -199,7 +200,7 @@ func TestUsageEventsPageStablyWhenTimestampsTie(t *testing.T) {
 // app id as "all apps". usage.events must refuse it rather than list them all.
 func TestUsageEventsRefuseAnEmptyScope(t *testing.T) {
 	h := newHarness(t)
-	ingestEvent(t, h, "app_a", "acme", "api_calls", 5)
+	ingestAPICalls(t, h, "app_a", "acme", 5)
 	if _, err := call(h, "", usageEvents, UsageEventsInput{}); codeOf(err) != dash.CodePermissionDenied {
 		t.Errorf("empty scope: got %v, want PERMISSION_DENIED", err)
 	}

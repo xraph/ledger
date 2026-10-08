@@ -50,8 +50,9 @@ func (l *Ledger) ExportInvoice(ctx context.Context, invID id.InvoiceID, format s
 
 // ProviderNames names every registered payment provider, sorted.
 func (l *Ledger) ProviderNames() []string {
-	names := []string{}
-	for _, p := range l.plugins.GetPaymentProviders() {
+	providers := l.plugins.GetPaymentProviders()
+	names := make([]string, 0, len(providers))
+	for _, p := range providers {
 		names = append(names, p.Provider().Name())
 	}
 	sort.Strings(names)

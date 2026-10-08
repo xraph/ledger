@@ -161,7 +161,7 @@ func TestPauseAndResume(t *testing.T) {
 	if err != nil || got.Status != subscription.StatusPaused {
 		t.Fatalf("pause: %v, %v", got, err)
 	}
-	if _, err := l.PauseSubscription(ctx, sub.ID); !errors.Is(err, ledger.ErrInvalidInput) {
+	if _, err = l.PauseSubscription(ctx, sub.ID); !errors.Is(err, ledger.ErrInvalidInput) {
 		t.Errorf("pause twice: got %v, want ErrInvalidInput", err)
 	}
 	got, err = l.ResumeSubscription(ctx, sub.ID)
@@ -260,7 +260,7 @@ func TestCancelSubscriptionRefusesAnEndedSubscription(t *testing.T) {
 		}
 
 		for _, immediately := range []bool{false, true} {
-			if err := l.CancelSubscription(ctx, sub.ID, immediately); !errors.Is(err, ledger.ErrSubscriptionCanceled) {
+			if err = l.CancelSubscription(ctx, sub.ID, immediately); !errors.Is(err, ledger.ErrSubscriptionCanceled) {
 				t.Errorf("cancel again (immediately=%v): got %v, want ErrSubscriptionCanceled", immediately, err)
 			}
 		}

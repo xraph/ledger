@@ -68,8 +68,8 @@ func (l *Ledger) ChangePlan(ctx context.Context, subID id.SubscriptionID, planID
 	if quantity == nil {
 		quantity = sub.Quantity
 	}
-	if err := validateQuantity(next, quantity); err != nil {
-		return nil, err
+	if qtyErr := validateQuantity(next, quantity); qtyErr != nil {
+		return nil, qtyErr
 	}
 
 	previous, err := l.store.GetPlan(ctx, sub.PlanID)

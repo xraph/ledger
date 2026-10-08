@@ -129,14 +129,14 @@ func mulInt64(a, b int64) (int64, bool) {
 	if lo > math.MaxInt64 {
 		return 0, false
 	}
-	return int64(lo), true //nolint:gosec // lo <= MaxInt64
+	return int64(lo), true
 }
 
 // absUint64 returns |v| as a uint64. Negating in unsigned arithmetic is
 // exact for math.MinInt64 too.
 func absUint64(v int64) uint64 {
 	if v < 0 {
-		return -uint64(v)
+		return -uint64(v) //nolint:gosec // two's-complement negation, exact for MinInt64
 	}
 	return uint64(v)
 }

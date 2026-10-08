@@ -64,14 +64,14 @@ BEGIN SELECT RAISE(ABORT, 'forced failure'); END;
 		t.Errorf("got TimesRedeemed %d after a rolled-back redeem, want 0", stored.TimesRedeemed)
 	}
 
-	if _, err := s.sdb.Exec(ctx, `DROP TRIGGER fail_increment`); err != nil {
+	if _, err = s.sdb.Exec(ctx, `DROP TRIGGER fail_increment`); err != nil {
 		t.Fatalf("drop fail_increment trigger: %v", err)
 	}
 
 	// The rollback must not have left anything behind that blocks a retry:
 	// the same (subscription, coupon) pair redeems cleanly once the trigger
 	// is gone, and the count catches up to exactly 1.
-	if err := s.RedeemCoupon(ctx, subID, c.ID); err != nil {
+	if err = s.RedeemCoupon(ctx, subID, c.ID); err != nil {
 		t.Fatalf("RedeemCoupon after dropping the trigger: %v", err)
 	}
 

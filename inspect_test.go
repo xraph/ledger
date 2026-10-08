@@ -166,9 +166,9 @@ func entitledFixture(t *testing.T) (context.Context, *ledger.Ledger, *memory.Sto
 		t.Fatalf("IngestBatch: %v", err)
 	}
 
-	//nolint:staticcheck,revive // Entitled reads these string keys today
+	// Entitled reads these string keys today.
 	ctx = context.WithValue(ctx, "tenant_id", "t1")
-	//nolint:staticcheck,revive // Entitled reads these string keys today
+	// Entitled reads these string keys today.
 	ctx = context.WithValue(ctx, "app_id", "app_1")
 	return ctx, l, s, spy
 }
@@ -230,7 +230,7 @@ func TestEntitledBooleanCachesWithoutEvents(t *testing.T) {
 
 func TestEntitledWithoutASubscriptionCachesNothing(t *testing.T) {
 	ctx, l, s, spy := entitledFixture(t)
-	//nolint:staticcheck,revive // Entitled reads these string keys today
+	// Entitled reads these string keys today.
 	ctx = context.WithValue(ctx, "tenant_id", "nobody")
 
 	got, err := l.Entitled(ctx, "api_calls")

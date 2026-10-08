@@ -77,11 +77,12 @@ func billingFixture(t *testing.T) (*ledger.Ledger, *memory.Store, *subscription.
 	return l, s, sub
 }
 
-func ingest(t *testing.T, s *memory.Store, sub *subscription.Subscription, key string, qty int64) {
+// ingestAPICalls records qty api_calls for sub's tenant and app.
+func ingestAPICalls(t *testing.T, s *memory.Store, sub *subscription.Subscription, qty int64) {
 	t.Helper()
 	err := s.IngestBatch(context.Background(), []*meter.UsageEvent{{
 		ID: id.NewUsageEventID(), TenantID: sub.TenantID, AppID: sub.AppID,
-		FeatureKey: key, Quantity: qty, Timestamp: time.Now().UTC(),
+		FeatureKey: "api_calls", Quantity: qty, Timestamp: time.Now().UTC(),
 	}})
 	if err != nil {
 		t.Fatalf("IngestBatch: %v", err)
@@ -123,7 +124,7 @@ func TestGenerateInvoicePricesOverageFromTiers(t *testing.T) {
 	l, s, sub := billingFixture(t)
 
 	// 1500 calls against a 1000 allowance: 500 billable at 3c = $15.00.
-	ingest(t, s, sub, "api_calls", 1500)
+	ingestAPICalls(t, s, sub, 1500)
 
 	inv, err := l.GenerateInvoice(ctx, sub.ID)
 	if err != nil {
@@ -160,12 +161,12 @@ func TestGenerateInvoiceChargesSeats(t *testing.T) {
 	p.Pricing.Tiers = append(p.Pricing.Tiers, plan.PriceTier{
 		FeatureKey: "seats", Type: plan.TierGraduated, UpTo: 0, UnitAmount: types.USD(800),
 	})
-	if err := s.UpdatePlan(ctx, p); err != nil {
+	if err = s.UpdatePlan(ctx, p); err != nil {
 		t.Fatalf("UpdatePlan: %v", err)
 	}
 
 	sub.Quantity = map[string]int64{"seats": 5}
-	if err := s.UpdateSubscription(ctx, sub); err != nil {
+	if err = s.UpdateSubscription(ctx, sub); err != nil {
 		t.Fatalf("UpdateSubscription: %v", err)
 	}
 
@@ -351,7 +352,7 @@ func TestGenerateInvoiceCalculatesTax(t *testing.T) {
 func TestGenerateInvoiceRejectsAnInvalidTierLadder(t *testing.T) {
 	ctx := context.Background()
 	l, s, sub := billingFixture(t)
-	ingest(t, s, sub, "api_calls", 1500)
+	ingestAPICalls(t, s, sub, 1500)
 
 	p, err := s.GetPlan(ctx, sub.PlanID)
 	if err != nil {
@@ -361,7 +362,7 @@ func TestGenerateInvoiceRejectsAnInvalidTierLadder(t *testing.T) {
 	p.Pricing.Tiers = append(p.Pricing.Tiers, plan.PriceTier{
 		FeatureKey: "api_calls", Type: plan.TierFlat, UpTo: 5000, FlatAmount: types.USD(900),
 	})
-	if err := s.UpdatePlan(ctx, p); err != nil {
+	if err = s.UpdatePlan(ctx, p); err != nil {
 		t.Fatalf("UpdatePlan: %v", err)
 	}
 
@@ -490,18 +491,18 @@ func TestGenerateInvoiceHandlesAnUppercasePlanCurrency(t *testing.T) {
 		t.Fatalf("GetPlan: %v", err)
 	}
 	p.Currency = "USD"
-	if err := s.UpdatePlan(ctx, p); err != nil {
+	if err = s.UpdatePlan(ctx, p); err != nil {
 		t.Fatalf("UpdatePlan: %v", err)
 	}
 
-	if err := s.CreateCoupon(ctx, &coupon.Coupon{
+	if err = s.CreateCoupon(ctx, &coupon.Coupon{
 		Entity: types.NewEntity(), ID: id.NewCouponID(), Code: "FIVEOFF",
 		Type: coupon.CouponTypeAmount, Amount: types.USD(500),
 		Currency: "usd", AppID: "app_1",
 	}); err != nil {
 		t.Fatalf("CreateCoupon: %v", err)
 	}
-	if _, err := l.ApplyCoupon(ctx, sub.ID, "FIVEOFF"); err != nil {
+	if _, err = l.ApplyCoupon(ctx, sub.ID, "FIVEOFF"); err != nil {
 		t.Fatalf("ApplyCoupon: %v", err)
 	}
 
@@ -667,7 +668,7 @@ func TestGenerateInvoiceRejectsAnInvalidMeteredLadderEvenUnderTheAllowance(t *te
 	p.Pricing.Tiers = append(p.Pricing.Tiers, plan.PriceTier{
 		FeatureKey: "api_calls", Type: plan.TierFlat, UpTo: 5000, FlatAmount: types.USD(900),
 	})
-	if err := s.UpdatePlan(ctx, p); err != nil {
+	if err = s.UpdatePlan(ctx, p); err != nil {
 		t.Fatalf("UpdatePlan: %v", err)
 	}
 
@@ -694,7 +695,7 @@ func TestGenerateInvoiceRejectsAnInvalidSeatLadderEvenWithZeroSeats(t *testing.T
 		plan.PriceTier{FeatureKey: "seats", Type: plan.TierGraduated, UpTo: 10, UnitAmount: types.USD(800)},
 		plan.PriceTier{FeatureKey: "seats", Type: plan.TierFlat, UpTo: 0, FlatAmount: types.USD(900)},
 	)
-	if err := s.UpdatePlan(ctx, p); err != nil {
+	if err = s.UpdatePlan(ctx, p); err != nil {
 		t.Fatalf("UpdatePlan: %v", err)
 	}
 
@@ -795,11 +796,11 @@ func TestGenerateInvoiceDoesNotResubtractTheAllowanceAcrossTierBoundaries(t *tes
 		{FeatureKey: "api_calls", Type: plan.TierGraduated, UpTo: 2000, UnitAmount: types.USD(5)},
 		{FeatureKey: "api_calls", Type: plan.TierGraduated, UpTo: 0, UnitAmount: types.USD(3)},
 	}
-	if err := s.UpdatePlan(ctx, p); err != nil {
+	if err = s.UpdatePlan(ctx, p); err != nil {
 		t.Fatalf("UpdatePlan: %v", err)
 	}
 
-	ingest(t, s, sub, "api_calls", 2500)
+	ingestAPICalls(t, s, sub, 2500)
 
 	inv, err := l.GenerateInvoice(ctx, sub.ID)
 	if err != nil {
@@ -879,12 +880,12 @@ func TestGenerateInvoiceSeatsBillAgainstZeroAllowanceNotTheFeatureLimit(t *testi
 	p.Pricing.Tiers = append(p.Pricing.Tiers, plan.PriceTier{
 		FeatureKey: "seats", Type: plan.TierGraduated, UpTo: 0, UnitAmount: types.USD(800),
 	})
-	if err := s.UpdatePlan(ctx, p); err != nil {
+	if err = s.UpdatePlan(ctx, p); err != nil {
 		t.Fatalf("UpdatePlan: %v", err)
 	}
 
 	sub.Quantity = map[string]int64{"seats": 3}
-	if err := s.UpdateSubscription(ctx, sub); err != nil {
+	if err = s.UpdateSubscription(ctx, sub); err != nil {
 		t.Fatalf("UpdateSubscription: %v", err)
 	}
 
@@ -963,11 +964,11 @@ func TestGenerateInvoiceSkipsValidationForAnUnlimitedMeteredFeature(t *testing.T
 		{FeatureKey: "api_calls", Type: plan.TierGraduated, UpTo: 1000, UnitAmount: types.USD(3)},
 		{FeatureKey: "api_calls", Type: plan.TierFlat, UpTo: 0, FlatAmount: types.USD(900)},
 	}
-	if err := s.UpdatePlan(ctx, p); err != nil {
+	if err = s.UpdatePlan(ctx, p); err != nil {
 		t.Fatalf("UpdatePlan: %v", err)
 	}
 
-	ingest(t, s, sub, "api_calls", 5000)
+	ingestAPICalls(t, s, sub, 5000)
 
 	inv, err := l.GenerateInvoice(ctx, sub.ID)
 	if err != nil {
@@ -1112,7 +1113,7 @@ func TestGenerateInvoiceUsesANamedUsageAggregator(t *testing.T) {
 
 	// One event inside the billing period, one before it. The aggregator
 	// must see only the first.
-	ingest(t, s, sub, "api_calls", 1)
+	ingestAPICalls(t, s, sub, 1)
 	if err := s.IngestBatch(ctx, []*meter.UsageEvent{{
 		ID: id.NewUsageEventID(), TenantID: sub.TenantID, AppID: sub.AppID,
 		FeatureKey: "api_calls", Quantity: 1,
@@ -1137,7 +1138,7 @@ func TestGenerateInvoiceUsesANamedUsageAggregator(t *testing.T) {
 
 func TestGenerateInvoiceFallsBackWhenTheAggregatorIsNotRegistered(t *testing.T) {
 	l, s, sub := hookFixture(t, setFeatureMeta("aggregator", "absent"))
-	ingest(t, s, sub, "api_calls", 1500)
+	ingestAPICalls(t, s, sub, 1500)
 
 	inv, err := l.GenerateInvoice(context.Background(), sub.ID)
 	if err != nil {
@@ -1161,16 +1162,16 @@ func TestGenerateInvoiceUsesANamedPricingStrategy(t *testing.T) {
 
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
-			strat := &fixedStrategy{result: types.USD(12345)}
-			l, s, sub := hookFixture(t, c.edit, strat)
-			ingest(t, s, sub, "api_calls", 1500)
+			strategy := &fixedStrategy{result: types.USD(12345)}
+			l, s, sub := hookFixture(t, c.edit, strategy)
+			ingestAPICalls(t, s, sub, 1500)
 
 			inv, err := l.GenerateInvoice(context.Background(), sub.ID)
 			if err != nil {
 				t.Fatalf("GenerateInvoice: %v", err)
 			}
-			if strat.calls != 1 {
-				t.Errorf("strategy called %d times, want 1", strat.calls)
+			if strategy.calls != 1 {
+				t.Errorf("strategy called %d times, want 1", strategy.calls)
 			}
 			if got := overageAmount(t, inv); !got.Equal(types.USD(12345)) {
 				t.Errorf("got overage %v, want the strategy's $123.45", got)
@@ -1180,16 +1181,16 @@ func TestGenerateInvoiceUsesANamedPricingStrategy(t *testing.T) {
 }
 
 func TestGenerateInvoiceDoesNotCallAStrategyWithinTheAllowance(t *testing.T) {
-	strat := &fixedStrategy{result: types.USD(12345)}
-	l, s, sub := hookFixture(t, setFeatureMeta("pricing_strategy", "stub-pricing"), strat)
-	ingest(t, s, sub, "api_calls", 500)
+	strategy := &fixedStrategy{result: types.USD(12345)}
+	l, s, sub := hookFixture(t, setFeatureMeta("pricing_strategy", "stub-pricing"), strategy)
+	ingestAPICalls(t, s, sub, 500)
 
 	inv, err := l.GenerateInvoice(context.Background(), sub.ID)
 	if err != nil {
 		t.Fatalf("GenerateInvoice: %v", err)
 	}
-	if strat.calls != 0 {
-		t.Errorf("strategy called %d times for usage inside the allowance, want 0", strat.calls)
+	if strategy.calls != 0 {
+		t.Errorf("strategy called %d times for usage inside the allowance, want 0", strategy.calls)
 	}
 	if got := overageAmount(t, inv); !got.IsZero() {
 		t.Errorf("got overage %v, want none", got)
@@ -1211,7 +1212,7 @@ func TestGenerateInvoiceRejectsABadStrategyResult(t *testing.T) {
 		t.Run(c.name, func(t *testing.T) {
 			l, s, sub := hookFixture(t, setFeatureMeta("pricing_strategy", "stub-pricing"),
 				&fixedStrategy{result: c.result})
-			ingest(t, s, sub, "api_calls", 1500)
+			ingestAPICalls(t, s, sub, 1500)
 
 			_, err := l.GenerateInvoice(context.Background(), sub.ID)
 			if err == nil {
@@ -1226,7 +1227,7 @@ func TestGenerateInvoiceRejectsABadStrategyResult(t *testing.T) {
 
 func TestGenerateInvoiceFallsBackWhenTheStrategyIsNotRegistered(t *testing.T) {
 	l, s, sub := hookFixture(t, setFeatureMeta("pricing_strategy", "absent"))
-	ingest(t, s, sub, "api_calls", 1500)
+	ingestAPICalls(t, s, sub, 1500)
 
 	inv, err := l.GenerateInvoice(context.Background(), sub.ID)
 	if err != nil {
@@ -1238,9 +1239,9 @@ func TestGenerateInvoiceFallsBackWhenTheStrategyIsNotRegistered(t *testing.T) {
 }
 
 func TestGenerateInvoiceAcceptsAStrategyResultInAnotherCurrencyCasing(t *testing.T) {
-	strat := &fixedStrategy{result: types.Money{Amount: 500, Currency: "USD"}}
-	l, s, sub := hookFixture(t, setFeatureMeta("pricing_strategy", "stub-pricing"), strat)
-	ingest(t, s, sub, "api_calls", 1500)
+	strategy := &fixedStrategy{result: types.Money{Amount: 500, Currency: "USD"}}
+	l, s, sub := hookFixture(t, setFeatureMeta("pricing_strategy", "stub-pricing"), strategy)
+	ingestAPICalls(t, s, sub, 1500)
 
 	inv, err := l.GenerateInvoice(context.Background(), sub.ID)
 	if err != nil {
@@ -1253,7 +1254,7 @@ func TestGenerateInvoiceAcceptsAStrategyResultInAnotherCurrencyCasing(t *testing
 
 func TestGenerateInvoicePricesASeatFeatureWithANamedStrategy(t *testing.T) {
 	ctx := context.Background()
-	strat := &fixedStrategy{result: types.USD(777)}
+	strategy := &fixedStrategy{result: types.USD(777)}
 	l, s, sub := hookFixture(t, func(p *plan.Plan) {
 		p.Features = append(p.Features, plan.Feature{
 			ID: id.NewFeatureID(), Key: "seats", Name: "Team members",
@@ -1263,7 +1264,7 @@ func TestGenerateInvoicePricesASeatFeatureWithANamedStrategy(t *testing.T) {
 		p.Pricing.Tiers = append(p.Pricing.Tiers, plan.PriceTier{
 			FeatureKey: "seats", Type: plan.TierGraduated, UpTo: 0, UnitAmount: types.USD(800),
 		})
-	}, strat)
+	}, strategy)
 
 	sub.Quantity = map[string]int64{"seats": 5}
 	if err := s.UpdateSubscription(ctx, sub); err != nil {
@@ -1282,8 +1283,8 @@ func TestGenerateInvoicePricesASeatFeatureWithANamedStrategy(t *testing.T) {
 	if !seats[0].Amount.Equal(types.USD(777)) {
 		t.Errorf("got seat charge %v, want the strategy's $7.77 rather than the built-in $40.00", seats[0].Amount)
 	}
-	if strat.calls != 1 {
-		t.Errorf("strategy called %d times, want 1", strat.calls)
+	if strategy.calls != 1 {
+		t.Errorf("strategy called %d times, want 1", strategy.calls)
 	}
 }
 
@@ -1295,7 +1296,7 @@ func TestGenerateInvoiceUsesTheFeaturesStrategyOverThePlans(t *testing.T) {
 		setFeatureMeta("pricing_strategy", "feature-pricing")(p)
 		p.Metadata = map[string]string{"pricing_strategy": "plan-pricing"}
 	}, featureStrat, planStrat)
-	ingest(t, s, sub, "api_calls", 1500)
+	ingestAPICalls(t, s, sub, 1500)
 
 	inv, err := l.GenerateInvoice(context.Background(), sub.ID)
 	if err != nil {
@@ -1313,7 +1314,7 @@ func TestGenerateInvoiceUsesTheFeaturesStrategyOverThePlans(t *testing.T) {
 }
 
 func TestGenerateInvoiceHandsAStrategyItsDocumentedArguments(t *testing.T) {
-	strat := &fixedStrategy{result: types.USD(100)}
+	strategy := &fixedStrategy{result: types.USD(100)}
 	l, s, sub := hookFixture(t, func(p *plan.Plan) {
 		setFeatureMeta("pricing_strategy", "stub-pricing")(p)
 		p.Currency = "USD"
@@ -1324,26 +1325,26 @@ func TestGenerateInvoiceHandsAStrategyItsDocumentedArguments(t *testing.T) {
 			{FeatureKey: "other", Type: plan.TierGraduated, UpTo: 0, UnitAmount: types.USD(9)},
 			{FeatureKey: "api_calls", Type: plan.TierGraduated, UpTo: 5000, UnitAmount: types.USD(3)},
 		}
-	}, strat)
-	ingest(t, s, sub, "api_calls", 1500)
+	}, strategy)
+	ingestAPICalls(t, s, sub, 1500)
 
 	if _, err := l.GenerateInvoice(context.Background(), sub.ID); err != nil {
 		t.Fatalf("GenerateInvoice: %v", err)
 	}
 
-	if strat.usage != 1500 || strat.included != 1000 {
-		t.Errorf("got usage %d and included %d, want 1500 and 1000", strat.usage, strat.included)
+	if strategy.usage != 1500 || strategy.included != 1000 {
+		t.Errorf("got usage %d and included %d, want 1500 and 1000", strategy.usage, strategy.included)
 	}
-	if strat.currency != "usd" {
-		t.Errorf("got currency %q, want it lowercased", strat.currency)
+	if strategy.currency != "usd" {
+		t.Errorf("got currency %q, want it lowercased", strategy.currency)
 	}
-	if len(strat.tiers) != 2 {
-		t.Fatalf("got %d tiers, want the 2 belonging to the feature", len(strat.tiers))
+	if len(strategy.tiers) != 2 {
+		t.Fatalf("got %d tiers, want the 2 belonging to the feature", len(strategy.tiers))
 	}
-	first, ok1 := strat.tiers[0].(plan.PriceTier)
-	second, ok2 := strat.tiers[1].(plan.PriceTier)
+	first, ok1 := strategy.tiers[0].(plan.PriceTier)
+	second, ok2 := strategy.tiers[1].(plan.PriceTier)
 	if !ok1 || !ok2 {
-		t.Fatalf("got tier types %T and %T, want plan.PriceTier values", strat.tiers[0], strat.tiers[1])
+		t.Fatalf("got tier types %T and %T, want plan.PriceTier values", strategy.tiers[0], strategy.tiers[1])
 	}
 	if first.UpTo != 5000 || second.UpTo != 0 {
 		t.Errorf("got UpTo %d then %d, want the bounded tier first and the unbounded one last", first.UpTo, second.UpTo)
@@ -1355,7 +1356,7 @@ func TestGenerateInvoiceBoundsTheAggregatorAtThePeriodEnd(t *testing.T) {
 	agg := &countingAggregator{total: 1500}
 	l, s, sub := hookFixture(t, setFeatureMeta("aggregator", "stub-agg"), agg)
 
-	ingest(t, s, sub, "api_calls", 1)
+	ingestAPICalls(t, s, sub, 1)
 	if err := s.IngestBatch(ctx, []*meter.UsageEvent{{
 		ID: id.NewUsageEventID(), TenantID: sub.TenantID, AppID: sub.AppID,
 		FeatureKey: "api_calls", Quantity: 1,
@@ -1384,7 +1385,7 @@ func TestGenerateInvoiceRefusesABadAggregatorResult(t *testing.T) {
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
 			l, s, sub := hookFixture(t, setFeatureMeta("aggregator", "stub-agg"), c.agg)
-			ingest(t, s, sub, "api_calls", 1500)
+			ingestAPICalls(t, s, sub, 1500)
 
 			_, err := l.GenerateInvoice(context.Background(), sub.ID)
 			if err == nil {
@@ -1401,7 +1402,7 @@ func TestGenerateInvoiceWarnsWhenAnAggregatorIsNotRegistered(t *testing.T) {
 	cl := newCaptureLogger()
 	_, s, sub := hookFixture(t, setFeatureMeta("aggregator", "absent"))
 	l := ledger.New(s, ledger.WithLogger(cl))
-	ingest(t, s, sub, "api_calls", 1500)
+	ingestAPICalls(t, s, sub, 1500)
 
 	if _, err := l.GenerateInvoice(context.Background(), sub.ID); err != nil {
 		t.Fatalf("GenerateInvoice: %v", err)
@@ -1436,7 +1437,7 @@ func TestGenerateInvoiceWarnsWhenAStrategyIsNotRegistered(t *testing.T) {
 			cl := newCaptureLogger()
 			_, s, sub := hookFixture(t, c.edit)
 			l := ledger.New(s, ledger.WithLogger(cl))
-			ingest(t, s, sub, "api_calls", 1500)
+			ingestAPICalls(t, s, sub, 1500)
 
 			if _, err := l.GenerateInvoice(context.Background(), sub.ID); err != nil {
 				t.Fatalf("GenerateInvoice: %v", err)
@@ -1482,7 +1483,7 @@ func setBaseAmount(amount int64) func(*plan.Plan) {
 func TestGenerateInvoiceRefusesAnAggregatorTotalThatOverflowsPricing(t *testing.T) {
 	agg := &countingAggregator{total: math.MaxInt64 / 2}
 	l, s, sub := hookFixture(t, setFeatureMeta("aggregator", "stub-agg"), agg)
-	ingest(t, s, sub, "api_calls", 1)
+	ingestAPICalls(t, s, sub, 1)
 
 	inv, err := l.GenerateInvoice(context.Background(), sub.ID)
 	if !errors.Is(err, types.ErrOverflow) {
@@ -1513,11 +1514,11 @@ func TestGenerateInvoiceRefusesASubtotalThatOverflows(t *testing.T) {
 	p.Pricing.Tiers = append(p.Pricing.Tiers, plan.PriceTier{
 		FeatureKey: "seats", Type: plan.TierGraduated, UpTo: 0, UnitAmount: types.USD(800),
 	})
-	if err := s.UpdatePlan(ctx, p); err != nil {
+	if err = s.UpdatePlan(ctx, p); err != nil {
 		t.Fatalf("UpdatePlan: %v", err)
 	}
 	sub.Quantity = map[string]int64{"seats": 1}
-	if err := s.UpdateSubscription(ctx, sub); err != nil {
+	if err = s.UpdateSubscription(ctx, sub); err != nil {
 		t.Fatalf("UpdateSubscription: %v", err)
 	}
 
@@ -1641,7 +1642,7 @@ func (n *namedTax) Name() string { return n.name }
 // would hide the problem; it must fail and name the feature instead.
 func TestGenerateInvoiceRefusesANegativeStoreTotal(t *testing.T) {
 	l, s, sub := billingFixture(t)
-	ingest(t, s, sub, "api_calls", -50)
+	ingestAPICalls(t, s, sub, -50)
 
 	inv, err := l.GenerateInvoice(context.Background(), sub.ID)
 	if err == nil {

@@ -1066,7 +1066,7 @@ func (s *Store) RedeemCoupon(ctx context.Context, subID id.SubscriptionID, coupo
 	// partway through (for instance if the connection drops after this
 	// method's own UPDATE but before the commit lands), leaving the
 	// transaction open, and the same Rollback call is what cleans that up.
-	defer func() { _ = tx.Rollback() }()
+	defer func() { _ = tx.Rollback() }() //nolint:errcheck // no-op after commit, unactionable otherwise
 
 	appModel := &couponApplicationModel{
 		ID:             id.NewCouponApplicationID().String(),
@@ -1074,7 +1074,7 @@ func (s *Store) RedeemCoupon(ctx context.Context, subID id.SubscriptionID, coupo
 		SubscriptionID: subID.String(),
 		AppliedAt:      now(),
 	}
-	if _, err := tx.NewInsert(appModel).Exec(ctx); err != nil {
+	if _, err = tx.NewInsert(appModel).Exec(ctx); err != nil {
 		if isUniqueViolation(err) {
 			return ledger.ErrCouponAlreadyApplied
 		}

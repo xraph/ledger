@@ -1196,8 +1196,8 @@ func testSubscriptionQuantityRoundTrip(t *testing.T, s ledgerstore.Store) {
 	}
 
 	noQtySub := newTestSubscription(tenantID, appID)
-	if err := s.CreateSubscription(ctx, noQtySub); err != nil {
-		t.Fatalf("CreateSubscription(nil Quantity): %v", err)
+	if createErr := s.CreateSubscription(ctx, noQtySub); createErr != nil {
+		t.Fatalf("CreateSubscription(nil Quantity): %v", createErr)
 	}
 	gotNoQty, err := s.GetSubscription(ctx, noQtySub.ID)
 	if err != nil {
@@ -1211,8 +1211,8 @@ func testSubscriptionQuantityRoundTrip(t *testing.T, s ledgerstore.Store) {
 	}
 
 	got.Quantity = map[string]int64{"seats": 20}
-	if err := s.UpdateSubscription(ctx, got); err != nil {
-		t.Fatalf("UpdateSubscription: %v", err)
+	if updateErr := s.UpdateSubscription(ctx, got); updateErr != nil {
+		t.Fatalf("UpdateSubscription: %v", updateErr)
 	}
 	gotAfterUpdate, err := s.GetSubscription(ctx, sub.ID)
 	if err != nil {
@@ -1928,9 +1928,9 @@ func testListsPage(t *testing.T, s ledgerstore.Store, at func(i int) time.Time, 
 			var joined []string
 			seen := map[string]int{}
 			for i, wantSize := range []int{2, 2, 1} {
-				page, err := l.list(2, i*2)
-				if err != nil {
-					t.Fatalf("page at offset %d: %v", i*2, err)
+				page, pageErr := l.list(2, i*2)
+				if pageErr != nil {
+					t.Fatalf("page at offset %d: %v", i*2, pageErr)
 				}
 				if len(page) != wantSize {
 					t.Errorf("page at offset %d: got %d rows, want %d", i*2, len(page), wantSize)
@@ -1990,9 +1990,9 @@ func testSharedListPages(t *testing.T, list func(limit, offset int) ([]string, e
 	var joined []string
 	seen := map[string]int{}
 	for offset := 0; offset <= len(all); offset += 2 {
-		page, err := list(2, offset)
-		if err != nil {
-			t.Fatalf("page at offset %d: %v", offset, err)
+		page, pageErr := list(2, offset)
+		if pageErr != nil {
+			t.Fatalf("page at offset %d: %v", offset, pageErr)
 		}
 		want := 2
 		if len(all)-offset < want {

@@ -10,17 +10,18 @@ import (
 	"github.com/xraph/ledger/types"
 )
 
-func newCoupon(code string, appID string) *coupon.Coupon {
+// newLaunchCoupon returns an unsaved 10% coupon, code LAUNCH10, in app_1.
+func newLaunchCoupon() *coupon.Coupon {
 	return &coupon.Coupon{
 		Entity:         types.NewEntity(),
 		ID:             id.NewCouponID(),
-		Code:           code,
-		Name:           code,
+		Code:           "LAUNCH10",
+		Name:           "LAUNCH10",
 		Type:           coupon.CouponTypePercentage,
 		Percentage:     10,
 		Currency:       "usd",
 		MaxRedemptions: 0,
-		AppID:          appID,
+		AppID:          "app_1",
 	}
 }
 
@@ -28,7 +29,7 @@ func TestApplyCouponRecordsTheRedemption(t *testing.T) {
 	ctx := context.Background()
 	s := New()
 
-	c := newCoupon("LAUNCH10", "app_1")
+	c := newLaunchCoupon()
 	if err := s.CreateCoupon(ctx, c); err != nil {
 		t.Fatalf("CreateCoupon: %v", err)
 	}
@@ -54,7 +55,7 @@ func TestApplyCouponIsIdempotentPerSubscription(t *testing.T) {
 	ctx := context.Background()
 	s := New()
 
-	c := newCoupon("LAUNCH10", "app_1")
+	c := newLaunchCoupon()
 	if err := s.CreateCoupon(ctx, c); err != nil {
 		t.Fatalf("CreateCoupon: %v", err)
 	}
@@ -82,7 +83,7 @@ func TestListAppliedCouponsIsScopedToOneSubscription(t *testing.T) {
 	ctx := context.Background()
 	s := New()
 
-	c := newCoupon("LAUNCH10", "app_1")
+	c := newLaunchCoupon()
 	if err := s.CreateCoupon(ctx, c); err != nil {
 		t.Fatalf("CreateCoupon: %v", err)
 	}
@@ -121,7 +122,7 @@ func TestIncrementCouponRedemptions(t *testing.T) {
 	ctx := context.Background()
 	s := New()
 
-	c := newCoupon("LAUNCH10", "app_1")
+	c := newLaunchCoupon()
 	if err := s.CreateCoupon(ctx, c); err != nil {
 		t.Fatalf("CreateCoupon: %v", err)
 	}
@@ -155,7 +156,7 @@ func TestApplyCouponStampsAppliedAt(t *testing.T) {
 	ctx := context.Background()
 	s := New()
 
-	c := newCoupon("LAUNCH10", "app_1")
+	c := newLaunchCoupon()
 	if err := s.CreateCoupon(ctx, c); err != nil {
 		t.Fatalf("CreateCoupon: %v", err)
 	}

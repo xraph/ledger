@@ -194,7 +194,7 @@ func TestMigrateTransitionsFromOldSparseIndexWithoutLosingData(t *testing.T) {
 		{ID: id.NewUsageEventID().String(), TenantID: freshTenant, AppID: appID, FeatureKey: featureKey, Quantity: 1, Timestamp: now, CreatedAt: now},
 	}
 	for _, e := range events {
-		if _, err := s.mdb.NewInsert(e).Exec(ctx); err != nil {
+		if _, err = s.mdb.NewInsert(e).Exec(ctx); err != nil {
 			t.Fatalf("insert post-migrate keyless event: %v", err)
 		}
 	}
