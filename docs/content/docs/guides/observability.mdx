@@ -61,9 +61,10 @@ The names below are what a Forge app scrapes. Forge puts its `forge_` namespace 
 What the values mean:
 
 - A lifecycle run is `stopped` when `Stop` cancelled it, and `panic` when a step panicked (the worker recovers and the next tick starts clean). Every run counts, including the idle ones, so the histogram's count is how often the clock ran.
-- A transition is one subscription or invoice a step moved (`ok`), or one it tried to move and could not (`error`). A row that had nothing to do, or that another replica moved first, is not counted.
+- A transition is one subscription or invoice a step moved (`ok`), or one it tried to move and could not (`error`). A row that had nothing to do, or that another replica moved first, is not counted. When `Stop` cancels a run in the middle of a row's write, a database store fails that write on the cancelled context, so the row counts as `result="error"` and its step span is marked failed, even though the run itself counts as `stopped`. The next start picks the row up again.
 - A metered event is `ok` once a flush stored it, and `error` when its flush failed, which loses it. `buffer_full` counts the `Meter` calls refused with `ErrMeterBufferFull` because the 10,000 event buffer was full. Those events never reach the store, and nothing else counts them.
 - An entitlement check is `no_access` when there's no tenant in the context, no active subscription, or the feature isn't in the plan. `cache="hit"` means the store's entitlement cache answered.
+- A hook failure is `error` when the hook returned an error, `timeout` when it was still running after five seconds (the registry stops waiting, but the hook keeps running in the background), and `canceled` when the context of the call that fired it ended first.
 - A provider call is timed around the plugin method alone, so you see the provider's round trip without Ledger's own reads and writes. `provider` is bounded by the payment provider plugins you compile in.
 
 Every label is a closed set. No tenant, app, plan, invoice or subscription id, amount, URL or error message becomes a label, and the plugin's name stays in the log line, off the hook failures metric.
