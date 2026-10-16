@@ -8,6 +8,7 @@ import (
 
 	"github.com/xraph/ledger/feature"
 	"github.com/xraph/ledger/id"
+	"github.com/xraph/ledger/internal/telemetry"
 	"github.com/xraph/ledger/invoice"
 	"github.com/xraph/ledger/plan"
 	"github.com/xraph/ledger/provider"
@@ -78,11 +79,11 @@ func (c importConfig) app(reported, providerID string, notFound error) (string, 
 // error, or an answer with nothing in it, comes back wrapped in ErrProviderSync
 // with the provider's own words.
 func importFrom[T any](ctx context.Context, l *Ledger, providerName, providerID, noun string, pull func(provider.Provider) (*T, error)) (*T, provider.Provider, error) {
-	prov, err := l.getProvider(providerName)
+	prov, err := l.providerFor(ctx, providerName)
 	if err != nil {
 		return nil, nil, err
 	}
-	got, err := pull(prov)
+	got, err := callProvider(l, prov, "import_"+noun, func() (*T, error) { return pull(prov) })
 	if err == nil && got == nil {
 		err = fmt.Errorf("the provider returned no %s for %q", noun, providerID)
 	}
@@ -97,7 +98,10 @@ func importFrom[T any](ctx context.Context, l *Ledger, providerName, providerID,
 // CreatePlan, so it is validated like any other plan and a slug the app already
 // uses is refused with ErrAlreadyExists. That is also what refuses importing
 // the same plan twice.
-func (l *Ledger) ImportPlanFromProvider(ctx context.Context, providerName, providerID string, opts ...ImportOption) (*plan.Plan, error) {
+func (l *Ledger) ImportPlanFromProvider(ctx context.Context, providerName, providerID string, opts ...ImportOption) (_ *plan.Plan, err error) {
+	ctx, span := telemetry.Start(ctx, "import plan")
+	defer func() { endSpan(span, err) }()
+
 	cfg, err := newImportConfig(providerID, opts)
 	if err != nil {
 		return nil, err
@@ -128,7 +132,10 @@ func (l *Ledger) ImportPlanFromProvider(ctx context.Context, providerName, provi
 // ImportFeatureFromProvider pulls a catalog feature from the provider and
 // creates it. A key the catalog already uses is refused with ErrAlreadyExists,
 // which also refuses importing the same feature twice.
-func (l *Ledger) ImportFeatureFromProvider(ctx context.Context, providerName, providerID string, opts ...ImportOption) (*feature.Feature, error) {
+func (l *Ledger) ImportFeatureFromProvider(ctx context.Context, providerName, providerID string, opts ...ImportOption) (_ *feature.Feature, err error) {
+	ctx, span := telemetry.Start(ctx, "import feature")
+	defer func() { endSpan(span, err) }()
+
 	cfg, err := newImportConfig(providerID, opts)
 	if err != nil {
 		return nil, err
@@ -182,7 +189,10 @@ func (l *Ledger) ImportFeatureFromProvider(ctx context.Context, providerName, pr
 // creates it through CreateSubscription. Its plan must already be a plan in the
 // same app, so the plan is imported first. A provider id the tenant already
 // has in the app is refused with ErrAlreadyExists.
-func (l *Ledger) ImportSubscriptionFromProvider(ctx context.Context, providerName, providerID string, opts ...ImportOption) (*subscription.Subscription, error) {
+func (l *Ledger) ImportSubscriptionFromProvider(ctx context.Context, providerName, providerID string, opts ...ImportOption) (_ *subscription.Subscription, err error) {
+	ctx, span := telemetry.Start(ctx, "import subscription")
+	defer func() { endSpan(span, err) }()
+
 	cfg, err := newImportConfig(providerID, opts)
 	if err != nil {
 		return nil, err
@@ -241,7 +251,10 @@ func (l *Ledger) ImportSubscriptionFromProvider(ctx context.Context, providerNam
 // tenant. It is refused with ErrAlreadyExists when the provider id is already
 // stored, or when the subscription already has a live invoice for the same
 // period: the rule GenerateInvoice keeps, because two would bill twice.
-func (l *Ledger) ImportInvoiceFromProvider(ctx context.Context, providerName, providerID string, opts ...ImportOption) (*invoice.Invoice, error) {
+func (l *Ledger) ImportInvoiceFromProvider(ctx context.Context, providerName, providerID string, opts ...ImportOption) (_ *invoice.Invoice, err error) {
+	ctx, span := telemetry.Start(ctx, "import invoice")
+	defer func() { endSpan(span, err) }()
+
 	cfg, err := newImportConfig(providerID, opts)
 	if err != nil {
 		return nil, err

@@ -6,17 +6,21 @@ import (
 	"time"
 
 	log "github.com/xraph/go-utils/log"
+
+	"github.com/xraph/ledger/internal/telemetry"
 )
 
 // lifecycleWorker runs Advance every lifecycleInterval until Stop. The first
 // run is one interval after Start. Each run has a deadline of one interval
 // and is detached from the Start context, which a caller may cancel once
 // Start returns: Stop is what ends the worker, and it also cancels a run that
-// is in flight, so Stop never waits out a slow Advance.
+// is in flight, so Stop never waits out a slow Advance. It is detached from
+// the Start context's span too: a run with work is a trace of its own, and
+// the queries of an idle tick belong to no trace.
 func (l *Ledger) lifecycleWorker(ctx context.Context) {
 	defer l.wg.Done()
 
-	runCtx, cancel := context.WithCancel(context.WithoutCancel(ctx))
+	runCtx, cancel := context.WithCancel(telemetry.Detach(context.WithoutCancel(ctx)))
 	defer cancel()
 
 	// Stop closes stopChan; this turns that into a cancelled run context. The
@@ -81,7 +85,7 @@ func (l *Ledger) runLifecycle(ctx context.Context) {
 	ctx, cancel := context.WithTimeout(ctx, l.lifecycleInterval)
 	defer cancel()
 
-	report, err := l.Advance(ctx, l.now())
+	report, err := l.advance(ctx, l.now(), true)
 	if err != nil {
 		// A run that Stop cancelled is not work left undone.
 		if l.stopping() {

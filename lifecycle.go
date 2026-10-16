@@ -7,7 +7,11 @@ import (
 	"slices"
 	"time"
 
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/trace"
+
 	"github.com/xraph/ledger/id"
+	"github.com/xraph/ledger/internal/telemetry"
 	"github.com/xraph/ledger/invoice"
 	"github.com/xraph/ledger/plan"
 	"github.com/xraph/ledger/subscription"
@@ -60,16 +64,115 @@ func (r LifecycleReport) Empty() bool {
 // is safe to run on several replicas at once: every change is a conditional
 // store write, and only the run whose write lands reports it and fires its
 // hook. Each step keeps going past a row that fails; the error joins them.
+//
+// A run that moves something, or fails, is traced as "run lifecycle" with a
+// child span per step that wrote or failed. A run that moves nothing leaves no
+// span, so a clock ticking every minute over an idle store adds no traces.
 func (l *Ledger) Advance(ctx context.Context, now time.Time) (LifecycleReport, error) {
-	var (
-		report LifecycleReport
-		errs   [4]error
-	)
+	return l.advance(ctx, now, false)
+}
+
+// advance is Advance, traced and timed. background marks a run of the clock's
+// own worker: its span begins a trace of its own, and a run Stop cut short
+// counts as stopped rather than failed.
+func (l *Ledger) advance(ctx context.Context, now time.Time, background bool) (report LifecycleReport, err error) {
+	start := time.Now()
+	run := &lifecycleRun{parent: ctx, background: background}
+	ctx = context.WithValue(ctx, lifecycleRunKey{}, run)
+
+	// finished stays false only when a step panics. The recover lives in the
+	// worker (runLifecycle), or with whoever called Advance.
+	finished := false
+	defer func() {
+		result := resultOK
+		switch {
+		case !finished:
+			result = resultPanic
+		case err == nil:
+		case background && l.stopping():
+			result = resultStopped
+		default:
+			result = resultError
+		}
+		l.metrics.lifecycleRuns.ObserveSince(start, result)
+		run.end(report, result, err)
+	}()
+
+	var errs [4]error
 	report.PeriodsAdvanced, errs[0] = l.AdvancePeriods(ctx, now)
 	report.CancelsEnacted, errs[1] = l.EnactCancels(ctx, now)
 	report.TrialsEnded, errs[2] = l.EndTrials(ctx, now)
 	report.InvoicesPastDue, errs[3] = l.MarkInvoicesPastDue(ctx, now)
+	finished = true
 	return report, errors.Join(errs[:]...)
+}
+
+// lifecycleRunKey carries the *lifecycleRun of the Advance in progress, so a
+// step can start the run's span when it first writes.
+type lifecycleRunKey struct{}
+
+// lifecycleRun is the "run lifecycle" span of one Advance. It is started by
+// the first step that writes or fails, never up front, so a run that moves
+// nothing records nothing. Steps run one after another, so it needs no lock.
+type lifecycleRun struct {
+	parent     context.Context
+	background bool
+	ctx        context.Context
+	span       trace.Span
+}
+
+// begin starts the run's span if it has not started, and returns its context.
+func (r *lifecycleRun) begin() context.Context {
+	if r.span == nil {
+		if r.background {
+			r.ctx, r.span = telemetry.StartRoot(r.parent, "run lifecycle")
+		} else {
+			r.ctx, r.span = telemetry.Start(r.parent, "run lifecycle")
+		}
+	}
+	return r.ctx
+}
+
+// end finishes the run's span, if it started, with what the run changed.
+func (r *lifecycleRun) end(report LifecycleReport, result string, err error) {
+	if r.span == nil {
+		return
+	}
+	r.span.SetAttributes(
+		attribute.Int(attrPeriodsAdvanced, len(report.PeriodsAdvanced)),
+		attribute.Int(attrCancelsEnacted, len(report.CancelsEnacted)),
+		attribute.Int(attrTrialsEnded, len(report.TrialsEnded)),
+		attribute.Int(attrInvoicesPastDue, len(report.InvoicesPastDue)),
+	)
+	switch result {
+	case resultPanic:
+		telemetry.Fail(r.span, "panic")
+	case resultError:
+		telemetry.Fail(r.span, errorType(err))
+	}
+	r.span.End()
+}
+
+// lifecycleStep is one step of Advance: the name of its span and its value
+// for the step label of the transitions metric.
+type lifecycleStep struct{ span, label string }
+
+var (
+	stepAdvancePeriods  = lifecycleStep{"advance periods", "advance_periods"}
+	stepEnactCancels    = lifecycleStep{"enact cancels", "enact_cancels"}
+	stepEndTrials       = lifecycleStep{"end trials", "end_trials"}
+	stepMarkInvoicesDue = lifecycleStep{"mark invoices past due", "mark_invoices_past_due"}
+)
+
+// startStep starts a step's span: under the run's span inside Advance, which
+// it starts if no step has written yet, or under ctx when the step was called
+// on its own.
+func startStep(ctx context.Context, step lifecycleStep) (context.Context, trace.Span) {
+	parent := ctx
+	if run, ok := ctx.Value(lifecycleRunKey{}).(*lifecycleRun); ok {
+		parent = run.begin()
+	}
+	return telemetry.Start(parent, step.span)
 }
 
 // AdvancePeriods moves every active, trialing or past-due subscription whose
@@ -88,9 +191,9 @@ func (l *Ledger) AdvancePeriods(ctx context.Context, now time.Time) ([]id.Subscr
 	now = now.UTC()
 	plans := map[string]*plan.Plan{}
 	var moved []id.SubscriptionID
-	err := eachDue(ctx, l.dueSubscriptions(subscription.DuePeriodEnd, runningStatuses, now),
-		func(sub *subscription.Subscription) (bool, error) {
-			changed, err := l.advancePeriod(ctx, sub, now, plans)
+	err := eachDue(ctx, l, stepAdvancePeriods, l.dueSubscriptions(subscription.DuePeriodEnd, runningStatuses, now),
+		func(enter func() context.Context, sub *subscription.Subscription) (bool, error) {
+			changed, err := l.advancePeriod(ctx, enter, sub, now, plans)
 			if changed {
 				moved = append(moved, sub.ID)
 			}
@@ -99,7 +202,10 @@ func (l *Ledger) AdvancePeriods(ctx context.Context, now time.Time) ([]id.Subscr
 	return moved, err
 }
 
-func (l *Ledger) advancePeriod(ctx context.Context, sub *subscription.Subscription, now time.Time, plans map[string]*plan.Plan) (bool, error) {
+// advancePeriod moves one subscription on. It reads on ctx, and calls enter
+// for the context of its write once it knows there is one to make (see
+// eachDue).
+func (l *Ledger) advancePeriod(ctx context.Context, enter func() context.Context, sub *subscription.Subscription, now time.Time, plans map[string]*plan.Plan) (bool, error) {
 	p, ok := plans[sub.PlanID.String()]
 	if !ok {
 		var err error
@@ -132,6 +238,7 @@ func (l *Ledger) advancePeriod(ctx context.Context, sub *subscription.Subscripti
 	if len(ended) == 0 {
 		return false, nil // a cancellation falls on the current end
 	}
+	ctx = enter()
 
 	// Pinned to the end listed here: a replica that listed the row before
 	// another moved it matches nothing and announces nothing.
@@ -168,13 +275,14 @@ func (l *Ledger) EnactCancels(ctx context.Context, now time.Time) ([]id.Subscrip
 	now = now.UTC()
 	plans := map[string]*plan.Plan{}
 	var ended []id.SubscriptionID
-	err := eachDue(ctx, l.dueSubscriptions(subscription.DueCancel, cancellableStatuses, now),
-		func(sub *subscription.Subscription) (bool, error) {
+	err := eachDue(ctx, l, stepEnactCancels, l.dueSubscriptions(subscription.DueCancel, cancellableStatuses, now),
+		func(enter func() context.Context, sub *subscription.Subscription) (bool, error) {
+			ctx := enter()
 			var advanceErr error
 			if slices.Contains(runningStatuses, sub.Status) && !sub.CurrentPeriodEnd.After(now) {
 				// An error here still lets the cancel through: its date has
 				// passed, whatever is wrong with the period.
-				_, advanceErr = l.advancePeriod(ctx, sub, now, plans)
+				_, advanceErr = l.advancePeriod(ctx, enter, sub, now, plans)
 			}
 			changed, err := l.store.EnactSubscriptionCancel(ctx, sub.ID, now)
 			if err != nil {
@@ -204,8 +312,9 @@ func (l *Ledger) EnactCancels(ctx context.Context, now time.Time) ([]id.Subscrip
 func (l *Ledger) EndTrials(ctx context.Context, now time.Time) ([]id.SubscriptionID, error) {
 	now = now.UTC()
 	var ended []id.SubscriptionID
-	err := eachDue(ctx, l.dueSubscriptions(subscription.DueTrialEnd, []subscription.Status{subscription.StatusTrialing}, now),
-		func(sub *subscription.Subscription) (bool, error) {
+	err := eachDue(ctx, l, stepEndTrials, l.dueSubscriptions(subscription.DueTrialEnd, []subscription.Status{subscription.StatusTrialing}, now),
+		func(enter func() context.Context, sub *subscription.Subscription) (bool, error) {
+			ctx := enter()
 			changed, err := l.store.EndSubscriptionTrial(ctx, sub.ID, now)
 			if err != nil {
 				return false, fmt.Errorf("end the trial of subscription %s: %w", sub.ID, err)
@@ -233,7 +342,8 @@ func (l *Ledger) MarkInvoicesPastDue(ctx context.Context, now time.Time) ([]id.I
 	list := func(ctx context.Context, offset int) ([]*invoice.Invoice, error) {
 		return l.store.ListOverdueInvoices(ctx, invoice.OverdueOpts{Before: now, Limit: lifecycleBatch, Offset: offset})
 	}
-	err := eachDue(ctx, list, func(inv *invoice.Invoice) (bool, error) {
+	err := eachDue(ctx, l, stepMarkInvoicesDue, list, func(enter func() context.Context, inv *invoice.Invoice) (bool, error) {
+		ctx := enter()
 		changed, err := l.store.MarkInvoicePastDue(ctx, inv.ID, now)
 		if err != nil {
 			return false, fmt.Errorf("mark invoice %s past due: %w", inv.ID, err)
@@ -303,23 +413,65 @@ func (l *Ledger) dueSubscriptions(field subscription.DueField, statuses []subscr
 // changed leaves the due set, so the next batch starts after the rows that
 // stayed: one that cannot move, one that failed, or one another replica took
 // meanwhile. The last can skip a row for this run; the next run finds it.
-func eachDue[T any](ctx context.Context, list func(context.Context, int) ([]T, error), apply func(T) (bool, error)) error {
-	var errs []error
-	offset := 0
-	for {
-		if err := ctx.Err(); err != nil {
-			return errors.Join(append(errs, err)...)
+//
+// apply calls enter right before it writes, and does its writes and fires its
+// hooks on the context enter returns. The first call starts the step's span
+// (and the run's, inside Advance), so a step whose rows all stay where they
+// are, such as a subscription on a plan billed "none" whose period has ended,
+// records no span. A row that fails starts it too, as does a failed list.
+// Each row moved, and each row that failed to move, counts on the
+// transitions metric.
+func eachDue[T any](ctx context.Context, l *Ledger, step lifecycleStep, list func(context.Context, int) ([]T, error), apply func(enter func() context.Context, row T) (bool, error)) (err error) {
+	var (
+		errs            []error
+		offset          int
+		span            trace.Span
+		changed, failed int
+	)
+	stepCtx := ctx
+	enter := func() context.Context {
+		if span == nil {
+			stepCtx, span = startStep(ctx, step)
 		}
-		rows, err := list(ctx, offset)
-		if err != nil {
-			return errors.Join(append(errs, err)...)
+		return stepCtx
+	}
+	defer func() {
+		if span == nil {
+			return
+		}
+		span.SetAttributes(attribute.Int(attrStepChanged, changed), attribute.Int(attrStepFailed, failed))
+		// A run that was canceled (Stop does that) with no row failing has
+		// not failed.
+		if err != nil && (failed > 0 || !errors.Is(err, context.Canceled)) {
+			telemetry.Fail(span, errorType(err))
+		}
+		span.End()
+	}()
+
+	for {
+		if ctxErr := ctx.Err(); ctxErr != nil {
+			return errors.Join(append(errs, ctxErr)...)
+		}
+		rows, listErr := list(stepCtx, offset)
+		if listErr != nil {
+			enter()
+			return errors.Join(append(errs, listErr)...)
 		}
 		for _, row := range rows {
-			changed, err := apply(row)
-			if err != nil {
-				errs = append(errs, err)
+			moved, rowErr := apply(enter, row)
+			switch {
+			case moved:
+				changed++
+				l.metrics.lifecycleTransitions.Inc(step.label, resultOK)
+			case rowErr != nil:
+				failed++
+				l.metrics.lifecycleTransitions.Inc(step.label, resultError)
 			}
-			if !changed {
+			if rowErr != nil {
+				enter()
+				errs = append(errs, rowErr)
+			}
+			if !moved {
 				offset++
 			}
 		}
