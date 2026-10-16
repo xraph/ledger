@@ -19,8 +19,8 @@ import (
 // Forge app scrapes it as forge_ledger_plugin_hook_failures_total.
 const HookFailuresMetric = "ledger_plugin_hook_failures_total"
 
-// hookTimeout is how long the registry waits on one hook call.
-const hookTimeout = 5 * time.Second
+// defaultHookTimeout is how long the registry waits on one hook call.
+const defaultHookTimeout = 5 * time.Second
 
 // errHookTimeout is the error a hook call that outran hookTimeout reports.
 var errHookTimeout = errors.New("plugin timeout")
@@ -31,6 +31,9 @@ type Registry struct {
 	mu      sync.RWMutex
 	plugins []Plugin
 	logger  log.Logger
+
+	// hookTimeout is how long one hook call may take; tests shorten it.
+	hookTimeout time.Duration
 
 	// hookFailures counts failed hook calls; nil records nothing.
 	hookFailures *telemetry.CounterVec
@@ -77,6 +80,7 @@ type Registry struct {
 func NewRegistry() *Registry {
 	return &Registry{
 		logger:            log.NewNoopLogger(),
+		hookTimeout:       defaultHookTimeout,
 		pricingStrategies: make(map[string]PricingStrategy),
 		usageAggregators:  make(map[string]UsageAggregator),
 		invoiceFormatters: make(map[string]InvoiceFormatter),
@@ -786,7 +790,7 @@ func (r *Registry) callWithTimeout(ctx context.Context, pluginName string, fn fu
 			return "error", hookErr
 		}
 		return "", nil
-	case <-time.After(hookTimeout):
+	case <-time.After(r.hookTimeout):
 		return "timeout", fmt.Errorf("%w: %s", errHookTimeout, pluginName)
 	case <-ctx.Done():
 		return "canceled", ctx.Err()

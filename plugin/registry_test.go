@@ -3,8 +3,8 @@ package plugin
 import (
 	"context"
 	"errors"
-	"fmt"
 	"testing"
+	"time"
 
 	"github.com/xraph/ledger/internal/telemetrytest"
 )
@@ -112,13 +112,32 @@ func TestFailedHooksAreCountedByHookAndReason(t *testing.T) {
 	}
 }
 
-func TestHookTimeoutKeepsItsMessage(t *testing.T) {
-	r := NewRegistry()
-	reason, err := r.callWithTimeout(context.Background(), "p", func() error { return nil })
+func TestASlowHookTimesOutAndIsCounted(t *testing.T) {
+	sink := telemetrytest.NewSink()
+	r := NewRegistry().WithMetrics(sink)
+	r.hookTimeout = 10 * time.Millisecond
+	h := &failingHooks{release: make(chan struct{})}
+	defer close(h.release)
+	if err := r.Register(h); err != nil {
+		t.Fatalf("Register: %v", err)
+	}
+
+	reason, err := r.callWithTimeout(context.Background(), h.Name(), func() error {
+		return h.OnPlanArchived(context.Background(), "plan_1")
+	})
+	if reason != "timeout" || !errors.Is(err, errHookTimeout) || err.Error() != "plugin timeout: failing-hooks" {
+		t.Errorf("a hook past its timeout: reason %q, error %v", reason, err)
+	}
+
+	r.EmitPlanArchived(context.Background(), "plan_1")
+	if got := sink.Value(`ledger_plugin_hook_failures_total{hook="OnPlanArchived",reason="timeout"}`); got != 1 {
+		t.Errorf("OnPlanArchived timeouts = %v, want 1 (series: %v)", got, sink.Series())
+	}
+}
+
+func TestAHookThatReturnsNilIsNoFailure(t *testing.T) {
+	reason, err := NewRegistry().callWithTimeout(context.Background(), "p", func() error { return nil })
 	if reason != "" || err != nil {
 		t.Errorf("a hook that returned nil: %q, %v", reason, err)
-	}
-	if got := fmt.Errorf("%w: %s", errHookTimeout, "p").Error(); got != "plugin timeout: p" {
-		t.Errorf("timeout message %q, want the one the logs always carried", got)
 	}
 }

@@ -83,10 +83,14 @@ func importFrom[T any](ctx context.Context, l *Ledger, providerName, providerID,
 	if err != nil {
 		return nil, nil, err
 	}
-	got, err := callProvider(l, prov, "import_"+noun, func() (*T, error) { return pull(prov) })
-	if err == nil && got == nil {
-		err = fmt.Errorf("the provider returned no %s for %q", noun, providerID)
-	}
+	// An empty answer is a failed call, for the provider call metric too.
+	got, err := callProvider(l, prov, "import_"+noun, func() (*T, error) {
+		v, pullErr := pull(prov)
+		if pullErr == nil && v == nil {
+			pullErr = fmt.Errorf("the provider returned no %s for %q", noun, providerID)
+		}
+		return v, pullErr
+	})
 	if err != nil {
 		l.plugins.EmitProviderSync(ctx, prov.Name(), false, err)
 		return nil, nil, fmt.Errorf("%w: import %s: %w", ErrProviderSync, noun, err)

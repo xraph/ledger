@@ -580,9 +580,13 @@ func (l *Ledger) flushMeterBatch(ctx context.Context, batch []*meter.UsageEvent)
 // It runs on most requests, so its span is only started under a caller's
 // span: a check made outside any trace does not begin one.
 func (l *Ledger) Entitled(ctx context.Context, featureKey string) (*entitlement.Result, error) {
-	ctx, span := telemetry.StartChild(ctx, "check entitlement",
-		trace.WithAttributes(attribute.String(attrFeatureKey, featureKey)))
+	ctx, span := telemetry.StartChild(ctx, "check entitlement")
 	defer span.End()
+	// Attributes are built only for a span that records, so a check outside
+	// any trace allocates nothing for telemetry.
+	if span.IsRecording() {
+		span.SetAttributes(attribute.String(attrFeatureKey, featureKey))
+	}
 
 	result, source, err := l.entitled(ctx, featureKey)
 	answer := resultError
@@ -914,32 +918,45 @@ func addChecked(stage string, a, b types.Money) (types.Money, error) {
 // of its current one. Only usage is historical: the plan, its prices, the
 // seat counts and the coupons are all read as they are now, because Ledger
 // keeps no history of them and ChangePlan leaves the period alone.
-func (l *Ledger) GenerateInvoice(ctx context.Context, subID id.SubscriptionID, opts ...InvoiceOption) (*invoice.Invoice, error) {
+func (l *Ledger) GenerateInvoice(ctx context.Context, subID id.SubscriptionID, opts ...InvoiceOption) (inv *invoice.Invoice, err error) {
 	start := time.Now()
 	ctx, span := telemetry.Start(ctx, "generate invoice",
 		trace.WithAttributes(attribute.String(attrSubscriptionID, subID.String())))
 
-	inv, err := l.generateInvoice(ctx, subID, opts...)
+	// Pricing strategies, usage aggregators and tax calculators are plugin
+	// code and can panic. finished stays false when one does, and the span
+	// still ends, marked as a panic.
+	finished := false
+	defer func() {
+		result := resultOK
+		switch {
+		case !finished:
+			result = resultError
+		case errors.Is(err, ErrAlreadyExists):
+			result = resultExists
+		case IsNotFound(err):
+			result = resultNotFound
+		case err != nil:
+			result = resultError
+		}
+		span.SetAttributes(attribute.String(attrInvoiceResult, result))
+		if inv != nil {
+			span.SetAttributes(
+				attribute.String(attrInvoiceID, inv.ID.String()),
+				attribute.Int(attrInvoiceLineItems, len(inv.LineItems)),
+			)
+		}
+		if finished {
+			endSpan(span, err)
+		} else {
+			telemetry.Fail(span, "panic")
+			span.End()
+		}
+		l.metrics.invoiceGenerate.ObserveSince(start, result)
+	}()
 
-	result := resultOK
-	switch {
-	case errors.Is(err, ErrAlreadyExists):
-		result = resultExists
-	case IsNotFound(err):
-		result = resultNotFound
-	case err != nil:
-		result = resultError
-	}
-	span.SetAttributes(attribute.String(attrInvoiceResult, result))
-	if inv != nil {
-		span.SetAttributes(
-			attribute.String(attrInvoiceID, inv.ID.String()),
-			attribute.Int(attrInvoiceLineItems, len(inv.LineItems)),
-		)
-	}
-	endSpan(span, err)
-	l.metrics.invoiceGenerate.ObserveSince(start, result)
-
+	inv, err = l.generateInvoice(ctx, subID, opts...)
+	finished = true
 	return inv, err
 }
 

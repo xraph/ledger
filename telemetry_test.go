@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"sync"
 	"testing"
 	"time"
 
@@ -13,8 +14,10 @@ import (
 	"go.opentelemetry.io/otel/trace"
 
 	ledger "github.com/xraph/ledger"
+	"github.com/xraph/ledger/feature"
 	"github.com/xraph/ledger/id"
 	"github.com/xraph/ledger/internal/telemetrytest"
+	"github.com/xraph/ledger/invoice"
 	"github.com/xraph/ledger/meter"
 	"github.com/xraph/ledger/plan"
 	"github.com/xraph/ledger/provider"
@@ -232,7 +235,7 @@ func TestTheClockTracesEachRunAsItsOwnTrace(t *testing.T) {
 	signal := &cancelSignal{fired: make(chan struct{}, 1)}
 	l := ledger.New(s,
 		ledger.WithPlugin(signal),
-		ledger.WithLifecycleInterval(5*time.Millisecond),
+		ledger.WithLifecycleInterval(20*time.Millisecond),
 		ledger.WithClock(func() time.Time { return at(2026, 3, 1) }),
 	)
 	p := activePlan(t, l, "pro", "app_1", 0)
@@ -253,14 +256,121 @@ func TestTheClockTracesEachRunAsItsOwnTrace(t *testing.T) {
 		t.Fatalf("Stop: %v", err)
 	}
 
-	// Only the run that moved something is traced; the idle ticks around it
-	// are not.
-	run := telemetrytest.Only(t, rec, "run lifecycle")
-	assertRoot(t, run, boot.SpanContext())
-	if run.Status().Code == codes.Error {
-		t.Errorf("run marked failed: %q", run.Status().Description)
+	// Each run's deadline is its interval, so on a slow machine a run can
+	// fail on it and leave a failed span, with the next run doing the work.
+	// So: every run span is a root, and one of them enacted the cancel.
+	runs := telemetrytest.Named(rec, "run lifecycle")
+	if len(runs) == 0 {
+		t.Fatalf("no run was traced: %v", telemetrytest.Names(rec))
 	}
-	assertChildOf(t, telemetrytest.Only(t, rec, "enact cancels"), run.SpanContext())
+	for _, run := range runs {
+		assertRoot(t, run, boot.SpanContext())
+	}
+	moved := 0
+	for _, step := range telemetrytest.Named(rec, "enact cancels") {
+		if v, _ := telemetrytest.Attr(step, "ledger.lifecycle.changed"); v.AsInt64() != 1 {
+			continue
+		}
+		for _, run := range runs {
+			if step.Parent().SpanID() == run.SpanContext().SpanID() {
+				moved++
+				assertChildOf(t, step, run.SpanContext())
+				assertInt(t, run, "ledger.lifecycle.cancels_enacted", 1)
+			}
+		}
+	}
+	if moved != 1 {
+		t.Errorf("%d runs traced the cancel, want 1: %v", moved, telemetrytest.Names(rec))
+	}
+}
+
+// spanProbe records, for the clock's idle queries and for the flusher's
+// writes, the span each one ran under.
+type spanProbe struct {
+	*memory.Store
+	mu      sync.Mutex
+	lists   []trace.SpanContext
+	ingests []trace.SpanContext
+	ticks   chan struct{}
+	flushed chan struct{}
+}
+
+func (p *spanProbe) ListDueSubscriptions(ctx context.Context, opts subscription.DueOpts) ([]*subscription.Subscription, error) {
+	p.mu.Lock()
+	p.lists = append(p.lists, trace.SpanContextFromContext(ctx))
+	p.mu.Unlock()
+	return p.Store.ListDueSubscriptions(ctx, opts)
+}
+
+func (p *spanProbe) ListOverdueInvoices(ctx context.Context, opts invoice.OverdueOpts) ([]*invoice.Invoice, error) {
+	p.mu.Lock()
+	p.lists = append(p.lists, trace.SpanContextFromContext(ctx))
+	p.mu.Unlock()
+	select {
+	case p.ticks <- struct{}{}:
+	default:
+	}
+	return p.Store.ListOverdueInvoices(ctx, opts)
+}
+
+func (p *spanProbe) IngestBatch(ctx context.Context, events []*meter.UsageEvent) error {
+	p.mu.Lock()
+	p.ingests = append(p.ingests, trace.SpanContextFromContext(ctx))
+	p.mu.Unlock()
+	err := p.Store.IngestBatch(ctx, events)
+	p.flushed <- struct{}{}
+	return err
+}
+
+// Forge starts every extension inside a "start <ext>" span, and grove traces
+// any query whose context carries a valid span, ended or not. The workers
+// Start launches must not hand that span to their queries.
+func TestTheWorkersDropTheSpanOfTheStartContext(t *testing.T) {
+	rec := telemetrytest.RecordSpans(t)
+	probe := &spanProbe{Store: memory.New(), ticks: make(chan struct{}, 8), flushed: make(chan struct{}, 1)}
+	l := ledger.New(probe,
+		ledger.WithLifecycleInterval(20*time.Millisecond),
+		ledger.WithMeterConfig(1, time.Hour),
+	)
+	bootCtx, boot := testTracer().Start(context.Background(), "start ledger")
+	if err := l.Start(bootCtx); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	boot.End()
+
+	if err := l.Meter(meterContext(), "api_calls", 1); err != nil {
+		t.Fatalf("Meter: %v", err)
+	}
+	for _, wait := range []chan struct{}{probe.flushed, probe.ticks, probe.ticks} {
+		select {
+		case <-wait:
+		case <-time.After(5 * time.Second):
+			t.Fatal("the workers did not run")
+		}
+	}
+	if err := l.Stop(); err != nil {
+		t.Fatalf("Stop: %v", err)
+	}
+
+	probe.mu.Lock()
+	defer probe.mu.Unlock()
+	if len(probe.lists) == 0 {
+		t.Fatal("the clock made no queries")
+	}
+	for i, sc := range probe.lists {
+		if sc.IsValid() {
+			t.Errorf("idle query %d ran under span %s of trace %s; the boot trace is %s", i, sc.SpanID(), sc.TraceID(), boot.SpanContext().TraceID())
+		}
+	}
+	flush := telemetrytest.Only(t, rec, "flush meter batch")
+	if len(probe.ingests) != 1 || probe.ingests[0].SpanID() != flush.SpanContext().SpanID() {
+		t.Errorf("the flush wrote under %v, want its own span %s", probe.ingests, flush.SpanContext().SpanID())
+	}
+	for _, s := range rec.Ended() {
+		if s.Name() != "start ledger" && s.SpanContext().TraceID() == boot.SpanContext().TraceID() {
+			t.Errorf("%q joined the boot trace", s.Name())
+		}
+	}
 }
 
 // signalingFlush tells the test when a flush has stored its batch.
@@ -507,6 +617,11 @@ func (p *tracedProvider) ImportPlan(_ context.Context, pid string) (*plan.Plan, 
 	return nil, fmt.Errorf("no plan %s for %s", pid, leak)
 }
 
+// ImportFeature answers with nothing at all, which an import refuses.
+func (p *tracedProvider) ImportFeature(context.Context, string) (*feature.Feature, error) {
+	return nil, nil
+}
+
 func (p *tracedProvider) HandleWebhook(context.Context, []byte) (*provider.WebhookResult, error) {
 	return &provider.WebhookResult{EventType: "invoice.paid", Handled: true}, nil
 }
@@ -528,6 +643,9 @@ func TestProviderCallsAreTracedAndTimed(t *testing.T) {
 	if _, err := l.ImportPlanFromProvider(ctx, "fake", "prod_1"); !errors.Is(err, ledger.ErrProviderSync) {
 		t.Fatalf("ImportPlanFromProvider: %v, want ErrProviderSync", err)
 	}
+	if _, err := l.ImportFeatureFromProvider(ctx, "fake", "feat_1"); !errors.Is(err, ledger.ErrProviderSync) {
+		t.Fatalf("ImportFeatureFromProvider: %v, want ErrProviderSync", err)
+	}
 	if res, err := l.HandleWebhook(ctx, "fake", []byte(`{"customer":"`+leak+`"}`)); err != nil || !res.Handled {
 		t.Fatalf("HandleWebhook: %+v, %v", res, err)
 	}
@@ -545,6 +663,8 @@ func TestProviderCallsAreTracedAndTimed(t *testing.T) {
 	imported := telemetrytest.Only(t, rec, "import plan")
 	assertString(t, imported, "ledger.provider.name", "fake")
 	assertFailed(t, imported, "ledger.ErrProviderSync")
+	// An empty answer fails the span and the call metric alike.
+	assertFailed(t, telemetrytest.Only(t, rec, "import feature"), "ledger.ErrProviderSync")
 
 	hook := telemetrytest.Only(t, rec, "handle webhook")
 	assertOK(t, hook)
@@ -558,6 +678,7 @@ func TestProviderCallsAreTracedAndTimed(t *testing.T) {
 	for series, want := range map[string]uint64{
 		`ledger_provider_call_duration_seconds{operation="sync_plan",provider="fake",result="error"}`:         1,
 		`ledger_provider_call_duration_seconds{operation="import_plan",provider="fake",result="error"}`:       1,
+		`ledger_provider_call_duration_seconds{operation="import_feature",provider="fake",result="error"}`:    1,
 		`ledger_provider_call_duration_seconds{operation="handle_webhook",provider="fake",result="ok"}`:       1,
 		`ledger_provider_call_duration_seconds{operation="list_payment_methods",provider="fake",result="ok"}`: 1,
 	} {
@@ -579,4 +700,39 @@ func TestNoMetricsWithoutASink(t *testing.T) {
 	if _, err := l.Advance(context.Background(), at(2026, 3, 1)); err != nil {
 		t.Fatalf("Advance: %v", err)
 	}
+}
+
+// panickingTax is a tax calculator that panics, as plugin code can.
+type panickingTax struct{}
+
+func (panickingTax) Name() string { return "panicking-tax" }
+
+func (panickingTax) CalculateTax(context.Context, interface{}, string) (interface{}, error) {
+	panic("the tax service is down")
+}
+
+func TestGenerateInvoiceEndsItsSpanWhenAPluginPanics(t *testing.T) {
+	rec := telemetrytest.RecordSpans(t)
+	sink := telemetrytest.NewSink()
+	l := ledger.New(memory.New(), ledger.WithPlugin(panickingTax{}), ledger.WithMetrics(sink))
+	p := activePlan(t, l, "pro", "app_1", 0)
+	ctx := context.Background()
+	sub := &subscription.Subscription{TenantID: "t1", PlanID: p.ID, AppID: "app_1"}
+	if err := l.CreateSubscription(ctx, sub); err != nil {
+		t.Fatalf("CreateSubscription: %v", err)
+	}
+
+	func() {
+		defer func() {
+			if recover() == nil {
+				t.Fatal("GenerateInvoice did not pass the plugin's panic on")
+			}
+		}()
+		_, _ = l.GenerateInvoice(ctx, sub.ID)
+	}()
+
+	span := telemetrytest.Only(t, rec, "generate invoice")
+	assertFailed(t, span, "panic")
+	assertString(t, span, "ledger.invoice.result", "error")
+	assertObservations(t, sink, `ledger_invoice_generate_duration_seconds{result="error"}`, 1)
 }
