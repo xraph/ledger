@@ -8,12 +8,17 @@ import (
 	"sync"
 	"time"
 
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/trace"
+
 	log "github.com/xraph/go-utils/log"
+	gometrics "github.com/xraph/go-utils/metrics"
 
 	"github.com/xraph/ledger/coupon"
 	"github.com/xraph/ledger/entitlement"
 	"github.com/xraph/ledger/feature"
 	"github.com/xraph/ledger/id"
+	"github.com/xraph/ledger/internal/telemetry"
 	"github.com/xraph/ledger/invoice"
 	"github.com/xraph/ledger/meter"
 	"github.com/xraph/ledger/plan"
@@ -49,6 +54,11 @@ type Ledger struct {
 	lifecycleInterval   time.Duration
 	clock               func() time.Time
 	skipMigrate         bool
+
+	// Telemetry. metricsSink is what WithMetrics set; New builds metrics from
+	// it once the options have run.
+	metricsSink gometrics.Metrics
+	metrics     engineMetrics
 }
 
 // New creates a new Ledger instance.
@@ -69,6 +79,9 @@ func New(s store.Store, opts ...Option) *Ledger {
 	for _, opt := range opts {
 		opt(l)
 	}
+
+	l.metrics = newEngineMetrics(l.metricsSink)
+	l.plugins.WithMetrics(l.metricsSink)
 
 	return l
 }
@@ -171,9 +184,11 @@ func (l *Ledger) Start(ctx context.Context) error {
 	// Initialize plugins
 	l.plugins.EmitInit(ctx, l)
 
-	// Start meter flush worker
+	// Start meter flush worker. Like the lifecycle clock it outlives Start:
+	// Stop ends it, not ctx, which a caller may cancel once Start returns.
+	// It drops ctx's span too, so each flush is a trace of its own.
 	l.wg.Add(1)
-	go l.meterFlushWorker(ctx)
+	go l.meterFlushWorker(telemetry.Detach(context.WithoutCancel(ctx)))
 
 	// Start the lifecycle clock
 	if l.lifecycleInterval > 0 {
@@ -489,6 +504,7 @@ func (l *Ledger) Meter(ctx context.Context, featureKey string, quantity int64) e
 	case l.meterBuffer <- event:
 		return nil
 	default:
+		l.metrics.meterEvents.Inc(resultBufferFull)
 		return ErrMeterBufferFull
 	}
 }
@@ -526,16 +542,25 @@ func (l *Ledger) meterFlushWorker(ctx context.Context) {
 	}
 }
 
+// flushMeterBatch writes one batch. Each flush is a trace of its own, and a
+// failed one loses its events, which the meter events metric counts.
 func (l *Ledger) flushMeterBatch(ctx context.Context, batch []*meter.UsageEvent) {
+	ctx, span := telemetry.StartRoot(ctx, "flush meter batch",
+		trace.WithAttributes(attribute.Int(attrBatchSize, len(batch))))
+	defer span.End()
+
 	start := time.Now()
 
 	if err := l.store.IngestBatch(ctx, batch); err != nil {
+		telemetry.Fail(span, errorType(err))
+		l.metrics.meterEvents.Add(float64(len(batch)), resultError)
 		l.logger.Error("failed to flush meter batch",
 			log.Error(err),
 			log.Int("batch_size", len(batch)),
 		)
 		return
 	}
+	l.metrics.meterEvents.Add(float64(len(batch)), resultOK)
 
 	elapsed := time.Since(start)
 	l.plugins.EmitUsageFlushed(ctx, len(batch), elapsed)
@@ -551,7 +576,45 @@ func (l *Ledger) flushMeterBatch(ctx context.Context, batch []*meter.UsageEvent)
 // ──────────────────────────────────────────────────
 
 // Entitled checks if the current tenant can use a feature.
+//
+// It runs on most requests, so its span is only started under a caller's
+// span: a check made outside any trace does not begin one.
 func (l *Ledger) Entitled(ctx context.Context, featureKey string) (*entitlement.Result, error) {
+	ctx, span := telemetry.StartChild(ctx, "check entitlement")
+	defer span.End()
+	// Attributes are built only for a span that records, so a check outside
+	// any trace allocates nothing for telemetry.
+	if span.IsRecording() {
+		span.SetAttributes(attribute.String(attrFeatureKey, featureKey))
+	}
+
+	result, source, err := l.entitled(ctx, featureKey)
+	answer := resultError
+	switch {
+	case err != nil:
+		telemetry.Fail(span, errorType(err))
+	case result.Allowed:
+		answer = resultAllowed
+	case source == entitlementNoAccess:
+		answer = resultNoAccess
+	default:
+		answer = resultDenied
+	}
+	hit := source == entitlementCached
+	if span.IsRecording() {
+		span.SetAttributes(attribute.String(attrEntitlement, answer), attribute.Bool(attrCacheHit, hit))
+	}
+	cacheLabel := cacheMiss
+	if hit {
+		cacheLabel = cacheHit
+	}
+	l.metrics.entitlementChecks.Inc(answer, cacheLabel)
+	return result, err
+}
+
+// entitled answers Entitled, and says where the answer came from: the cache,
+// or which kind of computed answer it was.
+func (l *Ledger) entitled(ctx context.Context, featureKey string) (*entitlement.Result, entitlementKind, error) {
 	tenantID := extractTenantID(ctx)
 	appID := extractAppID(ctx)
 
@@ -560,17 +623,17 @@ func (l *Ledger) Entitled(ctx context.Context, featureKey string) (*entitlement.
 			Allowed: false,
 			Feature: featureKey,
 			Reason:  "missing tenant or app context",
-		}, nil
+		}, entitlementNoAccess, nil
 	}
 
 	// Check cache first
 	if cached, err := l.store.GetCached(ctx, tenantID, appID, featureKey); err == nil {
-		return cached, nil
+		return cached, entitlementCached, nil
 	}
 
 	result, kind, err := l.computeEntitlement(ctx, tenantID, appID, featureKey)
 	if err != nil {
-		return nil, err
+		return nil, kind, err
 	}
 
 	switch kind {
@@ -582,11 +645,11 @@ func (l *Ledger) Entitled(ctx context.Context, featureKey string) (*entitlement.
 		}
 		_ = l.store.SetCached(ctx, tenantID, appID, featureKey, result, l.entitlementCacheTTL) //nolint:errcheck // best-effort cache set
 		l.plugins.EmitEntitlementChecked(ctx, result)
-	case entitlementNoAccess:
+	case entitlementNoAccess, entitlementCached:
 		// Nothing is cached and no event fires when there is no access to report.
 	}
 
-	return result, nil
+	return result, kind, nil
 }
 
 type entitlementKind int
@@ -595,6 +658,7 @@ const (
 	entitlementNoAccess entitlementKind = iota // no subscription, no plan, or feature not in plan
 	entitlementBoolean
 	entitlementMetered
+	entitlementCached // answered from the cache; only entitled returns it
 )
 
 // computeEntitlement answers an entitlement question from the store alone. It
@@ -854,7 +918,50 @@ func addChecked(stage string, a, b types.Money) (types.Money, error) {
 // of its current one. Only usage is historical: the plan, its prices, the
 // seat counts and the coupons are all read as they are now, because Ledger
 // keeps no history of them and ChangePlan leaves the period alone.
-func (l *Ledger) GenerateInvoice(ctx context.Context, subID id.SubscriptionID, opts ...InvoiceOption) (*invoice.Invoice, error) {
+func (l *Ledger) GenerateInvoice(ctx context.Context, subID id.SubscriptionID, opts ...InvoiceOption) (inv *invoice.Invoice, err error) {
+	start := time.Now()
+	ctx, span := telemetry.Start(ctx, "generate invoice",
+		trace.WithAttributes(attribute.String(attrSubscriptionID, subID.String())))
+
+	// Pricing strategies, usage aggregators and tax calculators are plugin
+	// code and can panic. finished stays false when one does, and the span
+	// still ends, marked as a panic.
+	finished := false
+	defer func() {
+		result := resultOK
+		switch {
+		case !finished:
+			result = resultError
+		case errors.Is(err, ErrAlreadyExists):
+			result = resultExists
+		case IsNotFound(err):
+			result = resultNotFound
+		case err != nil:
+			result = resultError
+		}
+		span.SetAttributes(attribute.String(attrInvoiceResult, result))
+		if inv != nil {
+			span.SetAttributes(
+				attribute.String(attrInvoiceID, inv.ID.String()),
+				attribute.Int(attrInvoiceLineItems, len(inv.LineItems)),
+			)
+		}
+		if finished {
+			endSpan(span, err)
+		} else {
+			telemetry.Fail(span, "panic")
+			span.End()
+		}
+		l.metrics.invoiceGenerate.ObserveSince(start, result)
+	}()
+
+	inv, err = l.generateInvoice(ctx, subID, opts...)
+	finished = true
+	return inv, err
+}
+
+// generateInvoice is GenerateInvoice without its telemetry.
+func (l *Ledger) generateInvoice(ctx context.Context, subID id.SubscriptionID, opts ...InvoiceOption) (*invoice.Invoice, error) {
 	sub, err := l.store.GetSubscription(ctx, subID)
 	if err != nil {
 		return nil, err
@@ -877,6 +984,11 @@ func (l *Ledger) GenerateInvoice(ctx context.Context, subID id.SubscriptionID, o
 	if err != nil {
 		return nil, err
 	}
+	periodKind := "current"
+	if named != nil {
+		periodKind = "named"
+	}
+	trace.SpanFromContext(ctx).SetAttributes(attribute.String(attrInvoicePeriod, periodKind))
 	// A resume moves the end of a paused subscription's period on by the
 	// length of the pause, so that period is not finished: billing it now
 	// would bill a period whose end later moves. Ended periods named with
@@ -1283,10 +1395,32 @@ func (l *Ledger) getProvider(name string) (provider.Provider, error) {
 	return providers[0].Provider(), nil
 }
 
+// providerFor resolves a provider as getProvider does, and names it on the
+// span in ctx.
+func (l *Ledger) providerFor(ctx context.Context, name string) (provider.Provider, error) {
+	prov, err := l.getProvider(name)
+	if err == nil {
+		trace.SpanFromContext(ctx).SetAttributes(attribute.String(attrProviderName, prov.Name()))
+	}
+	return prov, err
+}
+
+// callProvider makes one call into a payment provider plugin and records how
+// long it took. operation is one of the documented operation label values.
+func callProvider[T any](l *Ledger, prov provider.Provider, operation string, call func() (T, error)) (T, error) {
+	start := time.Now()
+	v, err := call()
+	l.metrics.providerCalls.ObserveSince(start, prov.Name(), operation, resultOf(err))
+	return v, err
+}
+
 // ListPaymentMethods lists payment methods from the provider for a tenant.
 // Payment methods are always fetched live and never stored locally.
-func (l *Ledger) ListPaymentMethods(ctx context.Context, tenantID string) ([]provider.PaymentMethod, error) {
-	prov, err := l.getProvider("")
+func (l *Ledger) ListPaymentMethods(ctx context.Context, tenantID string) (methods []provider.PaymentMethod, err error) {
+	ctx, span := telemetry.Start(ctx, "list payment methods")
+	defer func() { endSpan(span, err) }()
+
+	prov, err := l.providerFor(ctx, "")
 	if err != nil {
 		// No providers configured — return empty list (dev mode)
 		if errors.Is(err, ErrProviderNotConfigured) {
@@ -1295,22 +1429,30 @@ func (l *Ledger) ListPaymentMethods(ctx context.Context, tenantID string) ([]pro
 		return nil, err
 	}
 
-	return prov.ListPaymentMethods(ctx, tenantID)
+	return callProvider(l, prov, "list_payment_methods", func() ([]provider.PaymentMethod, error) {
+		return prov.ListPaymentMethods(ctx, tenantID)
+	})
 }
 
 // SyncPlanToProvider pushes a local plan to the payment provider.
-func (l *Ledger) SyncPlanToProvider(ctx context.Context, planID id.PlanID) (*provider.SyncResult, error) {
+func (l *Ledger) SyncPlanToProvider(ctx context.Context, planID id.PlanID) (res *provider.SyncResult, err error) {
+	ctx, span := telemetry.Start(ctx, "sync plan",
+		trace.WithAttributes(attribute.String(attrPlanID, planID.String())))
+	defer func() { endSpan(span, err) }()
+
 	p, err := l.store.GetPlan(ctx, planID)
 	if err != nil {
 		return nil, err
 	}
 
-	prov, err := l.getProvider(p.ProviderName)
+	prov, err := l.providerFor(ctx, p.ProviderName)
 	if err != nil {
 		return nil, err
 	}
 
-	providerID, syncErr := prov.SyncPlan(ctx, p)
+	providerID, syncErr := callProvider(l, prov, "sync_plan", func() (string, error) {
+		return prov.SyncPlan(ctx, p)
+	})
 	result := &provider.SyncResult{
 		ProviderName: prov.Name(),
 		ProviderID:   providerID,
@@ -1335,18 +1477,24 @@ func (l *Ledger) SyncPlanToProvider(ctx context.Context, planID id.PlanID) (*pro
 }
 
 // SyncFeatureToProvider pushes a local feature to the payment provider.
-func (l *Ledger) SyncFeatureToProvider(ctx context.Context, featureID id.FeatureID) (*provider.SyncResult, error) {
+func (l *Ledger) SyncFeatureToProvider(ctx context.Context, featureID id.FeatureID) (res *provider.SyncResult, err error) {
+	ctx, span := telemetry.Start(ctx, "sync feature",
+		trace.WithAttributes(attribute.String(attrFeatureID, featureID.String())))
+	defer func() { endSpan(span, err) }()
+
 	f, err := l.store.GetFeature(ctx, featureID)
 	if err != nil {
 		return nil, err
 	}
 
-	prov, err := l.getProvider(f.ProviderName)
+	prov, err := l.providerFor(ctx, f.ProviderName)
 	if err != nil {
 		return nil, err
 	}
 
-	providerID, syncErr := prov.SyncFeature(ctx, f)
+	providerID, syncErr := callProvider(l, prov, "sync_feature", func() (string, error) {
+		return prov.SyncFeature(ctx, f)
+	})
 	result := &provider.SyncResult{
 		ProviderName: prov.Name(),
 		ProviderID:   providerID,
@@ -1370,18 +1518,24 @@ func (l *Ledger) SyncFeatureToProvider(ctx context.Context, featureID id.Feature
 }
 
 // SyncSubscriptionToProvider pushes a local subscription to the payment provider.
-func (l *Ledger) SyncSubscriptionToProvider(ctx context.Context, subID id.SubscriptionID) (*provider.SyncResult, error) {
+func (l *Ledger) SyncSubscriptionToProvider(ctx context.Context, subID id.SubscriptionID) (res *provider.SyncResult, err error) {
+	ctx, span := telemetry.Start(ctx, "sync subscription",
+		trace.WithAttributes(attribute.String(attrSubscriptionID, subID.String())))
+	defer func() { endSpan(span, err) }()
+
 	s, err := l.store.GetSubscription(ctx, subID)
 	if err != nil {
 		return nil, err
 	}
 
-	prov, err := l.getProvider(s.ProviderName)
+	prov, err := l.providerFor(ctx, s.ProviderName)
 	if err != nil {
 		return nil, err
 	}
 
-	providerID, syncErr := prov.SyncSubscription(ctx, s)
+	providerID, syncErr := callProvider(l, prov, "sync_subscription", func() (string, error) {
+		return prov.SyncSubscription(ctx, s)
+	})
 	result := &provider.SyncResult{
 		ProviderName: prov.Name(),
 		ProviderID:   providerID,
@@ -1407,18 +1561,24 @@ func (l *Ledger) SyncSubscriptionToProvider(ctx context.Context, subID id.Subscr
 }
 
 // SyncInvoiceToProvider pushes a local invoice to the payment provider.
-func (l *Ledger) SyncInvoiceToProvider(ctx context.Context, invID id.InvoiceID) (*provider.SyncResult, error) {
+func (l *Ledger) SyncInvoiceToProvider(ctx context.Context, invID id.InvoiceID) (res *provider.SyncResult, err error) {
+	ctx, span := telemetry.Start(ctx, "sync invoice",
+		trace.WithAttributes(attribute.String(attrInvoiceID, invID.String())))
+	defer func() { endSpan(span, err) }()
+
 	inv, err := l.store.GetInvoice(ctx, invID)
 	if err != nil {
 		return nil, err
 	}
 
-	prov, err := l.getProvider(inv.ProviderName)
+	prov, err := l.providerFor(ctx, inv.ProviderName)
 	if err != nil {
 		return nil, err
 	}
 
-	providerID, syncErr := prov.SyncInvoice(ctx, inv)
+	providerID, syncErr := callProvider(l, prov, "sync_invoice", func() (string, error) {
+		return prov.SyncInvoice(ctx, inv)
+	})
 	result := &provider.SyncResult{
 		ProviderName: prov.Name(),
 		ProviderID:   providerID,
@@ -1449,17 +1609,28 @@ func (l *Ledger) SyncInvoiceToProvider(ctx context.Context, invID id.InvoiceID) 
 // ──────────────────────────────────────────────────
 
 // HandleWebhook routes an incoming webhook payload to the correct provider.
-func (l *Ledger) HandleWebhook(ctx context.Context, providerName string, payload []byte) (*provider.WebhookResult, error) {
-	prov, err := l.getProvider(providerName)
+func (l *Ledger) HandleWebhook(ctx context.Context, providerName string, payload []byte) (res *provider.WebhookResult, err error) {
+	ctx, span := telemetry.Start(ctx, "handle webhook")
+	defer func() { endSpan(span, err) }()
+
+	prov, err := l.providerFor(ctx, providerName)
 	if err != nil {
 		return nil, err
 	}
 
 	l.plugins.EmitWebhookReceived(ctx, prov.Name(), payload)
 
-	result, err := prov.HandleWebhook(ctx, payload)
+	result, err := callProvider(l, prov, "handle_webhook", func() (*provider.WebhookResult, error) {
+		return prov.HandleWebhook(ctx, payload)
+	})
 	if err != nil {
 		return nil, fmt.Errorf("%w: %w", ErrProviderWebhook, err)
+	}
+	if result != nil {
+		span.SetAttributes(
+			attribute.String(attrWebhookEvent, result.EventType),
+			attribute.Bool(attrWebhookHandled, result.Handled),
+		)
 	}
 
 	return result, nil

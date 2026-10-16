@@ -191,7 +191,9 @@ The lifecycle clock (period rollover, scheduled cancels, trial ends, past-due in
 
 ## Metrics
 
-`observability.NewMetricsExtension(factory)` is a plugin that counts plan, subscription, usage, quota and invoice events through a `MetricFactory` (`Counter(name)` and `Histogram(name)`). Forge's `app.Metrics()` doesn't satisfy that interface directly (its `Counter` takes variadic options), even though the package comment suggests it, so wrap it:
+The engine records its own metrics and spans. Through the Forge extension they're wired for you; on its own, pass `ledger.WithMetrics(m)` with a go-utils `metrics.Metrics` and install an OpenTelemetry tracer provider. The [Observability guide](content/docs/guides/observability.mdx) lists every span and metric, with the values each label takes.
+
+`observability.NewMetricsExtension(factory)` is an older plugin that counts plan, subscription, usage, quota and invoice events through a `MetricFactory` (`Counter(name)` and `Histogram(name)`). Forge's `app.Metrics()` doesn't satisfy that interface directly (its `Counter` takes variadic options), even though the package comment suggests it, so wrap it:
 
 ```go
 // forgeMetrics adapts Forge's metrics to the factory the plugin expects.

@@ -1,0 +1,94 @@
+---
+title: Observability
+description: "The spans and metrics Ledger records, what every label value means, and how to see them in a Forge app or on your own."
+---
+
+Ledger traces its own work and records a small set of metrics. In a Forge app you don't have to do anything: register the extension and the spans go to Forge's tracer provider, the metrics to `/_/metrics`.
+
+```go
+app := forge.NewApp(forge.AppConfig{
+	Name:       "billing",
+	Extensions: []forge.Extension{ledgerext.New()},
+})
+```
+
+Using the engine on its own? Pass a `github.com/xraph/go-utils/metrics` `Metrics` with `WithMetrics`, and install an OpenTelemetry tracer provider with `otel.SetTracerProvider`. Without a sink the engine records no metrics at all. Without a provider its spans go nowhere.
+
+```go
+engine := ledger.New(store, ledger.WithMetrics(myMetrics))
+```
+
+The Postgres, SQLite and MongoDB stores run on Grove, which traces every query (`db.client` spans) and records `db_client_operation_duration_seconds`. Those query spans nest under the Ledger span that made them, so a slow `generate invoice` shows you which query was slow. Ledger does not time those queries a second time.
+
+## Spans
+
+Every span is `internal` and carries the instrumentation scope `github.com/xraph/ledger`.
+
+| Span | Started | Attributes |
+|------|---------|------------|
+| `run lifecycle` | Once per lifecycle run that writes or fails. In the clock's own worker it begins a trace of its own. | `ledger.lifecycle.periods_advanced`, `ledger.lifecycle.cancels_enacted`, `ledger.lifecycle.trials_ended`, `ledger.lifecycle.invoices_past_due` (counts) |
+| `advance periods`, `enact cancels`, `end trials`, `mark invoices past due` | Under `run lifecycle`, for each step that wrote or failed. A step called on its own (`EndTrials` and so on) starts it under your span. | `ledger.lifecycle.changed`, `ledger.lifecycle.failed` (counts) |
+| `flush meter batch` | Once per batch the meter flusher writes, as a trace of its own | `ledger.meter.batch_size` |
+| `check entitlement` | In `Entitled`, only when your context already carries a span | `ledger.feature.key`, `ledger.entitlement.result` (`allowed`, `denied`, `no_access`, `error`), `ledger.entitlement.cache_hit` |
+| `generate invoice` | In `GenerateInvoice` | `ledger.subscription.id`, `ledger.invoice.period` (`current`, `named`), `ledger.invoice.result` (`ok`, `exists`, `not_found`, `error`), and on success `ledger.invoice.id` and `ledger.invoice.line_items` |
+| `sync plan`, `sync feature`, `sync subscription`, `sync invoice` | In the matching `Sync...ToProvider` | `ledger.provider.name`, and the local id: `ledger.plan.id`, `ledger.feature.id`, `ledger.subscription.id` or `ledger.invoice.id` |
+| `import plan`, `import feature`, `import subscription`, `import invoice` | In the matching `Import...FromProvider` | `ledger.provider.name` |
+| `handle webhook` | In `HandleWebhook` | `ledger.provider.name`, `ledger.webhook.event_type`, `ledger.webhook.handled` |
+| `list payment methods` | In `ListPaymentMethods` | `ledger.provider.name` |
+
+The lifecycle clock runs every minute in every replica, and most of those runs find nothing to move, so they leave no span at all. A step's span starts right before its first write, which means a subscription that every run lists and then leaves alone (one on a plan billed `none` whose period has already ended, say) does not cost you a trace a minute either. A failed list or a failed row does start the span. You want to see those.
+
+`Entitled` usually runs inside a request, under Forge's server span. Called outside any trace, it records its metric and starts no span, so a background job of yours that checks quotas in a loop will not fill your tracing backend.
+
+A failed span has status `Error` with a short class as its description, and one `exception` event carrying only `exception.type`. The class is a Ledger sentinel by name (`ledger.ErrInvalidInput`, `types.ErrOverflow`), a context error (`context.DeadlineExceeded`), or the Go type at the bottom of the error chain (`*pgconn.PgError`). The error message is never recorded: driver and provider messages quote the values they failed on. A record that doesn't exist and an invoice that already covers the period are answers, not failures, so those spans stay unmarked. A lifecycle run that `Stop` cut short isn't marked failed either.
+
+Tenant ids, amounts, payloads and payment method details never go on a span. Ledger's own resource ids (`sub_...`, `inv_...`, `plan_...`) do, since they name a row and nothing about a person.
+
+## Metrics
+
+The names below are what a Forge app scrapes. Forge puts its `forge_` namespace in front of every metric that isn't an OpenTelemetry semantic convention. Outside Forge, your sink sees the names without the prefix (`ledger_meter_events_total`).
+
+| Metric | Type | Labels |
+|--------|------|--------|
+| `forge_ledger_lifecycle_run_duration_seconds` | histogram | `result`: `ok`, `error`, `panic`, `stopped` |
+| `forge_ledger_lifecycle_transitions_total` | counter | `step`: `advance_periods`, `enact_cancels`, `end_trials`, `mark_invoices_past_due`; `result`: `ok`, `error` |
+| `forge_ledger_meter_events_total` | counter | `result`: `ok`, `error`, `buffer_full` |
+| `forge_ledger_entitlement_checks_total` | counter | `result`: `allowed`, `denied`, `no_access`, `error`; `cache`: `hit`, `miss` |
+| `forge_ledger_invoice_generate_duration_seconds` | histogram | `result`: `ok`, `exists`, `not_found`, `error` |
+| `forge_ledger_provider_call_duration_seconds` | histogram | `provider`: the payment provider's `Name()`; `operation`: `sync_plan`, `sync_feature`, `sync_subscription`, `sync_invoice`, `import_plan`, `import_feature`, `import_subscription`, `import_invoice`, `handle_webhook`, `list_payment_methods`; `result`: `ok`, `error` |
+| `forge_ledger_plugin_hook_failures_total` | counter | `hook`: the hook's interface name, such as `OnInvoicePaid`; `reason`: `error`, `timeout`, `canceled` |
+
+What the values mean:
+
+- A lifecycle run is `stopped` when `Stop` cancelled it, and `panic` when a step panicked (the worker recovers and the next tick starts clean). Every run counts, including the idle ones, so the histogram's count is how often the clock ran.
+- A transition is one subscription or invoice a step moved (`ok`), or one it tried to move and could not (`error`). A row that had nothing to do, or that another replica moved first, is not counted. When `Stop` cancels a run in the middle of a row's write, a database store fails that write on the cancelled context, so the row counts as `result="error"` and its step span is marked failed, even though the run itself counts as `stopped`. The next start picks the row up again.
+- A metered event is `ok` once a flush stored it, and `error` when its flush failed, which loses it. `buffer_full` counts the `Meter` calls refused with `ErrMeterBufferFull` because the 10,000 event buffer was full. Those events never reach the store, and nothing else counts them.
+- An entitlement check is `no_access` when there's no tenant in the context, no active subscription, or the feature isn't in the plan. `cache="hit"` means the store's entitlement cache answered.
+- A hook failure is `error` when the hook returned an error, `timeout` when it was still running after five seconds (the registry stops waiting, but the hook keeps running in the background), and `canceled` when the context of the call that fired it ended first.
+- A provider call is timed around the plugin method alone, so you see the provider's round trip without Ledger's own reads and writes. `provider` is bounded by the payment provider plugins you compile in.
+
+Every label is a closed set. No tenant, app, plan, invoice or subscription id, amount, URL or error message becomes a label, and the plugin's name stays in the log line, off the hook failures metric.
+
+A few queries to start from:
+
+```text
+# Lifecycle runs slower than half their one minute interval
+histogram_quantile(0.99, sum by (le) (rate(forge_ledger_lifecycle_run_duration_seconds_bucket[15m]))) > 30
+
+# Metered events lost, either to a failed flush or to a full buffer
+sum by (result) (rate(forge_ledger_meter_events_total{result!="ok"}[5m]))
+
+# Rows the clock keeps failing to move
+sum by (step) (increase(forge_ledger_lifecycle_transitions_total{result="error"}[1h]))
+
+# p95 of each payment provider operation
+histogram_quantile(0.95, sum by (le, provider, operation) (rate(forge_ledger_provider_call_duration_seconds_bucket[5m])))
+```
+
+## Payment providers
+
+Ledger ships no provider, so it can't trace the HTTP calls yours makes. If you write one, build its client on `forge.HTTPClient()` or wrap its transport with `forge.InstrumentTransport`. Its requests then show up as client spans under `sync plan`, `handle webhook` and the rest.
+
+## The observability plugin
+
+The `observability` plugin is the older, hook-based way to get numbers out of Ledger. It counts hook events through a `MetricFactory` you adapt, under dotted names such as `ledger.invoice.generated`, and several of its counters never move. You don't need it for anything on this page. It stays for the code that already uses it, and [Custom plugin](/docs/guides/custom-plugin#observability) lists what it records.

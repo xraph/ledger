@@ -2,6 +2,7 @@ package plugin
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"reflect"
 	"sort"
@@ -9,7 +10,20 @@ import (
 	"time"
 
 	log "github.com/xraph/go-utils/log"
+	gometrics "github.com/xraph/go-utils/metrics"
+
+	"github.com/xraph/ledger/internal/telemetry"
 )
+
+// HookFailuresMetric counts hook calls that failed, by hook and by reason. A
+// Forge app scrapes it as forge_ledger_plugin_hook_failures_total.
+const HookFailuresMetric = "ledger_plugin_hook_failures_total"
+
+// defaultHookTimeout is how long the registry waits on one hook call.
+const defaultHookTimeout = 5 * time.Second
+
+// errHookTimeout is the error a hook call that outran hookTimeout reports.
+var errHookTimeout = errors.New("plugin timeout")
 
 // Registry manages all registered plugins and provides efficient dispatch.
 // It uses type-cached discovery for O(1) dispatch performance.
@@ -17,6 +31,12 @@ type Registry struct {
 	mu      sync.RWMutex
 	plugins []Plugin
 	logger  log.Logger
+
+	// hookTimeout is how long one hook call may take; tests shorten it.
+	hookTimeout time.Duration
+
+	// hookFailures counts failed hook calls; nil records nothing.
+	hookFailures *telemetry.CounterVec
 
 	// Type-cached plugin lists for efficient dispatch
 	onInit                        []OnInit
@@ -60,6 +80,7 @@ type Registry struct {
 func NewRegistry() *Registry {
 	return &Registry{
 		logger:            log.NewNoopLogger(),
+		hookTimeout:       defaultHookTimeout,
 		pricingStrategies: make(map[string]PricingStrategy),
 		usageAggregators:  make(map[string]UsageAggregator),
 		invoiceFormatters: make(map[string]InvoiceFormatter),
@@ -69,6 +90,17 @@ func NewRegistry() *Registry {
 // WithLogger sets the logger for the registry.
 func (r *Registry) WithLogger(logger log.Logger) *Registry {
 	r.logger = logger
+	return r
+}
+
+// WithMetrics counts failed hook calls on m as HookFailuresMetric, labeled
+// with the hook (its interface name, such as OnInvoicePaid) and the reason:
+// error, timeout or canceled. A nil m records nothing. Call it before the
+// registry dispatches anything; ledger.New does.
+func (r *Registry) WithMetrics(m gometrics.Metrics) *Registry {
+	r.hookFailures = telemetry.NewCounterVec(m, HookFailuresMetric,
+		"Plugin hook calls that failed, by hook and reason.",
+		"hook", "reason")
 	return r
 }
 
@@ -269,14 +301,9 @@ func (r *Registry) EmitInit(ctx context.Context, ledger interface{}) {
 	r.mu.RUnlock()
 
 	for _, p := range plugins {
-		if err := r.callWithTimeout(ctx, p.Name(), func() error {
+		r.dispatch(ctx, "OnInit", p.Name(), func() error {
 			return p.OnInit(ctx, ledger)
-		}); err != nil {
-			r.logger.Warn("plugin OnInit failed",
-				log.String("plugin", p.Name()),
-				log.Error(err),
-			)
-		}
+		})
 	}
 }
 
@@ -287,14 +314,9 @@ func (r *Registry) EmitShutdown(ctx context.Context) {
 	r.mu.RUnlock()
 
 	for _, p := range plugins {
-		if err := r.callWithTimeout(ctx, p.Name(), func() error {
+		r.dispatch(ctx, "OnShutdown", p.Name(), func() error {
 			return p.OnShutdown(ctx)
-		}); err != nil {
-			r.logger.Warn("plugin OnShutdown failed",
-				log.String("plugin", p.Name()),
-				log.Error(err),
-			)
-		}
+		})
 	}
 }
 
@@ -305,14 +327,9 @@ func (r *Registry) EmitPlanCreated(ctx context.Context, plan interface{}) {
 	r.mu.RUnlock()
 
 	for _, p := range plugins {
-		if err := r.callWithTimeout(ctx, p.Name(), func() error {
+		r.dispatch(ctx, "OnPlanCreated", p.Name(), func() error {
 			return p.OnPlanCreated(ctx, plan)
-		}); err != nil {
-			r.logger.Warn("plugin OnPlanCreated failed",
-				log.String("plugin", p.Name()),
-				log.Error(err),
-			)
-		}
+		})
 	}
 }
 
@@ -323,14 +340,9 @@ func (r *Registry) EmitFeatureCreated(ctx context.Context, feature interface{}) 
 	r.mu.RUnlock()
 
 	for _, p := range plugins {
-		if err := r.callWithTimeout(ctx, p.Name(), func() error {
+		r.dispatch(ctx, "OnFeatureCreated", p.Name(), func() error {
 			return p.OnFeatureCreated(ctx, feature)
-		}); err != nil {
-			r.logger.Warn("plugin OnFeatureCreated failed",
-				log.String("plugin", p.Name()),
-				log.Error(err),
-			)
-		}
+		})
 	}
 }
 
@@ -341,14 +353,9 @@ func (r *Registry) EmitFeatureUpdated(ctx context.Context, oldFeature, newFeatur
 	r.mu.RUnlock()
 
 	for _, p := range plugins {
-		if err := r.callWithTimeout(ctx, p.Name(), func() error {
+		r.dispatch(ctx, "OnFeatureUpdated", p.Name(), func() error {
 			return p.OnFeatureUpdated(ctx, oldFeature, newFeature)
-		}); err != nil {
-			r.logger.Warn("plugin OnFeatureUpdated failed",
-				log.String("plugin", p.Name()),
-				log.Error(err),
-			)
-		}
+		})
 	}
 }
 
@@ -359,14 +366,9 @@ func (r *Registry) EmitFeatureDeleted(ctx context.Context, featureID string) {
 	r.mu.RUnlock()
 
 	for _, p := range plugins {
-		if err := r.callWithTimeout(ctx, p.Name(), func() error {
+		r.dispatch(ctx, "OnFeatureDeleted", p.Name(), func() error {
 			return p.OnFeatureDeleted(ctx, featureID)
-		}); err != nil {
-			r.logger.Warn("plugin OnFeatureDeleted failed",
-				log.String("plugin", p.Name()),
-				log.Error(err),
-			)
-		}
+		})
 	}
 }
 
@@ -377,14 +379,9 @@ func (r *Registry) EmitFeatureArchived(ctx context.Context, featureID string) {
 	r.mu.RUnlock()
 
 	for _, p := range plugins {
-		if err := r.callWithTimeout(ctx, p.Name(), func() error {
+		r.dispatch(ctx, "OnFeatureArchived", p.Name(), func() error {
 			return p.OnFeatureArchived(ctx, featureID)
-		}); err != nil {
-			r.logger.Warn("plugin OnFeatureArchived failed",
-				log.String("plugin", p.Name()),
-				log.Error(err),
-			)
-		}
+		})
 	}
 }
 
@@ -395,14 +392,9 @@ func (r *Registry) EmitSubscriptionCreated(ctx context.Context, sub interface{})
 	r.mu.RUnlock()
 
 	for _, p := range plugins {
-		if err := r.callWithTimeout(ctx, p.Name(), func() error {
+		r.dispatch(ctx, "OnSubscriptionCreated", p.Name(), func() error {
 			return p.OnSubscriptionCreated(ctx, sub)
-		}); err != nil {
-			r.logger.Warn("plugin OnSubscriptionCreated failed",
-				log.String("plugin", p.Name()),
-				log.Error(err),
-			)
-		}
+		})
 	}
 }
 
@@ -413,14 +405,9 @@ func (r *Registry) EmitInvoiceGenerated(ctx context.Context, inv interface{}) {
 	r.mu.RUnlock()
 
 	for _, p := range plugins {
-		if err := r.callWithTimeout(ctx, p.Name(), func() error {
+		r.dispatch(ctx, "OnInvoiceGenerated", p.Name(), func() error {
 			return p.OnInvoiceGenerated(ctx, inv)
-		}); err != nil {
-			r.logger.Warn("plugin OnInvoiceGenerated failed",
-				log.String("plugin", p.Name()),
-				log.Error(err),
-			)
-		}
+		})
 	}
 }
 
@@ -431,14 +418,9 @@ func (r *Registry) EmitEntitlementChecked(ctx context.Context, result interface{
 	r.mu.RUnlock()
 
 	for _, p := range plugins {
-		if err := r.callWithTimeout(ctx, p.Name(), func() error {
+		r.dispatch(ctx, "OnEntitlementChecked", p.Name(), func() error {
 			return p.OnEntitlementChecked(ctx, result)
-		}); err != nil {
-			r.logger.Warn("plugin OnEntitlementChecked failed",
-				log.String("plugin", p.Name()),
-				log.Error(err),
-			)
-		}
+		})
 	}
 }
 
@@ -449,14 +431,9 @@ func (r *Registry) EmitQuotaExceeded(ctx context.Context, tenantID, featureKey s
 	r.mu.RUnlock()
 
 	for _, p := range plugins {
-		if err := r.callWithTimeout(ctx, p.Name(), func() error {
+		r.dispatch(ctx, "OnQuotaExceeded", p.Name(), func() error {
 			return p.OnQuotaExceeded(ctx, tenantID, featureKey, used, limit)
-		}); err != nil {
-			r.logger.Warn("plugin OnQuotaExceeded failed",
-				log.String("plugin", p.Name()),
-				log.Error(err),
-			)
-		}
+		})
 	}
 }
 
@@ -467,14 +444,9 @@ func (r *Registry) EmitSubscriptionCanceled(ctx context.Context, sub interface{}
 	r.mu.RUnlock()
 
 	for _, p := range plugins {
-		if err := r.callWithTimeout(ctx, p.Name(), func() error {
+		r.dispatch(ctx, "OnSubscriptionCanceled", p.Name(), func() error {
 			return p.OnSubscriptionCanceled(ctx, sub)
-		}); err != nil {
-			r.logger.Warn("plugin OnSubscriptionCanceled failed",
-				log.String("plugin", p.Name()),
-				log.Error(err),
-			)
-		}
+		})
 	}
 }
 
@@ -485,14 +457,9 @@ func (r *Registry) EmitUsageFlushed(ctx context.Context, count int, elapsed time
 	r.mu.RUnlock()
 
 	for _, p := range plugins {
-		if err := r.callWithTimeout(ctx, p.Name(), func() error {
+		r.dispatch(ctx, "OnUsageFlushed", p.Name(), func() error {
 			return p.OnUsageFlushed(ctx, count, elapsed)
-		}); err != nil {
-			r.logger.Warn("plugin OnUsageFlushed failed",
-				log.String("plugin", p.Name()),
-				log.Error(err),
-			)
-		}
+		})
 	}
 }
 
@@ -589,14 +556,9 @@ func (r *Registry) EmitPlanUpdated(ctx context.Context, oldPlan, newPlan interfa
 	r.mu.RUnlock()
 
 	for _, p := range plugins {
-		if err := r.callWithTimeout(ctx, p.Name(), func() error {
+		r.dispatch(ctx, "OnPlanUpdated", p.Name(), func() error {
 			return p.OnPlanUpdated(ctx, oldPlan, newPlan)
-		}); err != nil {
-			r.logger.Warn("plugin OnPlanUpdated failed",
-				log.String("plugin", p.Name()),
-				log.Error(err),
-			)
-		}
+		})
 	}
 }
 
@@ -607,14 +569,9 @@ func (r *Registry) EmitPlanArchived(ctx context.Context, planID string) {
 	r.mu.RUnlock()
 
 	for _, p := range plugins {
-		if err := r.callWithTimeout(ctx, p.Name(), func() error {
+		r.dispatch(ctx, "OnPlanArchived", p.Name(), func() error {
 			return p.OnPlanArchived(ctx, planID)
-		}); err != nil {
-			r.logger.Warn("plugin OnPlanArchived failed",
-				log.String("plugin", p.Name()),
-				log.Error(err),
-			)
-		}
+		})
 	}
 }
 
@@ -625,14 +582,9 @@ func (r *Registry) EmitSubscriptionChanged(ctx context.Context, sub, oldPlan, ne
 	r.mu.RUnlock()
 
 	for _, p := range plugins {
-		if err := r.callWithTimeout(ctx, p.Name(), func() error {
+		r.dispatch(ctx, "OnSubscriptionChanged", p.Name(), func() error {
 			return p.OnSubscriptionChanged(ctx, sub, oldPlan, newPlan)
-		}); err != nil {
-			r.logger.Warn("plugin OnSubscriptionChanged failed",
-				log.String("plugin", p.Name()),
-				log.Error(err),
-			)
-		}
+		})
 	}
 }
 
@@ -643,14 +595,9 @@ func (r *Registry) EmitSubscriptionExpired(ctx context.Context, sub interface{})
 	r.mu.RUnlock()
 
 	for _, p := range plugins {
-		if err := r.callWithTimeout(ctx, p.Name(), func() error {
+		r.dispatch(ctx, "OnSubscriptionExpired", p.Name(), func() error {
 			return p.OnSubscriptionExpired(ctx, sub)
-		}); err != nil {
-			r.logger.Warn("plugin OnSubscriptionExpired failed",
-				log.String("plugin", p.Name()),
-				log.Error(err),
-			)
-		}
+		})
 	}
 }
 
@@ -661,14 +608,9 @@ func (r *Registry) EmitSubscriptionCancelScheduled(ctx context.Context, sub inte
 	r.mu.RUnlock()
 
 	for _, p := range plugins {
-		if err := r.callWithTimeout(ctx, p.Name(), func() error {
+		r.dispatch(ctx, "OnSubscriptionCancelScheduled", p.Name(), func() error {
 			return p.OnSubscriptionCancelScheduled(ctx, sub)
-		}); err != nil {
-			r.logger.Warn("plugin OnSubscriptionCancelScheduled failed",
-				log.String("plugin", p.Name()),
-				log.Error(err),
-			)
-		}
+		})
 	}
 }
 
@@ -679,14 +621,9 @@ func (r *Registry) EmitSubscriptionTrialEnded(ctx context.Context, sub interface
 	r.mu.RUnlock()
 
 	for _, p := range plugins {
-		if err := r.callWithTimeout(ctx, p.Name(), func() error {
+		r.dispatch(ctx, "OnSubscriptionTrialEnded", p.Name(), func() error {
 			return p.OnSubscriptionTrialEnded(ctx, sub)
-		}); err != nil {
-			r.logger.Warn("plugin OnSubscriptionTrialEnded failed",
-				log.String("plugin", p.Name()),
-				log.Error(err),
-			)
-		}
+		})
 	}
 }
 
@@ -698,14 +635,9 @@ func (r *Registry) EmitSubscriptionRenewed(ctx context.Context, renewal interfac
 	r.mu.RUnlock()
 
 	for _, p := range plugins {
-		if err := r.callWithTimeout(ctx, p.Name(), func() error {
+		r.dispatch(ctx, "OnSubscriptionRenewed", p.Name(), func() error {
 			return p.OnSubscriptionRenewed(ctx, renewal)
-		}); err != nil {
-			r.logger.Warn("plugin OnSubscriptionRenewed failed",
-				log.String("plugin", p.Name()),
-				log.Error(err),
-			)
-		}
+		})
 	}
 }
 
@@ -716,14 +648,9 @@ func (r *Registry) EmitInvoicePastDue(ctx context.Context, inv interface{}) {
 	r.mu.RUnlock()
 
 	for _, p := range plugins {
-		if err := r.callWithTimeout(ctx, p.Name(), func() error {
+		r.dispatch(ctx, "OnInvoicePastDue", p.Name(), func() error {
 			return p.OnInvoicePastDue(ctx, inv)
-		}); err != nil {
-			r.logger.Warn("plugin OnInvoicePastDue failed",
-				log.String("plugin", p.Name()),
-				log.Error(err),
-			)
-		}
+		})
 	}
 }
 
@@ -734,14 +661,9 @@ func (r *Registry) EmitSoftLimitReached(ctx context.Context, tenantID, featureKe
 	r.mu.RUnlock()
 
 	for _, p := range plugins {
-		if err := r.callWithTimeout(ctx, p.Name(), func() error {
+		r.dispatch(ctx, "OnSoftLimitReached", p.Name(), func() error {
 			return p.OnSoftLimitReached(ctx, tenantID, featureKey, used, limit)
-		}); err != nil {
-			r.logger.Warn("plugin OnSoftLimitReached failed",
-				log.String("plugin", p.Name()),
-				log.Error(err),
-			)
-		}
+		})
 	}
 }
 
@@ -752,14 +674,9 @@ func (r *Registry) EmitUsageIngested(ctx context.Context, events []interface{}) 
 	r.mu.RUnlock()
 
 	for _, p := range plugins {
-		if err := r.callWithTimeout(ctx, p.Name(), func() error {
+		r.dispatch(ctx, "OnUsageIngested", p.Name(), func() error {
 			return p.OnUsageIngested(ctx, events)
-		}); err != nil {
-			r.logger.Warn("plugin OnUsageIngested failed",
-				log.String("plugin", p.Name()),
-				log.Error(err),
-			)
-		}
+		})
 	}
 }
 
@@ -770,14 +687,9 @@ func (r *Registry) EmitInvoiceFinalized(ctx context.Context, inv interface{}) {
 	r.mu.RUnlock()
 
 	for _, p := range plugins {
-		if err := r.callWithTimeout(ctx, p.Name(), func() error {
+		r.dispatch(ctx, "OnInvoiceFinalized", p.Name(), func() error {
 			return p.OnInvoiceFinalized(ctx, inv)
-		}); err != nil {
-			r.logger.Warn("plugin OnInvoiceFinalized failed",
-				log.String("plugin", p.Name()),
-				log.Error(err),
-			)
-		}
+		})
 	}
 }
 
@@ -788,14 +700,9 @@ func (r *Registry) EmitInvoicePaid(ctx context.Context, inv interface{}) {
 	r.mu.RUnlock()
 
 	for _, p := range plugins {
-		if err := r.callWithTimeout(ctx, p.Name(), func() error {
+		r.dispatch(ctx, "OnInvoicePaid", p.Name(), func() error {
 			return p.OnInvoicePaid(ctx, inv)
-		}); err != nil {
-			r.logger.Warn("plugin OnInvoicePaid failed",
-				log.String("plugin", p.Name()),
-				log.Error(err),
-			)
-		}
+		})
 	}
 }
 
@@ -806,14 +713,9 @@ func (r *Registry) EmitInvoiceFailed(ctx context.Context, inv interface{}, payEr
 	r.mu.RUnlock()
 
 	for _, p := range plugins {
-		if err := r.callWithTimeout(ctx, p.Name(), func() error {
+		r.dispatch(ctx, "OnInvoiceFailed", p.Name(), func() error {
 			return p.OnInvoiceFailed(ctx, inv, payErr)
-		}); err != nil {
-			r.logger.Warn("plugin OnInvoiceFailed failed",
-				log.String("plugin", p.Name()),
-				log.Error(err),
-			)
-		}
+		})
 	}
 }
 
@@ -824,14 +726,9 @@ func (r *Registry) EmitInvoiceVoided(ctx context.Context, inv interface{}, reaso
 	r.mu.RUnlock()
 
 	for _, p := range plugins {
-		if err := r.callWithTimeout(ctx, p.Name(), func() error {
+		r.dispatch(ctx, "OnInvoiceVoided", p.Name(), func() error {
 			return p.OnInvoiceVoided(ctx, inv, reason)
-		}); err != nil {
-			r.logger.Warn("plugin OnInvoiceVoided failed",
-				log.String("plugin", p.Name()),
-				log.Error(err),
-			)
-		}
+		})
 	}
 }
 
@@ -842,14 +739,9 @@ func (r *Registry) EmitProviderSync(ctx context.Context, providerName string, su
 	r.mu.RUnlock()
 
 	for _, p := range plugins {
-		if err := r.callWithTimeout(ctx, p.Name(), func() error {
+		r.dispatch(ctx, "OnProviderSync", p.Name(), func() error {
 			return p.OnProviderSync(ctx, providerName, success, syncErr)
-		}); err != nil {
-			r.logger.Warn("plugin OnProviderSync failed",
-				log.String("plugin", p.Name()),
-				log.Error(err),
-			)
-		}
+		})
 	}
 }
 
@@ -860,20 +752,32 @@ func (r *Registry) EmitWebhookReceived(ctx context.Context, providerName string,
 	r.mu.RUnlock()
 
 	for _, p := range plugins {
-		if err := r.callWithTimeout(ctx, p.Name(), func() error {
+		r.dispatch(ctx, "OnWebhookReceived", p.Name(), func() error {
 			return p.OnWebhookReceived(ctx, providerName, payload)
-		}); err != nil {
-			r.logger.Warn("plugin OnWebhookReceived failed",
-				log.String("plugin", p.Name()),
-				log.Error(err),
-			)
-		}
+		})
 	}
 }
 
-// callWithTimeout calls a plugin function with a timeout.
+// dispatch calls one plugin's hook through callWithTimeout. A failure is
+// logged and counted, never returned: plugins must not block or fail the
+// billing pipeline.
+func (r *Registry) dispatch(ctx context.Context, hook, pluginName string, fn func() error) {
+	reason, err := r.callWithTimeout(ctx, pluginName, fn)
+	if err == nil {
+		return
+	}
+	r.hookFailures.Inc(hook, reason)
+	r.logger.Warn("plugin "+hook+" failed",
+		log.String("plugin", pluginName),
+		log.Error(err),
+	)
+}
+
+// callWithTimeout calls a plugin function with a timeout, and says why a call
+// failed: the hook returned an error, it outran the timeout, or ctx ended
+// first.
 // Plugins should never block the billing pipeline.
-func (r *Registry) callWithTimeout(ctx context.Context, pluginName string, fn func() error) error {
+func (r *Registry) callWithTimeout(ctx context.Context, pluginName string, fn func() error) (reason string, err error) {
 	done := make(chan error, 1)
 
 	go func() {
@@ -881,11 +785,14 @@ func (r *Registry) callWithTimeout(ctx context.Context, pluginName string, fn fu
 	}()
 
 	select {
-	case err := <-done:
-		return err
-	case <-time.After(5 * time.Second):
-		return fmt.Errorf("plugin timeout: %s", pluginName)
+	case hookErr := <-done:
+		if hookErr != nil {
+			return "error", hookErr
+		}
+		return "", nil
+	case <-time.After(r.hookTimeout):
+		return "timeout", fmt.Errorf("%w: %s", errHookTimeout, pluginName)
 	case <-ctx.Done():
-		return ctx.Err()
+		return "canceled", ctx.Err()
 	}
 }

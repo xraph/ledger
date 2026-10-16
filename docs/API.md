@@ -500,7 +500,7 @@ type PaymentProviderPlugin interface {
 }
 ```
 
-Two plugins ship with the module. `github.com/xraph/ledger/audit_hook` (package `audithook`) turns events into audit records through a `Recorder` you supply, and `observability.NewMetricsExtension(factory)` records counters and histograms through a `MetricFactory`.
+Two plugins ship with the module. `github.com/xraph/ledger/audit_hook` (package `audithook`) turns events into audit records through a `Recorder` you supply, and `observability.NewMetricsExtension(factory)` records counters and histograms through a `MetricFactory`. The engine's own spans and metrics need neither: `ledger.WithMetrics(m)` turns the metrics on, and the Forge extension passes `app.Metrics()` for you.
 
 ## Store interface
 

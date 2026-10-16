@@ -71,3 +71,43 @@ func TestStartMigratesByDefault(t *testing.T) {
 		t.Fatalf("Stop: %v", err)
 	}
 }
+
+// ctxIngest refuses a batch written on a context that has ended, as a real
+// driver does, and reports every write.
+type ctxIngest struct {
+	*memory.Store
+	written chan error
+}
+
+func (c ctxIngest) IngestBatch(ctx context.Context, events []*meter.UsageEvent) error {
+	err := ctx.Err()
+	if err == nil {
+		err = c.Store.IngestBatch(ctx, events)
+	}
+	c.written <- err
+	return err
+}
+
+func TestTheMeterFlusherOutlivesTheStartContext(t *testing.T) {
+	st := ctxIngest{Store: memory.New(), written: make(chan error, 1)}
+	l := ledger.New(st, ledger.WithLifecycleInterval(0), ledger.WithMeterConfig(1, time.Hour))
+	startCtx, cancel := context.WithCancel(context.Background())
+	if err := l.Start(startCtx); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	cancel()
+	defer l.Stop()
+
+	ctx := context.WithValue(context.WithValue(context.Background(), "tenant_id", "t1"), "app_id", "app_1")
+	if err := l.Meter(ctx, "api_calls", 1); err != nil {
+		t.Fatalf("Meter: %v", err)
+	}
+	select {
+	case err := <-st.written:
+		if err != nil {
+			t.Fatalf("the flusher wrote on the ended Start context and lost the batch: %v", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("the batch was never written")
+	}
+}

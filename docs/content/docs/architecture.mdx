@@ -125,7 +125,7 @@ type OnInvoiceGenerated interface {
 }
 ```
 
-Hooks are synchronous: the call that fires them waits for each plugin in turn, and most fire after the store write has landed. Each hook gets five seconds. An error or a timeout is logged and never fails the operation. The module ships two plugins, `audit_hook` and `observability`. See [Custom plugin](/docs/guides/custom-plugin).
+Hooks are synchronous: the call that fires them waits for each plugin in turn, and most fire after the store write has landed. Each hook gets five seconds. An error or a timeout is logged, counted on `ledger_plugin_hook_failures_total` when the engine has metrics, and never fails the operation. The module ships two plugins, `audit_hook` and `observability`. See [Custom plugin](/docs/guides/custom-plugin).
 
 ## Money
 
