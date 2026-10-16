@@ -1,4 +1,10 @@
 {
   "title": "Guides",
-  "pages": ["full-example", "forge-extension", "custom-store", "custom-plugin"]
+  "pages": [
+    "full-example",
+    "forge-extension",
+    "custom-store",
+    "custom-plugin",
+    "observability"
+  ]
 }

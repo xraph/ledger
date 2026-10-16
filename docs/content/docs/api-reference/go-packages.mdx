@@ -113,6 +113,7 @@ Options, all covered in [Configuration](/docs/concepts/configuration):
 | `WithEntitlementCacheTTL(time.Duration)` | `30s` |
 | `WithLifecycleInterval(time.Duration)` | `1m`; zero or less turns it off |
 | `WithClock(func() time.Time)` | `time.Now` |
+| `WithMetrics(metrics.Metrics)` (go-utils) | no metrics |
 | `WithoutMigrate()` | migrate on `Start` |
 
 Re-exports: `Money` and `Entity` (aliases for the `types` ones), `ID` and `Prefix` (aliases for the `id` ones), and the variables `USD`, `EUR`, `GBP`, `JPY`, `CAD`, `AUD`, `Zero`, `Sum` and `NewEntity`.

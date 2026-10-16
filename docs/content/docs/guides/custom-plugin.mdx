@@ -319,7 +319,7 @@ The package declares more action constants (`subscription.downgraded`, `subscrip
 
 ### observability
 
-`github.com/xraph/ledger/observability` counts billing events through a factory you provide:
+The engine records its own spans and metrics without any plugin (see [Observability](/docs/guides/observability)), so you only need this one for its dotted counters. `github.com/xraph/ledger/observability` counts billing events through a factory you provide:
 
 ```go
 type MetricFactory interface {

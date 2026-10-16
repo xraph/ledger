@@ -121,7 +121,7 @@ ext := ledgerext.New(
 
 `audithook` lives at `github.com/xraph/ledger/audit_hook`. `observability.NewMetricsExtension` takes an `observability.MetricFactory`, a two-method interface (`Counter(name)` and `Histogram(name)`) you adapt to your metrics backend. See [Custom plugin](/docs/guides/custom-plugin#built-in-plugins).
 
-The extension already hands the engine its own logger, so you only need `WithLedgerOption(ledger.WithLogger(...))` to replace it.
+The extension already hands the engine its own logger, so you only need `WithLedgerOption(ledger.WithLogger(...))` to replace it. It hands over the app's metrics the same way: the engine's spans go to Forge's tracer provider and its metrics land on `/_/metrics` as `forge_ledger_...`, with nothing for you to wire. [Observability](/docs/guides/observability) lists them. You don't need the `observability` plugin for any of that.
 
 ## YAML configuration
 

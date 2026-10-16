@@ -114,6 +114,7 @@ Billing code usually gets written twice. You write a quick quota check first, an
 | Exact money | `types.Money`, integer minor units with overflow-checked arithmetic |
 | Your own database | PostgreSQL, SQLite and MongoDB stores on [Grove](https://github.com/xraph/grove), plus an in-memory store for tests |
 | Hooks into billing events | A plugin registry with typed hooks, an audit trail bridge and a metrics plugin |
+| Telemetry | OpenTelemetry spans for lifecycle runs, meter flushes, invoicing and provider calls, plus metrics on Forge's `/_/metrics` or any go-utils sink |
 
 Every entity gets a [TypeID](https://github.com/jetify-com/typeid) with its own prefix (`plan_`, `sub_`, `inv_`, `cpn_` and so on), so an ID in a log line tells you what it points at.
 
@@ -192,6 +193,8 @@ Two plugins come in the box:
 | --- | --- |
 | `github.com/xraph/ledger/audit_hook` (package `audithook`) | Turns plan, subscription, invoice and quota events into audit records through a `Recorder` you pass in, such as a small adapter over [Chronicle](https://github.com/xraph/chronicle) |
 | `github.com/xraph/ledger/observability` | Counters and histograms for the same events, through `NewMetricsExtension(factory)` |
+
+You don't need that second plugin to see what the engine is doing. Ledger traces its own work on the global OpenTelemetry tracer: a lifecycle run that moved something, each meter flush, invoice generation, every payment provider call, and entitlement checks made inside a traced request. Idle clock ticks leave no trace. Pass `ledger.WithMetrics(m)` and it also records lifecycle runs and transitions, metered events (stored, lost to a failed flush, or refused by a full buffer), entitlement checks, invoice generation time, provider call time and failed plugin hooks. The Forge extension wires both for you, so in a Forge app they show up as `forge_ledger_...` on `/_/metrics`. The [observability guide](docs/content/docs/guides/observability.mdx) lists every span and metric.
 
 ## Use it with Forge
 

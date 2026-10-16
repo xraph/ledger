@@ -25,6 +25,7 @@ engine := ledger.New(store,
 | `WithEntitlementCacheTTL(time.Duration)` | `30s` | How long a quota answer stays in the store's entitlement cache. `0` makes every entry expire at once. |
 | `WithLifecycleInterval(time.Duration)` | `1m` | How often the background lifecycle clock calls `Advance`. Zero or less turns the clock off. |
 | `WithClock(func() time.Time)` | `time.Now` | Where the engine reads the time for lifecycle runs, new subscription periods and trials, invoice periods, coupon validity and due dates. Tests use it. A nil clock is ignored. |
+| `WithMetrics(metrics.Metrics)` | no metrics | Records the engine's metrics, and failed plugin hook calls, on a `github.com/xraph/go-utils/metrics` `Metrics`. The Forge extension passes `app.Metrics()`. Spans need no option. See [Observability](/docs/guides/observability). |
 | `WithoutMigrate()` | migrate on | `Start` skips `store.Migrate` and only starts the workers. Use it when you migrate the schema separately. |
 
 A few things aren't configurable. The meter buffer holds 10,000 events, and `Meter` returns `ledger.ErrMeterBufferFull` once it's full. `FinalizeInvoice` always sets a due date 30 days out. Each plugin hook gets 5 seconds before the registry stops waiting on it.
