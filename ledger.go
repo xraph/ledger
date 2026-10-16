@@ -171,9 +171,10 @@ func (l *Ledger) Start(ctx context.Context) error {
 	// Initialize plugins
 	l.plugins.EmitInit(ctx, l)
 
-	// Start meter flush worker
+	// Start meter flush worker. Like the lifecycle clock it outlives Start:
+	// Stop ends it, not ctx, which a caller may cancel once Start returns.
 	l.wg.Add(1)
-	go l.meterFlushWorker(ctx)
+	go l.meterFlushWorker(context.WithoutCancel(ctx))
 
 	// Start the lifecycle clock
 	if l.lifecycleInterval > 0 {
