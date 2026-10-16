@@ -161,7 +161,7 @@ func (e *Extension) Health(ctx context.Context) error {
 
 // buildLedgerOpts constructs ledger.Option values from the resolved config.
 func (e *Extension) buildLedgerOpts() []ledger.Option {
-	opts := make([]ledger.Option, 0, len(e.ledgerOpts)+6)
+	opts := make([]ledger.Option, 0, len(e.ledgerOpts)+7)
 
 	// Apply config-derived options.
 	if e.config.MeterBatchSize > 0 || e.config.MeterFlushInterval > 0 {
@@ -197,6 +197,13 @@ func (e *Extension) buildLedgerOpts() []ledger.Option {
 	// its no-op default. A pass-through WithLogger still comes later and wins.
 	if logger := e.Logger(); logger != nil {
 		opts = append(opts, ledger.WithLogger(logger))
+	}
+
+	// The engine records its metrics on the app's registry, so they land on
+	// /_/metrics beside forge's own. Before Register there is none and the
+	// engine records nothing. A pass-through WithMetrics comes later and wins.
+	if m := e.Metrics(); m != nil {
+		opts = append(opts, ledger.WithMetrics(m))
 	}
 
 	// Append any pass-through ledger options.
