@@ -2,7 +2,11 @@ package plugin
 
 import (
 	"context"
+	"errors"
+	"fmt"
 	"testing"
+
+	"github.com/xraph/ledger/internal/telemetrytest"
 )
 
 // stubAggregator satisfies UsageAggregator exactly; see plugin.go.
@@ -67,5 +71,54 @@ func TestRegistryDispatchesTheLifecycleHooks(t *testing.T) {
 		if h.calls[k] != 1 {
 			t.Errorf("%s: %d calls, want 1", k, h.calls[k])
 		}
+	}
+}
+
+// failingHooks fails OnPlanCreated in words that quote a customer, and
+// blocks OnPlanArchived until release is closed.
+type failingHooks struct{ release chan struct{} }
+
+func (h *failingHooks) Name() string { return "failing-hooks" }
+func (h *failingHooks) OnPlanCreated(context.Context, interface{}) error {
+	return errors.New("alice@example.com is not a customer")
+}
+
+func (h *failingHooks) OnPlanArchived(context.Context, string) error {
+	<-h.release
+	return nil
+}
+
+func TestFailedHooksAreCountedByHookAndReason(t *testing.T) {
+	sink := telemetrytest.NewSink()
+	r := NewRegistry().WithMetrics(sink)
+	h := &failingHooks{release: make(chan struct{})}
+	defer close(h.release)
+	if err := r.Register(h); err != nil {
+		t.Fatalf("Register: %v", err)
+	}
+
+	r.EmitPlanCreated(context.Background(), nil)
+	// The caller's context is already over, so the registry stops waiting on
+	// the hook at once.
+	canceled, cancel := context.WithCancel(context.Background())
+	cancel()
+	r.EmitPlanArchived(canceled, "plan_1")
+
+	if got := sink.Value(`ledger_plugin_hook_failures_total{hook="OnPlanCreated",reason="error"}`); got != 1 {
+		t.Errorf("OnPlanCreated errors = %v, want 1 (series: %v)", got, sink.Series())
+	}
+	if got := sink.Value(`ledger_plugin_hook_failures_total{hook="OnPlanArchived",reason="canceled"}`); got != 1 {
+		t.Errorf("OnPlanArchived cancels = %v, want 1 (series: %v)", got, sink.Series())
+	}
+}
+
+func TestHookTimeoutKeepsItsMessage(t *testing.T) {
+	r := NewRegistry()
+	reason, err := r.callWithTimeout(context.Background(), "p", func() error { return nil })
+	if reason != "" || err != nil {
+		t.Errorf("a hook that returned nil: %q, %v", reason, err)
+	}
+	if got := fmt.Errorf("%w: %s", errHookTimeout, "p").Error(); got != "plugin timeout: p" {
+		t.Errorf("timeout message %q, want the one the logs always carried", got)
 	}
 }
