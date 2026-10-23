@@ -298,6 +298,6 @@ The memory and SQLite stores run the conformance suite on every `go test`. Postg
 
 ## License
 
-See the [Ledger repository](https://github.com/xraph/ledger) for license terms.
+MIT. See [LICENSE](LICENSE).
 
 Ledger is part of the [forgery stack](https://github.com/xraph/forge#the-forgery-stack) built on [Forge](https://github.com/xraph/forge), by [Rex Raphael](https://github.com/juicycleff) and [contributors](https://github.com/xraph/ledger/graphs/contributors).
