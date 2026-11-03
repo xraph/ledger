@@ -1,0 +1,18 @@
+{
+  "id": "evt_invoice_failed",
+  "object": "event",
+  "api_version": "2026-10-28.endive",
+  "created": 1793750400,
+  "type": "invoice.payment_failed",
+  "data": {
+    "object": {
+      "id": "in_1",
+      "object": "invoice",
+      "customer": "cus_123",
+      "status": "open",
+      "amount_paid": 0,
+      "currency": "usd",
+      "metadata": {"ledger_invoice_id": "inv_01"}
+    }
+  }
+}

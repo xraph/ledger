@@ -1,0 +1,18 @@
+{
+  "id": "evt_invoice_paid",
+  "object": "event",
+  "api_version": "2026-10-28.endive",
+  "created": 1793750400,
+  "type": "invoice.paid",
+  "data": {
+    "object": {
+      "id": "in_1",
+      "object": "invoice",
+      "customer": "cus_123",
+      "status": "paid",
+      "amount_paid": 800,
+      "currency": "usd",
+      "metadata": {"ledger_invoice_id": "inv_01"}
+    }
+  }
+}

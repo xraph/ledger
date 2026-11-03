@@ -3,7 +3,8 @@
 // Ledger computes plans, prices and invoices; Stripe only collects. This
 // provider keeps no plans, prices or subscriptions on the Stripe side. It
 // holds one Stripe customer per tenant and the cards saved to it, captured
-// through Checkout in setup mode.
+// through Checkout in setup mode, and copies each finished Ledger invoice
+// into a Stripe invoice that charges the tenant's default card.
 package stripe
 
 import (
@@ -40,8 +41,9 @@ var (
 	// ErrMissingTenant is returned when a call is made without a tenant id.
 	ErrMissingTenant = errors.New("stripe: tenant id is required")
 
-	// errNotImplemented marks provider methods that are not built yet.
-	errNotImplemented = errors.New("stripe: not implemented")
+	// ErrNotPaid is returned by RefundInvoice when the Stripe invoice has no
+	// paid payment to refund.
+	ErrNotPaid = errors.New("stripe: invoice has no paid payment")
 )
 
 // Config configures a Provider.
@@ -116,21 +118,6 @@ func (p *Provider) SyncPlan(context.Context, *plan.Plan) (string, error) { retur
 
 // SyncFeature does nothing: Ledger owns features and Stripe never sees them.
 func (p *Provider) SyncFeature(context.Context, *feature.Feature) (string, error) { return "", nil }
-
-// SyncSubscription is not implemented yet.
-func (p *Provider) SyncSubscription(context.Context, *subscription.Subscription) (string, error) {
-	return "", errNotImplemented
-}
-
-// SyncInvoice is not implemented yet.
-func (p *Provider) SyncInvoice(context.Context, *invoice.Invoice) (string, error) {
-	return "", errNotImplemented
-}
-
-// HandleWebhook is not implemented yet.
-func (p *Provider) HandleWebhook(context.Context, []byte) (*provider.WebhookResult, error) {
-	return nil, errNotImplemented
-}
 
 // ImportPlan returns ErrUnsupported.
 func (p *Provider) ImportPlan(context.Context, string) (*plan.Plan, error) {

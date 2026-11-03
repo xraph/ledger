@@ -1,0 +1,14 @@
+{
+  "id": "evt_customer_updated",
+  "object": "event",
+  "api_version": "2026-10-28.endive",
+  "created": 1793750400,
+  "type": "customer.updated",
+  "data": {
+    "object": {
+      "id": "cus_123",
+      "object": "customer",
+      "metadata": {"ledger_tenant_id": "ten_1"}
+    }
+  }
+}

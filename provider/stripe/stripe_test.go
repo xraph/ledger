@@ -108,6 +108,13 @@ func (f *fakeStripe) requests(method, path string) []seenRequest {
 	return out
 }
 
+// all returns every request the fake has seen, in the order it saw them.
+func (f *fakeStripe) all() []seenRequest {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return append([]seenRequest(nil), f.seen...)
+}
+
 // total returns how many requests the fake has seen.
 func (f *fakeStripe) total() int {
 	f.mu.Lock()
@@ -338,7 +345,7 @@ func TestPlugin_ExposesProvider(t *testing.T) {
 	}
 }
 
-func TestUnsupportedAndStubbedMethods(t *testing.T) {
+func TestUnsupportedMethods(t *testing.T) {
 	f := newFakeStripe(t, nil)
 	p := newTestProvider(t, f, newMemCustomers())
 	ctx := context.Background()
@@ -360,15 +367,6 @@ func TestUnsupportedAndStubbedMethods(t *testing.T) {
 	}
 	if _, err := p.ImportInvoice(ctx, "x"); !errors.Is(err, ErrUnsupported) {
 		t.Errorf("ImportInvoice err = %v, want ErrUnsupported", err)
-	}
-	if _, err := p.SyncSubscription(ctx, nil); err == nil {
-		t.Error("SyncSubscription: want not-implemented error")
-	}
-	if _, err := p.SyncInvoice(ctx, nil); err == nil {
-		t.Error("SyncInvoice: want not-implemented error")
-	}
-	if _, err := p.HandleWebhook(ctx, nil); err == nil {
-		t.Error("HandleWebhook: want not-implemented error")
 	}
 }
 

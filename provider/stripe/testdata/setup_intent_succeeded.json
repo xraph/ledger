@@ -1,0 +1,17 @@
+{
+  "id": "evt_setup_succeeded",
+  "object": "event",
+  "api_version": "2026-10-28.endive",
+  "created": 1793750400,
+  "type": "setup_intent.succeeded",
+  "data": {
+    "object": {
+      "id": "seti_1",
+      "object": "setup_intent",
+      "customer": "cus_123",
+      "payment_method": "pm_9",
+      "status": "succeeded",
+      "metadata": {"ledger_tenant_id": "ten_1"}
+    }
+  }
+}
