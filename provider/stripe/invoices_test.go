@@ -55,6 +55,7 @@ func testInvoice() *invoice.Invoice {
 	return &invoice.Invoice{
 		ID:           invID,
 		TenantID:     "ten_1",
+		Status:       invoice.StatusPending,
 		Currency:     "usd",
 		Subtotal:     types.USD(1300),
 		CreditAmount: types.USD(500),
@@ -307,6 +308,51 @@ func TestSyncInvoice_ZeroTotalSkipped(t *testing.T) {
 	}
 	if n := f.total(); n != 0 {
 		t.Fatalf("Stripe saw %d requests, want 0 for a zero-total invoice", n)
+	}
+}
+
+func TestSyncInvoice_RefusesInvoicesNotDue(t *testing.T) {
+	for _, status := range []invoice.Status{invoice.StatusDraft, invoice.StatusPaid, invoice.StatusVoided, ""} {
+		t.Run(string(status), func(t *testing.T) {
+			f := newFakeStripe(t, invoiceRoutes())
+			p := providerWithCustomer(t, f)
+			inv := testInvoice()
+			inv.Status = status
+
+			got, err := p.SyncInvoice(context.Background(), inv)
+			if err == nil || !strings.Contains(err.Error(), "only pending or past_due") {
+				t.Fatalf("SyncInvoice = (%q, %v), want a status error", got, err)
+			}
+			if n := f.total(); n != 0 {
+				t.Fatalf("Stripe saw %d requests, want 0", n)
+			}
+		})
+	}
+}
+
+func TestSyncInvoice_SendsPastDueInvoices(t *testing.T) {
+	f := newFakeStripe(t, invoiceRoutes())
+	p := providerWithCustomer(t, f)
+	inv := testInvoice()
+	inv.Status = invoice.StatusPastDue
+
+	if got, err := p.SyncInvoice(context.Background(), inv); err != nil || got != "in_1" {
+		t.Fatalf("SyncInvoice = (%q, %v), want (in_1, nil)", got, err)
+	}
+}
+
+func TestSyncInvoice_AlreadySyncedReturnsItsID(t *testing.T) {
+	f := newFakeStripe(t, invoiceRoutes())
+	p := providerWithCustomer(t, f)
+	inv := testInvoice()
+	inv.ProviderName, inv.ProviderID = "stripe", "in_earlier"
+
+	got, err := p.SyncInvoice(context.Background(), inv)
+	if err != nil || got != "in_earlier" {
+		t.Fatalf("SyncInvoice = (%q, %v), want (in_earlier, nil)", got, err)
+	}
+	if n := f.total(); n != 0 {
+		t.Fatalf("Stripe saw %d requests, want 0", n)
 	}
 }
 

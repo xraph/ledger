@@ -41,8 +41,15 @@ func (p *Provider) SyncSubscription(ctx context.Context, s *subscription.Subscri
 // lines. If adding a line fails, the draft is deleted before the error is
 // returned.
 //
+// Only a pending or past-due invoice is sent; any other status is an error
+// and Stripe is not called. An invoice that already names a Stripe invoice
+// (ProviderName "stripe" and a ProviderID) returns that id, again without
+// calling Stripe.
+//
 // The lines must sum to the invoice total, or nothing is sent. A zero-total
-// invoice is not sent and returns ("", nil); a negative total is an error.
+// invoice is not sent and returns ("", nil); Ledger's SyncInvoiceToProvider
+// marks such an invoice paid without calling SyncInvoice at all. A negative
+// total is an error.
 //
 // Before creating anything it looks through the customer's 20 most recent
 // Stripe invoices for one carrying this Ledger invoice id. An open, paid or
@@ -62,6 +69,12 @@ func (p *Provider) SyncInvoice(ctx context.Context, inv *invoice.Invoice) (strin
 		return "", errors.New("stripe: sync invoice: invoice is nil")
 	}
 	invID := inv.ID.String()
+	if inv.Status != invoice.StatusPending && inv.Status != invoice.StatusPastDue {
+		return "", fmt.Errorf("stripe: sync invoice %s: status is %q, only pending or past_due invoices are sent", invID, inv.Status)
+	}
+	if inv.ProviderName == providerName && inv.ProviderID != "" {
+		return inv.ProviderID, nil
+	}
 	if inv.Total.Amount < 0 {
 		return "", fmt.Errorf("stripe: sync invoice %s: total %d is negative", invID, inv.Total.Amount)
 	}
