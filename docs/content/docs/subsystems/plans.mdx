@@ -103,7 +103,7 @@ Each pool becomes one negative `credit` line on the invoice, titled "<key> credi
 
 Credit comes off before coupons. A percentage coupon is taken on the subtotal less credit.
 
-A pool needs a unique key, an amount above zero in the plan's currency, and feature keys that exist on the plan and are metered. A feature can sit in one pool at most, so a unit of usage is never paid for twice. `CreatePlan`, `UpdatePlan` and `ActivatePlan` refuse anything else with `ErrInvalidCreditPool`.
+A pool needs a unique key, an amount above zero in the plan's currency, and at least one feature key. Each key has to exist on the plan, be metered, and appear once. A feature can sit in one pool at most, so a unit of usage is never paid for twice. `CreatePlan`, `UpdatePlan` and `ActivatePlan` refuse anything else with `ErrInvalidCreditPool`.
 
 ## Status
 

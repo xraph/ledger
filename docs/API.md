@@ -158,10 +158,17 @@ type Plan struct {
     TrialDays    int               `json:"trial_days"`
     Features     []Feature         `json:"features"`
     Pricing      *Pricing          `json:"pricing,omitempty"`
+    Credits      []CreditPool      `json:"credits,omitempty"`
     AppID        string            `json:"app_id"`
     ProviderID   string            `json:"provider_id,omitempty"`
     ProviderName string            `json:"provider_name,omitempty"`
     Metadata     map[string]string `json:"metadata,omitempty"`
+}
+
+type CreditPool struct {
+    Key         string      `json:"key"`
+    Amount      types.Money `json:"amount"`       // per billing period, in the plan's currency
+    FeatureKeys []string    `json:"feature_keys"` // metered features it pays for
 }
 
 type Feature struct {
@@ -195,6 +202,8 @@ type PriceTier struct {
     Priority   int         `json:"priority"`
 }
 ```
+
+Each credit pool cancels up to `Amount` of usage charges on its features every period, as one negative `credit` line on the invoice. A pool needs a key, an amount above zero in the plan's currency, and at least one feature. Every feature has to be a metered one on the plan, and a feature can sit in one pool at most. `CreatePlan` and `UpdatePlan` return `ErrInvalidCreditPool` otherwise.
 
 A metered feature's `Limit` is both the quota `Entitled` enforces and the allowance the invoice covers before overage. A boolean feature is allowed when its `Limit` is above zero. Two metadata keys change how a feature is billed: `pricing_strategy` (on the feature, or on the plan for all of its features) names a `PricingStrategy` plugin, and `aggregator` on the feature names a `UsageAggregator` plugin. An unregistered name falls back to the built-in tiers or a plain sum and logs a warning.
 
@@ -320,6 +329,7 @@ type Invoice struct {
     Currency       string            `json:"currency"`
     Subtotal       types.Money       `json:"subtotal"`
     TaxAmount      types.Money       `json:"tax_amount"`
+    CreditAmount   types.Money       `json:"credit_amount"`   // plan credit applied, always positive
     DiscountAmount types.Money       `json:"discount_amount"` // always positive
     Total          types.Money       `json:"total"`
     LineItems      []LineItem        `json:"line_items"`
@@ -343,13 +353,13 @@ type LineItem struct {
     Description string            `json:"description"`
     Quantity    int64             `json:"quantity"`
     UnitAmount  types.Money       `json:"unit_amount"` // zero for tier-priced lines
-    Amount      types.Money       `json:"amount"`      // negative for a discount line
-    Type        LineItemType      `json:"type"`        // "base", "usage", "overage", "seat", "discount", "tax"
+    Amount      types.Money       `json:"amount"`      // negative for a credit or discount line
+    Type        LineItemType      `json:"type"`        // "base", "usage", "overage", "seat", "credit", "discount", "tax"
     Metadata    map[string]string `json:"metadata,omitempty"`
 }
 ```
 
-When a discount is larger than the subtotal, the net amount clamps at zero before tax, so `Total` never goes negative.
+`Total` is the subtotal less credit and discount, plus tax. When credit and discount together come to more than the subtotal, the net amount clamps at zero before tax, so `Total` never goes negative.
 
 ### Coupons
 
@@ -402,7 +412,7 @@ type LifecycleReport struct {
 
 ### Payment providers
 
-Ledger ships no payment provider. You write one against `provider.Provider` and register it through a plugin that implements `plugin.PaymentProviderPlugin`:
+Ledger ships a Stripe provider in `provider/stripe` (see the [Stripe provider page](content/docs/subsystems/stripe.mdx)). For anything else, you write one against `provider.Provider` and register it through a plugin that implements `plugin.PaymentProviderPlugin`:
 
 ```go
 type Provider interface {

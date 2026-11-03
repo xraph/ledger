@@ -220,7 +220,7 @@ if err := sp.Verify(payload, r.Header.Get("Stripe-Signature")); err != nil {
 res, err := engine.HandleWebhook(ctx, "stripe", payload)
 ```
 
-Create the webhook endpoint in Stripe on API version `2026-10-28.endive`, because `Verify` refuses events from any other. Keep the Stripe invoice id that `SyncInvoice` returns, run one sync per invoice at a time, and give every refund its own `refundKey` (reused on retries). The [Stripe provider page](docs/content/docs/subsystems/stripe.mdx) has the webhook handler in full.
+Create the webhook endpoint in Stripe on API version `2026-10-28.endive`. `Verify` refuses an event from another release train, though stripe-go only compares the part after the dot, so any `*.endive` version gets through. Keep the Stripe invoice id that `SyncInvoice` returns, run one sync per invoice at a time, and give every refund its own `refundKey` (reused on retries). The [Stripe provider page](docs/content/docs/subsystems/stripe.mdx) has the webhook handler in full.
 
 ## Plugins, audit and metrics
 

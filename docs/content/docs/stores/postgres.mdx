@@ -53,7 +53,7 @@ engine := ledger.New(s, ledger.WithoutMigrate())
 
 | Table | Holds |
 |-------|-------|
-| `ledger_plans` | Plans, with `features` and `pricing` as JSONB |
+| `ledger_plans` | Plans, with `features`, `pricing` and `credits` as JSONB |
 | `ledger_features` | The feature catalog |
 | `ledger_subscriptions` | Subscriptions, with period, trial, cancel, pause and seat columns |
 | `ledger_usage_events` | Usage events |

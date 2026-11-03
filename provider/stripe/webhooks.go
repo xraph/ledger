@@ -15,8 +15,10 @@ import (
 
 // Verify checks a webhook payload against its Stripe-Signature header using
 // the configured webhook secret. It rejects a missing or wrong signature, a
-// signature older than five minutes, and an event from an API version other
-// than the one this provider is built against. Call it before HandleWebhook.
+// signature older than five minutes, and an event from another release
+// train. stripe-go compares only the train, the part after the dot, so any
+// "*.endive" version passes while a "*.dahlia" one or an undotted pre-train
+// version is refused. Call it before HandleWebhook.
 func (p *Provider) Verify(payload []byte, signatureHeader string) error {
 	if signatureHeader == "" {
 		return errors.New("stripe: verify webhook: missing Stripe-Signature header")
