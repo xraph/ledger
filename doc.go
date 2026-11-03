@@ -78,7 +78,8 @@
 // Entitled reads a store outage as no access. Check returns the same answer
 // but reports an outage as an error wrapping ErrUnavailable. MeterWithKey is
 // Meter for an event with an idempotency key: the store counts a key once, and
-// a failed write is retried instead of dropped.
+// a failed write is retried instead of dropped. The key is global across tenants
+// and apps, so namespace it, for example "<tenant>/<app>/<message id>".
 //
 // All monetary calculations use integer arithmetic to avoid floating-point
 // precision issues. The Money type represents amounts in the smallest currency

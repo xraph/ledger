@@ -100,9 +100,13 @@ You should know two things before you go further. First, `Entitled` and `Meter` 
 
 ### Counting an event once, and telling an outage from a no
 
-`Meter` is fire and forget. If the write to the store fails, the event is dropped and the meter events metric counts it. When you can't afford that, call `l.MeterWithKey(ctx, "api_calls", 1, key)` with a key that names the thing you're billing for, such as a message id. The store counts a key once, so a replay adds nothing. A keyed event whose write fails is held and retried after one second, then two, doubling up to thirty, ahead of newer events, until the store takes it. `Stop` makes one last attempt. Held events count against the buffer, so a long outage ends in `ErrMeterBufferFull` from `MeterWithKey` and not in unbounded memory.
+`Meter` is fire and forget. If the write to the store fails, the event is dropped and the meter events metric counts it. When you can't afford that, call `l.MeterWithKey(ctx, "api_calls", 1, key)` with a key that names the thing you're billing for, such as a message id. The store counts a key once, so a replay adds nothing.
 
-`Entitled` reads a store outage as "no access", because the callers that exist today rely on that. If you'd rather decide for yourself whether to fail open or closed, call `l.Check(ctx, "api_calls")`. It returns the same `Result` from the same cache, plans and quotas, but a store failure comes back as an error that wraps `ErrUnavailable`.
+The key is unique across every tenant and every app, not just the tenant in your context. Every store dedupes on the key alone, so if two tenants both send the key `42`, the second event is dropped and nothing tells you. Namespace the key yourself, for example `<tenant>/<app>/<message id>`. It has to be non-empty, valid UTF-8, free of NUL bytes and at most 255 bytes, or you get `ErrInvalidInput`.
+
+A keyed event whose write fails is held and retried after one second, then two, doubling up to thirty, ahead of newer events, until the store takes it. `Stop` makes one last attempt. Held events count against the buffer along with the ones waiting in it, so a long outage ends in `ErrMeterBufferFull` from `MeterWithKey` and not in unbounded memory. Once you've called `Stop`, `Meter` and `MeterWithKey` return an error wrapping `ErrStoreClosed` instead of accepting events nothing will flush.
+
+`Entitled` reads a store outage as "no access", because the callers that exist today rely on that. If you'd rather decide for yourself whether to fail open or closed, call `l.Check(ctx, "api_calls")`. It returns the same `Result` from the same cache, plans and quotas, but a store failure comes back as an error that wraps `ErrUnavailable`. If your own context is cancelled or times out, you get that context error back instead, so it doesn't look like an outage.
 
 ## Why Ledger?
 

@@ -8,6 +8,7 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
+	"unicode/utf8"
 
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/trace"
@@ -39,8 +40,9 @@ type Ledger struct {
 	// Background workers
 	meterBuffer chan *meter.UsageEvent
 	// retained counts keyed events the flush worker is holding for retry. They
-	// have left meterBuffer, so it counts them toward the buffer's capacity to
-	// keep a long outage from growing memory without bound.
+	// have left meterBuffer, so MeterWithKey adds them to len(meterBuffer) when
+	// it checks the buffer's capacity, which keeps a long outage from growing
+	// memory without bound.
 	retained atomic.Int64
 	stopChan chan struct{}
 	wg       sync.WaitGroup
@@ -494,29 +496,66 @@ func (l *Ledger) CancelSubscription(ctx context.Context, subID id.SubscriptionID
 //
 // The event is buffered and written by a background worker. If that write
 // fails the event is dropped and counted. Use MeterWithKey when the event must
-// survive a store outage and must not count twice.
+// survive a store outage and must not count twice. After Stop it returns an
+// error wrapping ErrStoreClosed.
 func (l *Ledger) Meter(ctx context.Context, featureKey string, quantity int64) error {
 	return l.meter(ctx, featureKey, quantity, "")
 }
 
 // MeterWithKey is Meter for an event that carries an idempotency key. The store
 // counts a key once, so sending the same key again, from a retry of your own or
-// a replay, adds nothing. An empty key is refused with ErrInvalidInput.
+// a replay, adds nothing.
+//
+// The key is unique across every tenant and every app, not within the tenant in
+// the context. Every store dedupes on the key alone, so two tenants that send
+// the same key have the second event dropped without an error. Namespace it
+// yourself, for example "<tenant>/<app>/<message id>".
+//
+// A key must be non-empty, valid UTF-8, free of NUL bytes and at most 255 bytes
+// long, or the call returns ErrInvalidInput. A key a store would always reject
+// would otherwise sit in the retry queue until Stop.
 //
 // A keyed event whose write fails is not dropped. The worker keeps it and tries
 // again with a growing wait (one second, doubling to thirty), ahead of newer
 // events, until the store takes it or Stop makes a last attempt. While events
-// are held they count against the buffer, so a long outage ends in
-// ErrMeterBufferFull from this method, not in unbounded memory.
+// are held they count against the buffer together with the events waiting in
+// it, so a long outage ends in ErrMeterBufferFull from this method, not in
+// unbounded memory.
 func (l *Ledger) MeterWithKey(ctx context.Context, featureKey string, quantity int64, idempotencyKey string) error {
-	if idempotencyKey == "" {
-		return fmt.Errorf("%w: an idempotency key is required", ErrInvalidInput)
+	if err := validateIdempotencyKey(idempotencyKey); err != nil {
+		return err
 	}
 
 	return l.meter(ctx, featureKey, quantity, idempotencyKey)
 }
 
+// maxIdempotencyKeyLen is the longest key MeterWithKey accepts, in bytes.
+const maxIdempotencyKeyLen = 255
+
+func validateIdempotencyKey(key string) error {
+	switch {
+	case key == "":
+		return fmt.Errorf("%w: an idempotency key is required", ErrInvalidInput)
+	case len(key) > maxIdempotencyKeyLen:
+		return fmt.Errorf("%w: an idempotency key is at most %d bytes", ErrInvalidInput, maxIdempotencyKeyLen)
+	case !utf8.ValidString(key):
+		return fmt.Errorf("%w: an idempotency key must be valid UTF-8", ErrInvalidInput)
+	case strings.ContainsRune(key, 0):
+		return fmt.Errorf("%w: an idempotency key cannot contain a NUL byte", ErrInvalidInput)
+	}
+
+	return nil
+}
+
 func (l *Ledger) meter(ctx context.Context, featureKey string, quantity int64, idempotencyKey string) error {
+	// After Stop nothing flushes the buffer, so an accepted event would be lost
+	// without a word.
+	select {
+	case <-l.stopChan:
+		return fmt.Errorf("%w: the ledger is stopped", ErrStoreClosed)
+	default:
+	}
+
 	// Extract tenant and app from context
 	tenantID := extractTenantID(ctx)
 	appID := extractAppID(ctx)
@@ -535,7 +574,7 @@ func (l *Ledger) meter(ctx context.Context, featureKey string, quantity int64, i
 		IdempotencyKey: idempotencyKey,
 	}
 
-	if idempotencyKey != "" && l.retained.Load() >= int64(cap(l.meterBuffer)) {
+	if idempotencyKey != "" && l.retained.Load()+int64(len(l.meterBuffer)) >= int64(cap(l.meterBuffer)) {
 		l.metrics.meterEvents.Inc(resultBufferFull)
 		return ErrMeterBufferFull
 	}
@@ -753,7 +792,9 @@ func (l *Ledger) Entitled(ctx context.Context, featureKey string) (*entitlement.
 // lookup that fails with anything other than ErrNoActiveSubscription or
 // ErrSubscriptionNotFound, and a usage aggregate that fails, return a nil
 // result and an error that wraps ErrUnavailable (and the store's own error), so
-// a caller can fail open or closed on purpose.
+// a caller can fail open or closed on purpose. A failure caused by the caller's
+// own cancelled or expired context comes back as that context error, not as
+// ErrUnavailable.
 func (l *Ledger) Check(ctx context.Context, featureKey string) (*entitlement.Result, error) {
 	return l.checkEntitlement(ctx, featureKey, true)
 }
@@ -833,6 +874,17 @@ func (l *Ledger) entitled(ctx context.Context, featureKey string, strict bool) (
 	return result, kind, nil
 }
 
+// unavailable wraps a store failure in ErrUnavailable for Check. A context
+// error is the caller's own cancellation or deadline, not the store being down,
+// so it passes through as it is and IsRetryable stays false for it.
+func unavailable(err error) error {
+	if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+		return err
+	}
+
+	return fmt.Errorf("%w: %w", ErrUnavailable, err)
+}
+
 type entitlementKind int
 
 const (
@@ -853,7 +905,7 @@ func (l *Ledger) computeEntitlement(ctx context.Context, tenantID, appID, featur
 	sub, err := l.store.GetActiveSubscription(ctx, tenantID, appID)
 	if err != nil {
 		if strict && !errors.Is(err, ErrNoActiveSubscription) && !errors.Is(err, ErrSubscriptionNotFound) {
-			return nil, entitlementNoAccess, fmt.Errorf("%w: %w", ErrUnavailable, err)
+			return nil, entitlementNoAccess, unavailable(err)
 		}
 
 		return &entitlement.Result{
@@ -867,7 +919,7 @@ func (l *Ledger) computeEntitlement(ctx context.Context, tenantID, appID, featur
 	p, err := l.store.GetPlan(ctx, sub.PlanID)
 	if err != nil {
 		if strict && !errors.Is(err, ErrPlanNotFound) {
-			return nil, entitlementNoAccess, fmt.Errorf("%w: %w", ErrUnavailable, err)
+			return nil, entitlementNoAccess, unavailable(err)
 		}
 
 		return &entitlement.Result{
@@ -901,7 +953,7 @@ func (l *Ledger) computeEntitlement(ctx context.Context, tenantID, appID, featur
 	used, err := l.store.Aggregate(ctx, tenantID, appID, featureKey, feat.Period)
 	if err != nil {
 		if strict {
-			return nil, entitlementMetered, fmt.Errorf("%w: %w", ErrUnavailable, err)
+			return nil, entitlementMetered, unavailable(err)
 		}
 
 		return nil, entitlementMetered, err

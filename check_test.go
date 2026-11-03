@@ -3,6 +3,7 @@ package ledger_test
 import (
 	"context"
 	"errors"
+	"fmt"
 	"reflect"
 	"testing"
 	"time"
@@ -141,6 +142,27 @@ func TestCheckReportsStoreOutage(t *testing.T) {
 
 		if _, err := l.Check(ctx, "api_calls"); !errors.Is(err, ledger.ErrUnavailable) || !errors.Is(err, down) {
 			t.Errorf("Check err = %v, want ErrUnavailable wrapping the cause", err)
+		}
+	})
+
+	t.Run("the caller's own cancellation is not an outage", func(t *testing.T) {
+		cases := map[string]error{
+			"canceled": context.Canceled,
+			"deadline": context.DeadlineExceeded,
+			"wrapped":  fmt.Errorf("query: %w", context.Canceled),
+		}
+		for name, cause := range cases {
+			l := ledger.New(&outageStore{Store: memory.New(), lookupErr: cause})
+			res, err := l.Check(ctx, "api_calls")
+			if err == nil || res != nil {
+				t.Fatalf("%s: Check = %+v, %v, want an error and no result", name, res, err)
+			}
+			if errors.Is(err, ledger.ErrUnavailable) || ledger.IsRetryable(err) {
+				t.Errorf("%s: %v reads as an outage, want the context error passed through", name, err)
+			}
+			if !errors.Is(err, cause) {
+				t.Errorf("%s: %v does not wrap the context error", name, err)
+			}
 		}
 	})
 
