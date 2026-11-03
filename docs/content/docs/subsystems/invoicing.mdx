@@ -21,7 +21,7 @@ The lines are built in a fixed order:
 | 1 | `base` | "Base subscription fee" | `Pricing.BaseAmount`, when it's above zero |
 | 2 | `overage` | "&lt;feature name&gt; overage" | One per metered feature whose usage in the period passed its `Limit`, priced by its tiers. `Quantity` is the units past the limit |
 | 3 | `seat` | the feature name | One per seat feature with a seat count above zero, priced by its tiers. `Quantity` is the seat count |
-| 4 | `credit` | "&lt;pool key&gt; monthly credit" | One per plan credit pool that has usage to cancel, as a negative amount. See [credit pools](/docs/subsystems/plans#credit-pools) |
+| 4 | `credit` | "&lt;pool key&gt; credit" | One per plan credit pool that has usage to cancel, as a negative amount. See [credit pools](/docs/subsystems/plans#credit-pools) |
 | 5 | `discount` | "Discount &lt;code&gt;" | One per applied coupon, as a negative amount |
 | 6 | `tax` | "Tax" | The sum from every `TaxCalculator` plugin, when it's above zero |
 

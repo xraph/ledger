@@ -24,7 +24,7 @@ func creditLines(p *plan.Plan, items []invoice.LineItem, invID id.InvoiceID, cur
 
 	for _, pool := range p.Credits {
 		if pc := strings.ToLower(pool.Amount.Currency); pc != currency {
-			return nil, types.Money{}, fmt.Errorf("credit pool %q is in %q, plan bills in %q", pool.Key, pc, currency)
+			return nil, types.Money{}, fmt.Errorf("%w: pool %q is in %q, plan bills in %q", ErrInvalidCreditPool, pool.Key, pc, currency)
 		}
 
 		inPool := make(map[string]bool, len(pool.FeatureKeys))
@@ -58,7 +58,7 @@ func creditLines(p *plan.Plan, items []invoice.LineItem, invID id.InvoiceID, cur
 		lines = append(lines, invoice.LineItem{
 			ID:          id.NewLineItemID(),
 			InvoiceID:   invID,
-			Description: pool.Key + " monthly credit",
+			Description: pool.Key + " credit",
 			Quantity:    1,
 			UnitAmount:  credit.Negate(),
 			Amount:      credit.Negate(),

@@ -1763,7 +1763,7 @@ func TestGenerateInvoice_CreditCoversPartialUsage(t *testing.T) {
 	}
 	c := credit[0]
 	if c.Amount.Amount != -300 || c.UnitAmount.Amount != -300 || c.Quantity != 1 || c.FeatureKey != "" ||
-		c.Description != "usage monthly credit" || c.Metadata["credit_pool"] != "usage" {
+		c.Description != "usage credit" || c.Metadata["credit_pool"] != "usage" {
 		t.Errorf("unexpected credit line %+v", c)
 	}
 	if inv.CreditAmount.Amount != 300 || inv.CreditAmount.Currency != "usd" {
@@ -1872,5 +1872,16 @@ func TestGenerateInvoice_CreditBeforeCoupon(t *testing.T) {
 	}
 	if inv.Total.Amount != 720 {
 		t.Errorf("got total %v, want 720", inv.Total)
+	}
+}
+
+func TestGenerateInvoice_CreditPoolInAnotherCurrencyIsInvalid(t *testing.T) {
+	pool := usagePool()
+	pool.Amount = types.EUR(500)
+	l, s, sub := creditFixture(t, pool)
+	ingestFeature(t, s, sub, "compute", 3)
+
+	if _, err := l.GenerateInvoice(context.Background(), sub.ID); !errors.Is(err, ledger.ErrInvalidCreditPool) {
+		t.Fatalf("got %v, want ErrInvalidCreditPool", err)
 	}
 }

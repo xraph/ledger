@@ -99,7 +99,7 @@ pro.Credits = []plan.CreditPool{
 }
 ```
 
-Each pool becomes one negative `credit` line on the invoice, titled "<key> monthly credit". The credit is the smaller of the pool's amount and the usage charges already on the invoice for its features, so a pool only ever cancels usage. It never touches the base fee or seat charges, it never goes below zero, and a pool with no usage to cancel adds no line. Unused credit doesn't roll over. The sum of the credits is `Invoice.CreditAmount`.
+Each pool becomes one negative `credit` line on the invoice, titled "<key> credit". The credit is the smaller of the pool's amount and the usage charges already on the invoice for its features, so a pool only ever cancels usage. It never touches the base fee or seat charges, it never goes below zero, and a pool with no usage to cancel adds no line. Unused credit doesn't roll over. The sum of the credits is `Invoice.CreditAmount`.
 
 Credit comes off before coupons. A percentage coupon is taken on the subtotal less credit.
 
