@@ -448,14 +448,17 @@ func validateImportedSubscriptionPeriod(s *subscription.Subscription, providerID
 // validateImportedInvoice refuses a provider invoice the engine would never
 // have written, so a bad figure cannot reach the books through an import. It
 // follows GenerateInvoice's own arithmetic rather than the plain reading of
-// "line items sum to the subtotal": the engine's line items include discount
-// lines (negative) and tax lines (positive) beside the charges, so the charge
-// lines (base, usage, overage and seat) sum to Subtotal, any discount lines
-// sum to minus DiscountAmount, any tax lines sum to TaxAmount, and Total is the
-// net amount clamped at zero, plus tax. A provider that sends no discount or tax lines
-// and only a figure for them is still accepted, since those lines are
-// optional there. A line of any other type is refused: the dashboard groups
-// lines by these six types, so a line outside them would count toward the
+// "line items sum to the subtotal": the engine's line items include credit
+// and discount lines (negative) and tax lines (positive) beside the charges,
+// so the charge lines (base, usage, overage and seat) sum to Subtotal, the
+// credit lines sum to minus CreditAmount, any discount lines sum to minus
+// DiscountAmount, any tax lines sum to TaxAmount, and Total is the subtotal
+// less credit and discount, clamped at zero, plus tax. A provider that sends
+// no discount or tax lines and only a figure for them is still accepted,
+// since those lines are optional there; credit is not, because the engine
+// writes a credit line for every pool it applies. A CreditAmount left unset
+// reads as zero. A line of any other type is refused: the dashboard groups
+// lines by these seven types, so a line outside them would count toward the
 // subtotal and appear on no page.
 func validateImportedInvoice(inv *invoice.Invoice, p *plan.Plan) error {
 	bad := func(format string, args ...any) error {
@@ -465,10 +468,16 @@ func validateImportedInvoice(inv *invoice.Invoice, p *plan.Plan) error {
 	if inv.Currency != currency {
 		return bad("is in %q, but plan %q bills in lowercase %q", inv.Currency, p.Slug, currency)
 	}
+	if inv.CreditAmount == (types.Money{}) {
+		inv.CreditAmount = types.Zero(currency)
+	}
 	for _, f := range []struct {
 		name string
 		m    types.Money
-	}{{"subtotal", inv.Subtotal}, {"tax amount", inv.TaxAmount}, {"discount amount", inv.DiscountAmount}, {"total", inv.Total}} {
+	}{
+		{"subtotal", inv.Subtotal}, {"tax amount", inv.TaxAmount}, {"credit amount", inv.CreditAmount},
+		{"discount amount", inv.DiscountAmount}, {"total", inv.Total},
+	} {
 		if f.m.Currency != currency {
 			return bad("has its %s in %q, want %q", f.name, f.m.Currency, currency)
 		}
@@ -477,7 +486,7 @@ func validateImportedInvoice(inv *invoice.Invoice, p *plan.Plan) error {
 		}
 	}
 
-	charges, discounts, taxes := types.Zero(currency), types.Zero(currency), types.Zero(currency)
+	charges, credits, discounts, taxes := types.Zero(currency), types.Zero(currency), types.Zero(currency), types.Zero(currency)
 	var hasDiscount, hasTax bool
 	for i, li := range inv.LineItems {
 		if li.Amount.Currency != currency || li.UnitAmount.Currency != currency {
@@ -486,6 +495,8 @@ func validateImportedInvoice(inv *invoice.Invoice, p *plan.Plan) error {
 		sum := &charges
 		switch li.Type {
 		case invoice.LineItemBase, invoice.LineItemUsage, invoice.LineItemOverage, invoice.LineItemSeat:
+		case invoice.LineItemCredit:
+			sum = &credits
 		case invoice.LineItemDiscount:
 			sum, hasDiscount = &discounts, true
 		case invoice.LineItemTax:
@@ -502,6 +513,9 @@ func validateImportedInvoice(inv *invoice.Invoice, p *plan.Plan) error {
 	if !charges.Equal(inv.Subtotal) {
 		return bad("has line items charging %v but a subtotal of %v", charges, inv.Subtotal)
 	}
+	if !credits.Negate().Equal(inv.CreditAmount) {
+		return bad("has credit lines of %v but a credit amount of %v", credits.Negate(), inv.CreditAmount)
+	}
 	if hasDiscount && !discounts.Negate().Equal(inv.DiscountAmount) {
 		return bad("has discount lines of %v but a discount amount of %v", discounts.Negate(), inv.DiscountAmount)
 	}
@@ -509,9 +523,13 @@ func validateImportedInvoice(inv *invoice.Invoice, p *plan.Plan) error {
 		return bad("has tax lines of %v but a tax amount of %v", taxes, inv.TaxAmount)
 	}
 
-	net, err := inv.Subtotal.CheckedSubtract(inv.DiscountAmount)
+	net, err := inv.Subtotal.CheckedSubtract(inv.CreditAmount)
 	if err != nil {
-		return bad("has a subtotal and discount that overflow: %v", err)
+		return bad("has a subtotal and credit that overflow: %v", err)
+	}
+	net, err = net.CheckedSubtract(inv.DiscountAmount)
+	if err != nil {
+		return bad("has a subtotal, credit and discount that overflow: %v", err)
 	}
 	if net.IsNegative() {
 		net = types.Zero(currency)
@@ -521,7 +539,7 @@ func validateImportedInvoice(inv *invoice.Invoice, p *plan.Plan) error {
 		return bad("has a total that overflows: %v", err)
 	}
 	if !want.Equal(inv.Total) {
-		return bad("has a total of %v, but its subtotal, discount and tax make %v", inv.Total, want)
+		return bad("has a total of %v, but its subtotal, credit, discount and tax make %v", inv.Total, want)
 	}
 
 	if inv.PeriodStart.IsZero() || inv.PeriodEnd.IsZero() {
