@@ -20,13 +20,16 @@ type CustomerStore interface {
 }
 
 // EnsureCustomer returns the tenant's Stripe customer id, creating the
-// customer on first call. Creation uses the idempotency key
-// "customer:<tenantID>", so a retry after a lost response or a failed
-// SetCustomerID gets the same customer back.
+// customer on first call. Creation sends the idempotency key
+// "customer:<tenantID>". Stripe only honours that key for about 24 hours and
+// only for identical parameters: a retry inside the window with the same
+// email and name gets the same customer back, a retry with a different email
+// or name fails with Stripe's idempotency_error, and a retry after the window
+// creates a second customer.
 func (p *Provider) EnsureCustomer(ctx context.Context, tenantID, email, name string) (string, error) {
-	id, err := p.customers.CustomerID(ctx, tenantID)
+	id, err := p.customerID(ctx, tenantID)
 	if err != nil {
-		return "", fmt.Errorf("stripe: look up customer for tenant %s: %w", tenantID, err)
+		return "", err
 	}
 	if id != "" {
 		return id, nil
@@ -68,6 +71,7 @@ func (p *Provider) CreateSetupSession(ctx context.Context, tenantID, successURL,
 	params := &stripego.CheckoutSessionCreateParams{
 		Mode:                      stripego.String(string(stripego.CheckoutSessionModeSetup)),
 		Customer:                  stripego.String(customerID),
+		Currency:                  stripego.String(p.currency),
 		AllowedPaymentMethodTypes: []*string{stripego.String("card")},
 		SuccessURL:                stripego.String(successURL),
 		CancelURL:                 stripego.String(cancelURL),
@@ -115,8 +119,12 @@ func (p *Provider) ListPaymentMethods(ctx context.Context, tenantID string) ([]p
 	return methods, nil
 }
 
-// customerID reads the tenant's Stripe customer id from the store.
+// customerID reads the tenant's Stripe customer id from the store. An empty
+// tenant id is rejected with ErrMissingTenant.
 func (p *Provider) customerID(ctx context.Context, tenantID string) (string, error) {
+	if tenantID == "" {
+		return "", ErrMissingTenant
+	}
 	id, err := p.customers.CustomerID(ctx, tenantID)
 	if err != nil {
 		return "", fmt.Errorf("stripe: look up customer for tenant %s: %w", tenantID, err)

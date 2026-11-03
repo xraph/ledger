@@ -126,7 +126,11 @@ func toPlanModel(p *plan.Plan) *planModel {
 		}
 	}
 
+	// credits stays nil for a plan without pools, so omitempty drops the field.
 	var credits []creditPoolModel
+	if len(p.Credits) > 0 {
+		credits = make([]creditPoolModel, 0, len(p.Credits))
+	}
 	for _, c := range p.Credits {
 		credits = append(credits, creditPoolModel{
 			Key: c.Key, Cents: c.Amount.Amount, Currency: c.Amount.Currency, FeatureKeys: c.FeatureKeys,

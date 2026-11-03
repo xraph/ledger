@@ -9,6 +9,7 @@ package stripe
 import (
 	"context"
 	"errors"
+	"strings"
 
 	stripego "github.com/stripe/stripe-go/v87"
 
@@ -36,6 +37,9 @@ var (
 	// Call EnsureCustomer first.
 	ErrNoCustomer = errors.New("stripe: tenant has no stripe customer")
 
+	// ErrMissingTenant is returned when a call is made without a tenant id.
+	ErrMissingTenant = errors.New("stripe: tenant id is required")
+
 	// errNotImplemented marks provider methods that are not built yet.
 	errNotImplemented = errors.New("stripe: not implemented")
 )
@@ -49,6 +53,9 @@ type Config struct {
 	WebhookSecret string
 	// Customers maps Ledger tenants to Stripe customer ids.
 	Customers CustomerStore
+	// Currency is the ISO currency code sent on setup-mode Checkout
+	// sessions. Empty means "usd"; it is lowercased.
+	Currency string
 	// Backend overrides the Stripe API backend. Tests only; nil uses
 	// Stripe's API.
 	Backend stripego.Backend
@@ -58,8 +65,12 @@ type Config struct {
 type Provider struct {
 	client        *stripego.Client
 	customers     CustomerStore
+	currency      string
 	webhookSecret string
 }
+
+// defaultCurrency is used when Config.Currency is empty.
+const defaultCurrency = "usd"
 
 var _ provider.Provider = (*Provider)(nil)
 
@@ -84,9 +95,15 @@ func New(cfg Config) (*Provider, error) {
 		}))
 	}
 
+	currency := strings.ToLower(strings.TrimSpace(cfg.Currency))
+	if currency == "" {
+		currency = defaultCurrency
+	}
+
 	return &Provider{
 		client:        stripego.NewClient(cfg.SecretKey, opts...),
 		customers:     cfg.Customers,
+		currency:      currency,
 		webhookSecret: cfg.WebhookSecret,
 	}, nil
 }

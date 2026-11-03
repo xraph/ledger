@@ -108,6 +108,13 @@ func (f *fakeStripe) requests(method, path string) []seenRequest {
 	return out
 }
 
+// total returns how many requests the fake has seen.
+func (f *fakeStripe) total() int {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return len(f.seen)
+}
+
 func (f *fakeStripe) backend() stripego.Backend {
 	return stripego.GetBackendWithConfig(stripego.APIBackend, &stripego.BackendConfig{
 		URL:               stripego.String(f.srv.URL),
@@ -200,6 +207,7 @@ func TestCreateSetupSession_ModeSetup(t *testing.T) {
 	form := reqs[0].Form
 	want := map[string]string{
 		"mode":                            "setup",
+		"currency":                        "usd",
 		"customer":                        "cus_123",
 		"allowed_payment_method_types[0]": "card",
 		"metadata[ledger_tenant_id]":      "ten_1",
@@ -268,8 +276,8 @@ func TestListPaymentMethods_NoCustomer(t *testing.T) {
 	if len(got) != 0 {
 		t.Fatalf("got %+v, want none", got)
 	}
-	if f.requests(http.MethodGet, "/v1/customers/cus_123") != nil {
-		t.Fatal("expected no Stripe calls without a customer")
+	if n := f.total(); n != 0 {
+		t.Fatalf("Stripe saw %d requests, want 0 without a customer", n)
 	}
 }
 
@@ -362,4 +370,121 @@ func TestUnsupportedAndStubbedMethods(t *testing.T) {
 	if _, err := p.HandleWebhook(ctx, nil); err == nil {
 		t.Error("HandleWebhook: want not-implemented error")
 	}
+}
+
+func TestCreateSetupSession_CurrencyFromConfig(t *testing.T) {
+	f := newFakeStripe(t, map[string]string{
+		"POST /v1/checkout/sessions": `{"id":"cs_1","object":"checkout.session","url":"https://checkout.stripe.com/c/cs_1"}`,
+	})
+	store := newMemCustomers()
+	_ = store.SetCustomerID(context.Background(), "ten_1", "cus_123")
+	p, err := New(Config{
+		SecretKey:     "sk_test_123",
+		WebhookSecret: "whsec_123",
+		Customers:     store,
+		Currency:      "EUR",
+		Backend:       f.backend(),
+	})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+
+	if _, err := p.CreateSetupSession(context.Background(), "ten_1", "https://app.test/ok", "https://app.test/cancel"); err != nil {
+		t.Fatalf("CreateSetupSession: %v", err)
+	}
+	reqs := f.requests(http.MethodPost, "/v1/checkout/sessions")
+	if len(reqs) != 1 || reqs[0].Form.Get("currency") != "eur" {
+		t.Fatalf("checkout requests = %+v, want one with currency=eur", reqs)
+	}
+}
+
+func TestListPaymentMethods_NoDefault(t *testing.T) {
+	f := newFakeStripe(t, map[string]string{
+		"GET /v1/customers/cus_123": `{"id":"cus_123","object":"customer","invoice_settings":null}`,
+		"GET /v1/customers/cus_123/payment_methods": `{"object":"list","url":"/v1/customers/cus_123/payment_methods","has_more":false,"data":[
+			{"id":"pm_1","object":"payment_method","type":"card","card":{"brand":"visa","last4":"4242","exp_month":4,"exp_year":2030}}
+		]}`,
+	})
+	store := newMemCustomers()
+	_ = store.SetCustomerID(context.Background(), "ten_1", "cus_123")
+	p := newTestProvider(t, f, store)
+
+	got, err := p.ListPaymentMethods(context.Background(), "ten_1")
+	if err != nil {
+		t.Fatalf("ListPaymentMethods: %v", err)
+	}
+	if len(got) != 1 {
+		t.Fatalf("got %d methods, want 1", len(got))
+	}
+	if got[0].IsDefault {
+		t.Fatalf("method %+v marked default with no invoice default set", got[0])
+	}
+}
+
+func TestEmptyTenantRejected(t *testing.T) {
+	f := newFakeStripe(t, nil)
+	p := newTestProvider(t, f, newMemCustomers())
+	ctx := context.Background()
+
+	if _, err := p.EnsureCustomer(ctx, "", "ada@example.com", "Ada"); !errors.Is(err, ErrMissingTenant) {
+		t.Errorf("EnsureCustomer err = %v, want ErrMissingTenant", err)
+	}
+	if _, err := p.CreateSetupSession(ctx, "", "https://app.test/ok", "https://app.test/cancel"); !errors.Is(err, ErrMissingTenant) {
+		t.Errorf("CreateSetupSession err = %v, want ErrMissingTenant", err)
+	}
+	if _, err := p.ListPaymentMethods(ctx, ""); !errors.Is(err, ErrMissingTenant) {
+		t.Errorf("ListPaymentMethods err = %v, want ErrMissingTenant", err)
+	}
+	if n := f.total(); n != 0 {
+		t.Fatalf("Stripe saw %d requests, want 0", n)
+	}
+}
+
+// failingCustomers is a CustomerStore whose reads or writes fail.
+type failingCustomers struct {
+	getErr error
+	setErr error
+}
+
+func (s failingCustomers) CustomerID(context.Context, string) (string, error) {
+	return "", s.getErr
+}
+
+func (s failingCustomers) SetCustomerID(context.Context, string, string) error {
+	return s.setErr
+}
+
+func TestCustomerStoreErrorsPropagate(t *testing.T) {
+	ctx := context.Background()
+
+	t.Run("CustomerID fails", func(t *testing.T) {
+		errGet := errors.New("store down")
+		f := newFakeStripe(t, nil)
+		p := newTestProvider(t, f, failingCustomers{getErr: errGet})
+
+		if _, err := p.EnsureCustomer(ctx, "ten_1", "ada@example.com", "Ada"); !errors.Is(err, errGet) {
+			t.Errorf("EnsureCustomer err = %v, want %v", err, errGet)
+		}
+		if _, err := p.CreateSetupSession(ctx, "ten_1", "https://app.test/ok", "https://app.test/cancel"); !errors.Is(err, errGet) {
+			t.Errorf("CreateSetupSession err = %v, want %v", err, errGet)
+		}
+		if _, err := p.ListPaymentMethods(ctx, "ten_1"); !errors.Is(err, errGet) {
+			t.Errorf("ListPaymentMethods err = %v, want %v", err, errGet)
+		}
+		if n := f.total(); n != 0 {
+			t.Fatalf("Stripe saw %d requests, want 0", n)
+		}
+	})
+
+	t.Run("SetCustomerID fails", func(t *testing.T) {
+		errSet := errors.New("store read-only")
+		f := newFakeStripe(t, map[string]string{
+			"POST /v1/customers": `{"id":"cus_123","object":"customer"}`,
+		})
+		p := newTestProvider(t, f, failingCustomers{setErr: errSet})
+
+		if _, err := p.EnsureCustomer(ctx, "ten_1", "ada@example.com", "Ada"); !errors.Is(err, errSet) {
+			t.Errorf("EnsureCustomer err = %v, want %v", err, errSet)
+		}
+	})
 }
