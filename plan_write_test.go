@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"reflect"
+	"strings"
 	"testing"
 
 	ledger "github.com/xraph/ledger"
@@ -301,6 +302,34 @@ func TestCreatePlan_CreditPoolRejects(t *testing.T) {
 			c.mutate(p)
 			if err := l.CreatePlan(context.Background(), p); !errors.Is(err, ledger.ErrInvalidCreditPool) {
 				t.Errorf("got %v, want ErrInvalidCreditPool", err)
+			}
+		})
+	}
+}
+
+func TestCreatePlan_CreditPoolRejectionsSayWhatIsWrong(t *testing.T) {
+	cases := []struct {
+		name   string
+		mutate func(*plan.Plan)
+		want   string
+	}{
+		{"no feature keys", func(p *plan.Plan) { p.Credits[0].FeatureKeys = nil }, `pool "usage" covers no features`},
+		{"empty feature keys", func(p *plan.Plan) { p.Credits[0].FeatureKeys = []string{} }, `pool "usage" covers no features`},
+		{"feature listed twice in one pool", func(p *plan.Plan) {
+			p.Credits[0].FeatureKeys = []string{"build_minutes", "egress_gb", "build_minutes"}
+		}, `pool "usage" lists feature "build_minutes" twice`},
+		{"feature in two pools", func(p *plan.Plan) {
+			p.Credits = append(p.Credits, plan.CreditPool{Key: "extra", Amount: types.USD(100), FeatureKeys: []string{"egress_gb"}})
+		}, `feature "egress_gb" is in pools "usage" and "extra"`},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			l := ledger.New(memory.New())
+			p := creditPlan()
+			c.mutate(p)
+			err := l.CreatePlan(context.Background(), p)
+			if !errors.Is(err, ledger.ErrInvalidCreditPool) || !strings.Contains(err.Error(), c.want) {
+				t.Errorf("got %v, want ErrInvalidCreditPool saying %s", err, c.want)
 			}
 		})
 	}

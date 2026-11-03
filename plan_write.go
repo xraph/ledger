@@ -158,6 +158,9 @@ func validateCreditPools(p *plan.Plan, keys map[string]bool) error {
 			return fmt.Errorf("%w: pool %q is in %s but the plan bills in %s",
 				ErrInvalidCreditPool, c.Key, c.Amount.Currency, p.Currency)
 		}
+		if len(c.FeatureKeys) == 0 {
+			return fmt.Errorf("%w: pool %q covers no features", ErrInvalidCreditPool, c.Key)
+		}
 		for _, fk := range c.FeatureKeys {
 			switch {
 			case !keys[fk]:
@@ -166,6 +169,9 @@ func validateCreditPools(p *plan.Plan, keys map[string]bool) error {
 				return fmt.Errorf("%w: pool %q covers feature %q, which is not metered", ErrInvalidCreditPool, c.Key, fk)
 			}
 			if other, taken := poolOf[fk]; taken {
+				if other == c.Key {
+					return fmt.Errorf("%w: pool %q lists feature %q twice", ErrInvalidCreditPool, c.Key, fk)
+				}
 				return fmt.Errorf("%w: feature %q is in pools %q and %q", ErrInvalidCreditPool, fk, other, c.Key)
 			}
 			poolOf[fk] = c.Key
