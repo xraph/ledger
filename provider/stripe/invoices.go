@@ -164,25 +164,26 @@ func (p *Provider) findSentInvoice(ctx context.Context, customerID, invID string
 	params := &stripego.InvoiceListParams{Customer: stripego.String(customerID)}
 	params.Limit = stripego.Int64(recentInvoiceLimit)
 
+	// Stop on the last invoice of the first page: asking the iterator for
+	// one more would fetch a second page only to ignore it.
 	seen := 0
 	for in, err := range p.client.V1Invoices.List(ctx, params).All(ctx) {
 		if err != nil {
 			return "", fmt.Errorf("stripe: list invoices for %s: %w", invID, err)
 		}
 		seen++
-		if seen > recentInvoiceLimit {
-			break
-		}
-		if in.Metadata[invoiceMetadataKey] != invID {
-			continue
-		}
-		switch in.Status {
-		case stripego.InvoiceStatusOpen, stripego.InvoiceStatusPaid, stripego.InvoiceStatusUncollectible:
-			return in.ID, nil
-		case stripego.InvoiceStatusDraft:
-			if _, err := p.client.V1Invoices.Delete(ctx, in.ID, nil); err != nil {
-				return "", fmt.Errorf("stripe: delete leftover draft invoice %s: %w", in.ID, err)
+		if in.Metadata[invoiceMetadataKey] == invID {
+			switch in.Status {
+			case stripego.InvoiceStatusOpen, stripego.InvoiceStatusPaid, stripego.InvoiceStatusUncollectible:
+				return in.ID, nil
+			case stripego.InvoiceStatusDraft:
+				if _, delErr := p.client.V1Invoices.Delete(ctx, in.ID, nil); delErr != nil {
+					return "", fmt.Errorf("stripe: delete leftover draft invoice %s: %w", in.ID, delErr)
+				}
 			}
+		}
+		if seen == recentInvoiceLimit {
+			break
 		}
 	}
 	return "", nil

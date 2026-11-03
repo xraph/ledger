@@ -3,6 +3,7 @@ package stripe
 import (
 	"context"
 	"errors"
+	"fmt"
 	"net/http"
 	"strconv"
 	"strings"
@@ -648,4 +649,23 @@ func TestRefundInvoice_FullAndPartial(t *testing.T) {
 			t.Fatalf("err = %v, want ErrNotPaid", err)
 		}
 	})
+}
+
+func TestSyncInvoice_LooksAtOnePageOfInvoices(t *testing.T) {
+	inv := testInvoice()
+	data := make([]string, 0, recentInvoiceLimit)
+	for i := range recentInvoiceLimit {
+		data = append(data, fmt.Sprintf(`{"id":"in_%d","object":"invoice","status":"paid","metadata":{"ledger_invoice_id":"inv_other"}}`, i))
+	}
+	routes := invoiceRoutes()
+	routes["GET /v1/invoices"] = `{"object":"list","url":"/v1/invoices","has_more":true,"data":[` + strings.Join(data, ",") + `]}`
+	f := newFakeStripe(t, routes)
+	p := providerWithCustomer(t, f)
+
+	if _, err := p.SyncInvoice(context.Background(), inv); err != nil {
+		t.Fatalf("SyncInvoice: %v", err)
+	}
+	if n := len(f.requests(http.MethodGet, "/v1/invoices")); n != 1 {
+		t.Fatalf("listed invoices %d times, want one page", n)
+	}
 }
