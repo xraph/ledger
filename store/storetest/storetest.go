@@ -60,6 +60,7 @@ func Run(t *testing.T, newStore func(t *testing.T) ledgerstore.Store) {
 	t.Run("UpdateCouponLeavesTimesRedeemedAlone", func(t *testing.T) { testUpdateCouponLeavesTimesRedeemedAlone(t, newStore(t)) })
 	t.Run("SubscriptionTenantIsolation", func(t *testing.T) { testSubscriptionTenantIsolation(t, newStore(t)) })
 	t.Run("SubscriptionQuantityRoundTrip", func(t *testing.T) { testSubscriptionQuantityRoundTrip(t, newStore(t)) })
+	t.Run("InvoiceCreditAmountRoundTrips", func(t *testing.T) { testInvoiceCreditAmountRoundTrips(t, newStore(t)) })
 	t.Run("InvoiceTenantIsolation", func(t *testing.T) { testInvoiceTenantIsolation(t, newStore(t)) })
 	t.Run("UsageTenantIsolation", func(t *testing.T) { testUsageTenantIsolation(t, newStore(t)) })
 	t.Run("EmptyTenantIDBehavior", func(t *testing.T) { testEmptyTenantIDBehavior(t, newStore(t)) })
@@ -1132,6 +1133,7 @@ func newTestInvoice(tenantID, appID string) *invoice.Invoice {
 		Subtotal:       types.USD(1000),
 		TaxAmount:      types.USD(0),
 		DiscountAmount: types.USD(0),
+		CreditAmount:   types.USD(250),
 		Total:          types.USD(1000),
 		PeriodStart:    now,
 		PeriodEnd:      now.AddDate(0, 1, 0),
@@ -1269,6 +1271,21 @@ func testSubscriptionQuantityRoundTrip(t *testing.T, s ledgerstore.Store) {
 
 // testInvoiceTenantIsolation is the invoice analogue of
 // testSubscriptionTenantIsolation.
+func testInvoiceCreditAmountRoundTrips(t *testing.T, s ledgerstore.Store) {
+	ctx := context.Background()
+	inv := newTestInvoice("tenant-"+uniqueSuffix(), "app-"+uniqueSuffix())
+	if err := s.CreateInvoice(ctx, inv); err != nil {
+		t.Fatalf("CreateInvoice: %v", err)
+	}
+	got, err := s.GetInvoice(ctx, inv.ID)
+	if err != nil {
+		t.Fatalf("GetInvoice: %v", err)
+	}
+	if !got.CreditAmount.Equal(types.USD(250)) {
+		t.Errorf("got CreditAmount %v, want $2.50", got.CreditAmount)
+	}
+}
+
 func testInvoiceTenantIsolation(t *testing.T, s ledgerstore.Store) {
 	ctx := context.Background()
 	appID := "app-" + uniqueSuffix()

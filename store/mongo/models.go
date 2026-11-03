@@ -497,6 +497,7 @@ type invoiceModel struct {
 	TaxCurrency         string            `grove:"tax_currency"         bson:"tax_currency"`
 	DiscountAmountCents int64             `grove:"discount_amount_cents" bson:"discount_amount_cents"`
 	DiscountCurrency    string            `grove:"discount_currency"    bson:"discount_currency"`
+	CreditAmountCents   int64             `grove:"credit_amount" bson:"credit_amount"`
 	TotalAmountCents    int64             `grove:"total_amount_cents"   bson:"total_amount_cents"`
 	TotalCurrency       string            `grove:"total_currency"       bson:"total_currency"`
 	LineItems           []lineItemModel   `grove:"line_items"           bson:"line_items"`
@@ -559,6 +560,7 @@ func toInvoiceModel(inv *invoice.Invoice) *invoiceModel {
 		TaxCurrency:         inv.TaxAmount.Currency,
 		DiscountAmountCents: inv.DiscountAmount.Amount,
 		DiscountCurrency:    inv.DiscountAmount.Currency,
+		CreditAmountCents:   inv.CreditAmount.Amount,
 		TotalAmountCents:    inv.Total.Amount,
 		TotalCurrency:       inv.Total.Currency,
 		LineItems:           lineItems,
@@ -624,6 +626,7 @@ func fromInvoiceModel(m *invoiceModel) (*invoice.Invoice, error) {
 		Subtotal:       types.Money{Amount: m.SubtotalAmountCents, Currency: m.SubtotalCurrency},
 		TaxAmount:      types.Money{Amount: m.TaxAmountCents, Currency: m.TaxCurrency},
 		DiscountAmount: types.Money{Amount: m.DiscountAmountCents, Currency: m.DiscountCurrency},
+		CreditAmount:   types.Money{Amount: m.CreditAmountCents, Currency: m.Currency},
 		Total:          types.Money{Amount: m.TotalAmountCents, Currency: m.TotalCurrency},
 		LineItems:      lineItems,
 		PeriodStart:    m.PeriodStart,

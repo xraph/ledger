@@ -380,5 +380,18 @@ ALTER TABLE ledger_subscriptions ADD COLUMN stretch_floor TEXT;
 				return nil
 			},
 		},
+		&migrate.Migration{
+			Name:    "add_invoice_credit_amount",
+			Version: "20240101000015",
+			Up: func(ctx context.Context, exec migrate.Executor) error {
+				_, err := exec.Exec(ctx, `ALTER TABLE ledger_invoices ADD COLUMN credit_amount INTEGER NOT NULL DEFAULT 0`)
+				return err
+			},
+			Down: func(_ context.Context, _ migrate.Executor) error {
+				// SQLite does not support DROP COLUMN in older versions;
+				// the column is harmless if left in place.
+				return nil
+			},
+		},
 	)
 }

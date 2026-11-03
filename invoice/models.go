@@ -19,10 +19,11 @@ const (
 
 // Invoice is a bill for one subscription period.
 //
-// LineItems sum to Subtotal, minus DiscountAmount, plus TaxAmount. That sum
-// equals Total, except when the discount exceeds the subtotal: the net
-// amount then clamps at zero before tax is added, rather than letting Total
-// go negative.
+// LineItems sum to Subtotal, minus CreditAmount and DiscountAmount, plus
+// TaxAmount. That sum equals Total, except when the credit and discount
+// exceed the subtotal: the net amount then clamps at zero before tax is
+// added, rather than letting Total go negative. CreditAmount is the plan's
+// credit pools applied to usage; DiscountAmount is coupons.
 type Invoice struct {
 	types.Entity
 	ID             id.InvoiceID      `json:"id"`
@@ -33,6 +34,7 @@ type Invoice struct {
 	Subtotal       types.Money       `json:"subtotal"`
 	TaxAmount      types.Money       `json:"tax_amount"`
 	DiscountAmount types.Money       `json:"discount_amount"`
+	CreditAmount   types.Money       `json:"credit_amount"`
 	Total          types.Money       `json:"total"`
 	LineItems      []LineItem        `json:"line_items"`
 	PeriodStart    time.Time         `json:"period_start"`
@@ -50,8 +52,9 @@ type Invoice struct {
 
 // LineItem is one priced component of an Invoice.
 //
-// A discount line item carries a negative Amount (and UnitAmount), while
-// the invoice's own DiscountAmount is always recorded positive. A line item
+// A discount or credit line item carries a negative Amount (and
+// UnitAmount), while the invoice's own DiscountAmount and CreditAmount are
+// always recorded positive. A line item
 // priced from a tier ladder, such as usage overage or seat charges, carries
 // a zero UnitAmount: a ladder has no single per-unit price, so only Amount,
 // the total charged, means anything for it.
@@ -74,6 +77,7 @@ const (
 	LineItemUsage    LineItemType = "usage"
 	LineItemOverage  LineItemType = "overage"
 	LineItemSeat     LineItemType = "seat"
+	LineItemCredit   LineItemType = "credit"
 	LineItemDiscount LineItemType = "discount"
 	LineItemTax      LineItemType = "tax"
 )
