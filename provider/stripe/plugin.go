@@ -10,8 +10,12 @@ type stripePlugin struct {
 	p *Provider
 }
 
-// NewPlugin wraps p so it can be passed to ledger.WithPlugin.
+// NewPlugin wraps p so it can be passed to ledger.WithPlugin. It panics if
+// p is nil: build p with New and check its error first.
 func NewPlugin(p *Provider) plugin.PaymentProviderPlugin {
+	if p == nil {
+		panic("stripe: NewPlugin called with a nil Provider; build one with New and check its error")
+	}
 	return &stripePlugin{p: p}
 }
 

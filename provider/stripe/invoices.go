@@ -206,6 +206,11 @@ func checkLines(inv *invoice.Invoice, currency string) error {
 	return nil
 }
 
+// maxRefundKeyLen is the longest refund key RefundInvoice accepts. Stripe
+// caps idempotency keys at 255 characters; the rest is left for the
+// "refund:<stripe invoice>:" prefix.
+const maxRefundKeyLen = 200
+
 // RefundInvoice refunds the payment that paid a Stripe invoice. A nil amount
 // refunds whatever is left of the payment; otherwise amount, in minor units
 // of the payment's currency, is refunded. full reports whether the payment is
@@ -216,12 +221,18 @@ func checkLines(inv *invoice.Invoice, currency string) error {
 // new key for each refund it means to issue and reuses that key when it
 // retries, so a retry after a lost response does not refund twice. The
 // refund is sent with the idempotency key "refund:<stripe invoice>:<key>".
+// Stripe caps idempotency keys at 255 characters, so refundKey may be at
+// most 200, which leaves room for the prefix.
 func (p *Provider) RefundInvoice(ctx context.Context, stripeInvoiceID string, amount *types.Money, refundKey string) (bool, error) {
 	if stripeInvoiceID == "" {
 		return false, errors.New("stripe: refund invoice: stripe invoice id is required")
 	}
 	if refundKey == "" {
 		return false, fmt.Errorf("stripe: refund invoice %s: refund key is required", stripeInvoiceID)
+	}
+	if len(refundKey) > maxRefundKeyLen {
+		return false, fmt.Errorf("stripe: refund invoice %s: refund key is %d characters, at most %d are allowed",
+			stripeInvoiceID, len(refundKey), maxRefundKeyLen)
 	}
 	if amount != nil && amount.Amount <= 0 {
 		return false, fmt.Errorf("stripe: refund invoice %s: amount must be positive", stripeInvoiceID)

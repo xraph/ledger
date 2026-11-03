@@ -58,9 +58,10 @@ type Config struct {
 	// Currency is the ISO currency code sent on setup-mode Checkout
 	// sessions. Empty means "usd"; it is lowercased.
 	Currency string
-	// Backend overrides the Stripe API backend. Tests only; nil uses
-	// Stripe's API.
-	Backend stripego.Backend
+
+	// backend overrides the Stripe API backend. Only this package's tests
+	// set it; nil uses Stripe's API.
+	backend stripego.Backend
 }
 
 // Provider is a provider.Provider backed by Stripe.
@@ -88,12 +89,12 @@ func New(cfg Config) (*Provider, error) {
 	}
 
 	var opts []stripego.ClientOption
-	if cfg.Backend != nil {
+	if cfg.backend != nil {
 		opts = append(opts, stripego.WithBackends(&stripego.Backends{
-			API:         cfg.Backend,
-			Connect:     cfg.Backend,
-			Uploads:     cfg.Backend,
-			MeterEvents: cfg.Backend,
+			API:         cfg.backend,
+			Connect:     cfg.backend,
+			Uploads:     cfg.backend,
+			MeterEvents: cfg.backend,
 		}))
 	}
 

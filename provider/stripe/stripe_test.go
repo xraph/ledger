@@ -166,7 +166,7 @@ func newTestProvider(t *testing.T, f *fakeStripe, store CustomerStore) *Provider
 		SecretKey:     "sk_test_123",
 		WebhookSecret: "whsec_123",
 		Customers:     store,
-		Backend:       f.backend(),
+		backend:       f.backend(),
 	})
 	if err != nil {
 		t.Fatalf("New: %v", err)
@@ -361,6 +361,16 @@ func TestStripeErrorsDoNotLeakKey(t *testing.T) {
 	}
 }
 
+func TestNewPlugin_NilProviderPanics(t *testing.T) {
+	defer func() {
+		r := recover()
+		if msg, _ := r.(string); !strings.Contains(msg, "nil Provider") {
+			t.Fatalf("recovered %v, want a panic naming the nil Provider", r)
+		}
+	}()
+	NewPlugin(nil)
+}
+
 func TestPlugin_ExposesProvider(t *testing.T) {
 	f := newFakeStripe(t, nil)
 	p := newTestProvider(t, f, newMemCustomers())
@@ -410,7 +420,7 @@ func TestCreateSetupSession_CurrencyFromConfig(t *testing.T) {
 		WebhookSecret: "whsec_123",
 		Customers:     store,
 		Currency:      "EUR",
-		Backend:       f.backend(),
+		backend:       f.backend(),
 	})
 	if err != nil {
 		t.Fatalf("New: %v", err)

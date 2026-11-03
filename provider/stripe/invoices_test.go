@@ -588,6 +588,23 @@ func TestRefundInvoice_FullAndPartial(t *testing.T) {
 		}
 	})
 
+	t.Run("refund key length", func(t *testing.T) {
+		f := newFakeStripe(t, refundRoutes(800, 800))
+		p := providerWithCustomer(t, f)
+
+		_, err := p.RefundInvoice(ctx, "in_1", nil, strings.Repeat("k", 201))
+		if err == nil || !strings.Contains(err.Error(), "at most 200") {
+			t.Fatalf("err = %v, want a refund key length error", err)
+		}
+		if n := f.total(); n != 0 {
+			t.Fatalf("Stripe saw %d requests, want 0", n)
+		}
+
+		if _, err := p.RefundInvoice(ctx, "in_1", nil, strings.Repeat("k", 200)); err != nil {
+			t.Fatalf("RefundInvoice with a 200-character key: %v", err)
+		}
+	})
+
 	t.Run("wrong currency", func(t *testing.T) {
 		f := newFakeStripe(t, refundRoutes(100, 100))
 		p := providerWithCustomer(t, f)
