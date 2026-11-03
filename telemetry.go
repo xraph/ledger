@@ -182,6 +182,7 @@ var sentinels = []struct {
 	{ErrStoreClosed, "ledger.ErrStoreClosed"},
 	{ErrTransactionFailed, "ledger.ErrTransactionFailed"},
 	{ErrMigrationFailed, "ledger.ErrMigrationFailed"},
+	{ErrUnavailable, "ledger.ErrUnavailable"},
 	{ErrCacheMiss, "ledger.ErrCacheMiss"},
 	{ErrCacheInvalidate, "ledger.ErrCacheInvalidate"},
 	{types.ErrOverflow, "types.ErrOverflow"},

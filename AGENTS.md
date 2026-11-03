@@ -86,6 +86,7 @@ For govulncheck, match CI's Go. CI always gets the newest 1.26 patch, and an old
 | Path | What lives there |
 |---|---|
 | `ledger.go`, `lifecycle*.go`, `*_write.go`, `coupon_apply.go`, `invoice_period.go`, `provider_import.go`, `inspect.go` | The engine, `*ledger.Ledger`: options, metering, entitlements, invoice generation, the lifecycle clock, operator writes, provider sync and import |
+| `scope.go` | `WithTenant`, the typed context keys for tenant and app, and the fallback to the legacy `"tenant_id"` and `"app_id"` string keys |
 | `errors.go` | Sentinel errors and the `IsNotFound`, `IsQuotaError`, `IsRetryable` helpers |
 | `id/`, `id.go` | `id.ID`, a TypeID with a prefix per entity (`plan`, `sub`, `inv`, `cpn`...), re-exported at the root |
 | `types/`, `exports.go` | `Money` (int64 minor units with checked arithmetic) and `Entity`, re-exported at the root |
@@ -110,6 +111,10 @@ IDs come from the `id` package. Create them with `id.New(prefix)` or the typed h
 `store.Store` is the contract. If you add or change a method, you change all four backends and add a subtest to `store/storetest`, then you run it against real postgres and mongo as above. Writes that can race the lifecycle clock are single conditional statements that repeat their precondition in the WHERE clause (the filter, on mongo) and return `(bool, error)`: false with no error means no row matched. The engine works in UTC (sqlite compares timestamps as text, so one zone matters) and cuts the times it stores and hands back, like a subscription's periods, to the millisecond, because mongo keeps milliseconds and postgres microseconds. Each backend versions its migrations on its own, so when you add one, give it the next `Version` in that backend's `migrations.go`. In list methods, an empty `appID` means every app.
 
 Both `ledger.New(store, opts...)` and `extension.New(opts...)` use functional options (`type Option func(*Ledger)` and `type Option func(*Extension)`). The extension reads YAML under `extensions.ledger`, falling back to `ledger`, and merges it with the programmatic options. Its store comes from `WithStore`, then a named grove DB (`WithGroveDatabase` or `grove_database`), then the default `*grove.DB` in the container, then memory as a last resort. The extension provides the `*ledger.Ledger` to the container with `vessel.Provide`.
+
+The tenant and app come from the context. `WithTenant(ctx, tenantID, appID)` sets them under unexported typed keys, and `extractTenantID` and `extractAppID` read those first, then the legacy plain `"tenant_id"` and `"app_id"` string keys, so existing callers keep working. Don't add a third place to read them from.
+
+`Meter` drops a usage event when its flush fails. `MeterWithKey` carries an idempotency key, and the flush worker keeps a failed keyed event on a retry queue (one second, doubling to thirty, ahead of newer events, and counted against the buffer) until it lands or `Stop` makes a last attempt. Keep it that way: the store dedupes on the key, which is what makes a retry safe. `Entitled` and `Check` share one code path. `Entitled` turns a store failure into "no access" and authsome depends on that, so leave it. `Check` is the strict twin that returns an error wrapping `ErrUnavailable`.
 
 Logging uses `github.com/xraph/go-utils/log`. The engine defaults to `log.NewNoopLogger()`, and the extension hands it the Forge logger.
 

@@ -17,7 +17,7 @@ func (l *Ledger) InspectEntitlement(ctx context.Context, tenantID, appID, featur
 	if tenantID == "" {
 		return nil, fmt.Errorf("%w: a tenant is required", ErrInvalidInput)
 	}
-	result, _, err := l.computeEntitlement(ctx, tenantID, appID, featureKey)
+	result, _, err := l.computeEntitlement(ctx, tenantID, appID, featureKey, false)
 	return result, err
 }
 

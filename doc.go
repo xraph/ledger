@@ -64,14 +64,21 @@
 //	sub := &subscription.Subscription{TenantID: tenantID, PlanID: p.ID}
 //	err := l.CreateSubscription(ctx, sub)
 //
-// Entitlements check if a tenant can use a feature. Entitled and Meter read
-// the tenant and app from the context values "tenant_id" and "app_id":
+// Entitlements check if a tenant can use a feature. Entitled, Check, Meter
+// and MeterWithKey read the tenant and app from the context. Set them with
+// WithTenant; the plain string keys "tenant_id" and "app_id" still work:
 //
+//	ctx = ledger.WithTenant(ctx, tenantID, appID)
 //	result, err := l.Entitled(ctx, "api_calls")
 //	if result.Allowed {
 //	    // Process API call
 //	    l.Meter(ctx, "api_calls", 1)
 //	}
+//
+// Entitled reads a store outage as no access. Check returns the same answer
+// but reports an outage as an error wrapping ErrUnavailable. MeterWithKey is
+// Meter for an event with an idempotency key: the store counts a key once, and
+// a failed write is retried instead of dropped.
 //
 // All monetary calculations use integer arithmetic to avoid floating-point
 // precision issues. The Money type represents amounts in the smallest currency

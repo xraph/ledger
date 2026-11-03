@@ -69,8 +69,7 @@ func main() {
 	}
 
 	// Entitled and Meter read the tenant and app from the context.
-	ctx = context.WithValue(ctx, "tenant_id", "acme")
-	ctx = context.WithValue(ctx, "app_id", "my-app")
+	ctx = ledger.WithTenant(ctx, "acme", "my-app")
 
 	res, err := l.Entitled(ctx, "api_calls")
 	if err != nil {
@@ -97,7 +96,13 @@ api_calls allowed=true remaining=10000
 invoice inv_01m4xw3arsegprh53198t2n0dg total $49.00
 ```
 
-You should know two things before you go further. First, `Entitled` and `Meter` take the tenant and app from the context values `"tenant_id"` and `"app_id"` (plain string keys), and if either one is missing, `Meter` returns `ErrInvalidInput` and `Entitled` answers not allowed. Second, `Meter` doesn't write anything on the spot: it drops the event into a buffer that a background worker flushes to the store every 5 seconds, or sooner once 100 events have piled up, which means the usage you just recorded only counts toward your next quota check or invoice after that flush has happened. `Stop` flushes the rest.
+You should know two things before you go further. First, `Entitled` and `Meter` take the tenant and app from the context, and you set them with `ledger.WithTenant(ctx, tenantID, appID)`. Code that puts the plain strings `"tenant_id"` and `"app_id"` in the context keeps working, and `WithTenant` wins when both are there. If either one is missing, `Meter` returns `ErrInvalidInput` and `Entitled` answers not allowed. Second, `Meter` doesn't write anything on the spot: it drops the event into a buffer that a background worker flushes to the store every 5 seconds, or sooner once 100 events have piled up, which means the usage you just recorded only counts toward your next quota check or invoice after that flush has happened. `Stop` flushes the rest.
+
+### Counting an event once, and telling an outage from a no
+
+`Meter` is fire and forget. If the write to the store fails, the event is dropped and the meter events metric counts it. When you can't afford that, call `l.MeterWithKey(ctx, "api_calls", 1, key)` with a key that names the thing you're billing for, such as a message id. The store counts a key once, so a replay adds nothing. A keyed event whose write fails is held and retried after one second, then two, doubling up to thirty, ahead of newer events, until the store takes it. `Stop` makes one last attempt. Held events count against the buffer, so a long outage ends in `ErrMeterBufferFull` from `MeterWithKey` and not in unbounded memory.
+
+`Entitled` reads a store outage as "no access", because the callers that exist today rely on that. If you'd rather decide for yourself whether to fail open or closed, call `l.Check(ctx, "api_calls")`. It returns the same `Result` from the same cache, plans and quotas, but a store failure comes back as an error that wraps `ErrUnavailable`.
 
 ## Why Ledger?
 
@@ -141,7 +146,7 @@ These are the engine methods you'll reach for most:
 | --- | --- |
 | Plans and catalog | `CreatePlan`, `UpdatePlan`, `ActivatePlan`, `ArchivePlan`, `CreateFeature`, `ListFeatures` |
 | Subscriptions | `CreateSubscription`, `ChangePlan`, `PauseSubscription`, `ResumeSubscription`, `CancelSubscription` |
-| Usage and quota | `Meter`, `Entitled`, `Remaining`, `InspectEntitlement` |
+| Usage and quota | `WithTenant`, `Meter`, `MeterWithKey`, `Entitled`, `Check`, `Remaining`, `InspectEntitlement` |
 | Invoices | `GenerateInvoice` (with `ledger.ForPeriod` for a past period), `FinalizeInvoice`, `MarkInvoicePaid`, `MarkInvoiceVoided`, `ExportInvoice` |
 | Coupons | `CreateCoupon`, `ApplyCoupon`, `ListAppliedCoupons` |
 | Lifecycle | `Advance`, which runs `AdvancePeriods`, `EnactCancels`, `EndTrials` and `MarkInvoicesPastDue` in that order |
@@ -265,7 +270,7 @@ The Go API is on [pkg.go.dev](https://pkg.go.dev/github.com/xraph/ledger). If yo
 
 ### How do I check a usage quota in Go before serving a request?
 
-Put the tenant and app in the context and call `l.Entitled(ctx, "feature_key")`. `Allowed` tells you whether to serve the request, and `Used`, `Limit` and `Remaining` tell you where the tenant stands. Then call `l.Meter(ctx, "feature_key", 1)` once you've done the work.
+Put the tenant and app in the context with `ledger.WithTenant` and call `l.Entitled(ctx, "feature_key")`, or `l.Check` if you need to tell a store outage from a real no. `Allowed` tells you whether to serve the request, and `Used`, `Limit` and `Remaining` tell you where the tenant stands. Then call `l.Meter(ctx, "feature_key", 1)` once you've done the work.
 
 ### Does Ledger charge cards?
 

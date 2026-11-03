@@ -74,6 +74,11 @@ var (
 	ErrTransactionFailed = errors.New("ledger: transaction failed")
 	ErrMigrationFailed   = errors.New("ledger: migration failed")
 
+	// ErrUnavailable means the store could not answer, as opposed to the
+	// answer being no. Check returns it so a caller can tell an outage from a
+	// tenant with no access.
+	ErrUnavailable = errors.New("ledger: unavailable")
+
 	// Cache errors
 	ErrCacheMiss       = errors.New("ledger: cache miss")
 	ErrCacheInvalidate = errors.New("ledger: cache invalidation failed")
@@ -147,6 +152,7 @@ func IsQuotaError(err error) bool {
 func IsRetryable(err error) bool {
 	return errors.Is(err, ErrMeterBufferFull) ||
 		errors.Is(err, ErrStoreNotReady) ||
+		errors.Is(err, ErrUnavailable) ||
 		errors.Is(err, ErrTransactionFailed) ||
 		errors.Is(err, ErrProviderSync) ||
 		errors.Is(err, ErrCacheInvalidate)

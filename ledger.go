@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"go.opentelemetry.io/otel/attribute"
@@ -37,8 +38,12 @@ type Ledger struct {
 
 	// Background workers
 	meterBuffer chan *meter.UsageEvent
-	stopChan    chan struct{}
-	wg          sync.WaitGroup
+	// retained counts keyed events the flush worker is holding for retry. They
+	// have left meterBuffer, so it counts them toward the buffer's capacity to
+	// keep a long outage from growing memory without bound.
+	retained atomic.Int64
+	stopChan chan struct{}
+	wg       sync.WaitGroup
 
 	// importMu serialises the four provider imports from their duplicate check
 	// through their store write, so one process never stores a second row for
@@ -50,6 +55,8 @@ type Ledger struct {
 	// Configuration
 	meterBatchSize      int
 	meterFlushInterval  time.Duration
+	retryInitial        time.Duration // first wait before a failed keyed batch is retried
+	retryMax            time.Duration // the wait stops doubling here
 	entitlementCacheTTL time.Duration
 	lifecycleInterval   time.Duration
 	clock               func() time.Time
@@ -71,6 +78,8 @@ func New(s store.Store, opts ...Option) *Ledger {
 		stopChan:            make(chan struct{}),
 		meterBatchSize:      100,
 		meterFlushInterval:  5 * time.Second,
+		retryInitial:        time.Second,
+		retryMax:            30 * time.Second,
 		entitlementCacheTTL: 30 * time.Second,
 		lifecycleInterval:   time.Minute,
 		clock:               time.Now,
@@ -482,7 +491,32 @@ func (l *Ledger) CancelSubscription(ctx context.Context, subID id.SubscriptionID
 // ──────────────────────────────────────────────────
 
 // Meter records a usage event (non-blocking).
+//
+// The event is buffered and written by a background worker. If that write
+// fails the event is dropped and counted. Use MeterWithKey when the event must
+// survive a store outage and must not count twice.
 func (l *Ledger) Meter(ctx context.Context, featureKey string, quantity int64) error {
+	return l.meter(ctx, featureKey, quantity, "")
+}
+
+// MeterWithKey is Meter for an event that carries an idempotency key. The store
+// counts a key once, so sending the same key again, from a retry of your own or
+// a replay, adds nothing. An empty key is refused with ErrInvalidInput.
+//
+// A keyed event whose write fails is not dropped. The worker keeps it and tries
+// again with a growing wait (one second, doubling to thirty), ahead of newer
+// events, until the store takes it or Stop makes a last attempt. While events
+// are held they count against the buffer, so a long outage ends in
+// ErrMeterBufferFull from this method, not in unbounded memory.
+func (l *Ledger) MeterWithKey(ctx context.Context, featureKey string, quantity int64, idempotencyKey string) error {
+	if idempotencyKey == "" {
+		return fmt.Errorf("%w: an idempotency key is required", ErrInvalidInput)
+	}
+
+	return l.meter(ctx, featureKey, quantity, idempotencyKey)
+}
+
+func (l *Ledger) meter(ctx context.Context, featureKey string, quantity int64, idempotencyKey string) error {
 	// Extract tenant and app from context
 	tenantID := extractTenantID(ctx)
 	appID := extractAppID(ctx)
@@ -492,12 +526,18 @@ func (l *Ledger) Meter(ctx context.Context, featureKey string, quantity int64) e
 	}
 
 	event := &meter.UsageEvent{
-		ID:         id.NewUsageEventID(),
-		TenantID:   tenantID,
-		AppID:      appID,
-		FeatureKey: featureKey,
-		Quantity:   quantity,
-		Timestamp:  time.Now().UTC(),
+		ID:             id.NewUsageEventID(),
+		TenantID:       tenantID,
+		AppID:          appID,
+		FeatureKey:     featureKey,
+		Quantity:       quantity,
+		Timestamp:      time.Now().UTC(),
+		IdempotencyKey: idempotencyKey,
+	}
+
+	if idempotencyKey != "" && l.retained.Load() >= int64(cap(l.meterBuffer)) {
+		l.metrics.meterEvents.Inc(resultBufferFull)
+		return ErrMeterBufferFull
 	}
 
 	select {
@@ -509,66 +549,187 @@ func (l *Ledger) Meter(ctx context.Context, featureKey string, quantity int64) e
 	}
 }
 
+// finalFlushTimeout bounds the last write Stop makes, so a store that has
+// stopped answering cannot hang shutdown.
+const finalFlushTimeout = 10 * time.Second
+
+// retryQueue holds the keyed events of failed batches, oldest first, and when
+// the worker may try them again. Only the flush worker touches it.
+type retryQueue struct {
+	events []*meter.UsageEvent
+	delay  time.Duration // the wait after the last failed attempt
+	due    time.Time     // when the held events may be tried again
+}
+
 // meterFlushWorker flushes usage events to the store.
 func (l *Ledger) meterFlushWorker(ctx context.Context) {
 	defer l.wg.Done()
 
-	batch := make([]*meter.UsageEvent, 0, l.meterBatchSize)
+	var (
+		batch = make([]*meter.UsageEvent, 0, l.meterBatchSize)
+		held  retryQueue
+	)
 	ticker := time.NewTicker(l.meterFlushInterval)
 	defer ticker.Stop()
+	// retry fires when held events are due. It stays stopped while none are
+	// held.
+	retry := time.NewTimer(time.Hour)
+	retry.Stop()
+	defer retry.Stop()
+
+	flush := func() {
+		l.flushMeterBatch(ctx, &held, batch, false)
+		batch = make([]*meter.UsageEvent, 0, l.meterBatchSize)
+		if len(held.events) > 0 {
+			retry.Reset(max(time.Until(held.due), 0))
+		} else {
+			retry.Stop()
+		}
+	}
 
 	for {
 		select {
 		case <-l.stopChan:
-			// Final flush
-			if len(batch) > 0 {
-				l.flushMeterBatch(ctx, batch)
+			// Final flush: whatever is still buffered, plus anything held.
+		drain:
+			for {
+				select {
+				case event := <-l.meterBuffer:
+					batch = append(batch, event)
+				default:
+					break drain
+				}
 			}
+			final, cancel := context.WithTimeout(ctx, finalFlushTimeout)
+			l.flushMeterBatch(final, &held, batch, true)
+			cancel()
+
 			return
 
 		case event := <-l.meterBuffer:
 			batch = append(batch, event)
 			if len(batch) >= l.meterBatchSize {
-				l.flushMeterBatch(ctx, batch)
-				batch = make([]*meter.UsageEvent, 0, l.meterBatchSize)
+				flush()
 			}
 
 		case <-ticker.C:
 			if len(batch) > 0 {
-				l.flushMeterBatch(ctx, batch)
-				batch = make([]*meter.UsageEvent, 0, l.meterBatchSize)
+				flush()
 			}
+
+		case <-retry.C:
+			flush()
 		}
 	}
 }
 
-// flushMeterBatch writes one batch. Each flush is a trace of its own, and a
-// failed one loses its events, which the meter events metric counts.
-func (l *Ledger) flushMeterBatch(ctx context.Context, batch []*meter.UsageEvent) {
+// flushMeterBatch writes one batch, with the held events of earlier failed
+// batches ahead of it once they are due (or at once, when final). Each flush is
+// a trace of its own. The write goes out in pieces of at most the batch size,
+// so a long outage's backlog never lands as one oversized insert.
+//
+// A failed write loses the events that carry no idempotency key, which the
+// meter events metric counts. Keyed events that were not written go back on
+// the retry queue, in order, and are counted when they land, or as lost if the
+// final attempt fails.
+func (l *Ledger) flushMeterBatch(ctx context.Context, held *retryQueue, batch []*meter.UsageEvent, final bool) {
+	retryHeld := len(held.events) > 0 && (final || !time.Now().Before(held.due))
+	send := batch
+	if retryHeld {
+		send = make([]*meter.UsageEvent, 0, len(held.events)+len(batch))
+		send = append(send, held.events...)
+		send = append(send, batch...)
+	}
+	if len(send) == 0 {
+		return
+	}
+
 	ctx, span := telemetry.StartRoot(ctx, "flush meter batch",
-		trace.WithAttributes(attribute.Int(attrBatchSize, len(batch))))
+		trace.WithAttributes(attribute.Int(attrBatchSize, len(send))))
 	defer span.End()
 
 	start := time.Now()
 
-	if err := l.store.IngestBatch(ctx, batch); err != nil {
-		telemetry.Fail(span, errorType(err))
-		l.metrics.meterEvents.Add(float64(len(batch)), resultError)
-		l.logger.Error("failed to flush meter batch",
-			log.Error(err),
-			log.Int("batch_size", len(batch)),
+	var err error
+	sent := 0
+	for sent < len(send) {
+		end := min(sent+max(l.meterBatchSize, 1), len(send))
+		if err = l.store.IngestBatch(ctx, send[sent:end]); err != nil {
+			break
+		}
+		sent = end
+	}
+
+	if sent > 0 {
+		l.metrics.meterEvents.Add(float64(sent), resultOK)
+
+		elapsed := time.Since(start)
+		l.plugins.EmitUsageFlushed(ctx, sent, elapsed)
+
+		l.logger.Debug("flushed meter batch",
+			log.Int("batch_size", sent),
+			log.Int64("elapsed_ms", elapsed.Milliseconds()),
 		)
+	}
+	if err == nil {
+		if retryHeld {
+			held.events, held.delay = nil, 0
+			l.retained.Store(0)
+		}
+
 		return
 	}
-	l.metrics.meterEvents.Add(float64(len(batch)), resultOK)
 
-	elapsed := time.Since(start)
-	l.plugins.EmitUsageFlushed(ctx, len(batch), elapsed)
+	telemetry.Fail(span, errorType(err))
 
-	l.logger.Debug("flushed meter batch",
-		log.Int("batch_size", len(batch)),
-		log.Int64("elapsed_ms", elapsed.Milliseconds()),
+	unsent := send[sent:]
+	keyed := keyedEvents(unsent)
+	lost := len(unsent) - len(keyed)
+	switch {
+	case final:
+		// Nothing is left to retry after this.
+		lost = len(unsent)
+		held.events, held.delay = nil, 0
+		l.retained.Store(0)
+	case retryHeld:
+		held.events = keyed
+		held.delay = min(max(held.delay, l.retryInitial)*2, l.retryMax)
+		if len(keyed) == 0 {
+			held.delay = 0
+		}
+		held.due = time.Now().Add(held.delay)
+		l.retained.Store(int64(len(keyed)))
+	case len(keyed) > 0:
+		// The held events were not due, so only this batch was sent. Its keyed
+		// events queue behind them.
+		if len(held.events) == 0 {
+			held.delay = l.retryInitial
+			held.due = time.Now().Add(held.delay)
+		}
+		held.events = append(held.events, keyed...)
+		l.retained.Store(int64(len(held.events)))
+	}
+	if lost > 0 {
+		l.metrics.meterEvents.Add(float64(lost), resultError)
+	}
+	l.logger.Error("failed to flush meter batch",
+		log.Error(err),
+		log.Int("batch_size", len(send)),
+		log.Int("lost", lost),
+		log.Int("held_for_retry", len(held.events)),
 	)
+}
+
+// keyedEvents returns the events that carry an idempotency key, in order.
+func keyedEvents(events []*meter.UsageEvent) []*meter.UsageEvent {
+	var keyed []*meter.UsageEvent
+	for _, e := range events {
+		if e.IdempotencyKey != "" {
+			keyed = append(keyed, e)
+		}
+	}
+
+	return keyed
 }
 
 // ──────────────────────────────────────────────────
@@ -579,7 +740,27 @@ func (l *Ledger) flushMeterBatch(ctx context.Context, batch []*meter.UsageEvent)
 //
 // It runs on most requests, so its span is only started under a caller's
 // span: a check made outside any trace does not begin one.
+//
+// A store that cannot answer reads as no access here: a failed subscription
+// lookup comes back as "no active subscription" with a nil error. Use Check
+// when you need to tell an outage from a real no.
 func (l *Ledger) Entitled(ctx context.Context, featureKey string) (*entitlement.Result, error) {
+	return l.checkEntitlement(ctx, featureKey, false)
+}
+
+// Check answers the same question as Entitled, from the same cache, plans and
+// quotas, but it does not turn a store failure into "no access". A subscription
+// lookup that fails with anything other than ErrNoActiveSubscription or
+// ErrSubscriptionNotFound, and a usage aggregate that fails, return a nil
+// result and an error that wraps ErrUnavailable (and the store's own error), so
+// a caller can fail open or closed on purpose.
+func (l *Ledger) Check(ctx context.Context, featureKey string) (*entitlement.Result, error) {
+	return l.checkEntitlement(ctx, featureKey, true)
+}
+
+// checkEntitlement is Entitled and Check. strict says whether a store failure
+// is an error or a denial.
+func (l *Ledger) checkEntitlement(ctx context.Context, featureKey string, strict bool) (*entitlement.Result, error) {
 	ctx, span := telemetry.StartChild(ctx, "check entitlement")
 	defer span.End()
 	// Attributes are built only for a span that records, so a check outside
@@ -588,7 +769,7 @@ func (l *Ledger) Entitled(ctx context.Context, featureKey string) (*entitlement.
 		span.SetAttributes(attribute.String(attrFeatureKey, featureKey))
 	}
 
-	result, source, err := l.entitled(ctx, featureKey)
+	result, source, err := l.entitled(ctx, featureKey, strict)
 	answer := resultError
 	switch {
 	case err != nil:
@@ -614,7 +795,7 @@ func (l *Ledger) Entitled(ctx context.Context, featureKey string) (*entitlement.
 
 // entitled answers Entitled, and says where the answer came from: the cache,
 // or which kind of computed answer it was.
-func (l *Ledger) entitled(ctx context.Context, featureKey string) (*entitlement.Result, entitlementKind, error) {
+func (l *Ledger) entitled(ctx context.Context, featureKey string, strict bool) (*entitlement.Result, entitlementKind, error) {
 	tenantID := extractTenantID(ctx)
 	appID := extractAppID(ctx)
 
@@ -631,7 +812,7 @@ func (l *Ledger) entitled(ctx context.Context, featureKey string) (*entitlement.
 		return cached, entitlementCached, nil
 	}
 
-	result, kind, err := l.computeEntitlement(ctx, tenantID, appID, featureKey)
+	result, kind, err := l.computeEntitlement(ctx, tenantID, appID, featureKey, strict)
 	if err != nil {
 		return nil, kind, err
 	}
@@ -663,10 +844,18 @@ const (
 
 // computeEntitlement answers an entitlement question from the store alone. It
 // reads no cache, writes no cache and fires no plugin events; callers decide.
-func (l *Ledger) computeEntitlement(ctx context.Context, tenantID, appID, featureKey string) (*entitlement.Result, entitlementKind, error) {
+//
+// When strict is false a store failure reads as no access, as it always has.
+// When strict is true a failure that is not a plain "not found" returns an
+// error wrapping ErrUnavailable.
+func (l *Ledger) computeEntitlement(ctx context.Context, tenantID, appID, featureKey string, strict bool) (*entitlement.Result, entitlementKind, error) {
 	// Get active subscription
 	sub, err := l.store.GetActiveSubscription(ctx, tenantID, appID)
 	if err != nil {
+		if strict && !errors.Is(err, ErrNoActiveSubscription) && !errors.Is(err, ErrSubscriptionNotFound) {
+			return nil, entitlementNoAccess, fmt.Errorf("%w: %w", ErrUnavailable, err)
+		}
+
 		return &entitlement.Result{
 			Allowed: false,
 			Feature: featureKey,
@@ -677,6 +866,10 @@ func (l *Ledger) computeEntitlement(ctx context.Context, tenantID, appID, featur
 	// Get plan
 	p, err := l.store.GetPlan(ctx, sub.PlanID)
 	if err != nil {
+		if strict && !errors.Is(err, ErrPlanNotFound) {
+			return nil, entitlementNoAccess, fmt.Errorf("%w: %w", ErrUnavailable, err)
+		}
+
 		return &entitlement.Result{
 			Allowed: false,
 			Feature: featureKey,
@@ -707,6 +900,10 @@ func (l *Ledger) computeEntitlement(ctx context.Context, tenantID, appID, featur
 	// Metered/seat feature
 	used, err := l.store.Aggregate(ctx, tenantID, appID, featureKey, feat.Period)
 	if err != nil {
+		if strict {
+			return nil, entitlementMetered, fmt.Errorf("%w: %w", ErrUnavailable, err)
+		}
+
 		return nil, entitlementMetered, err
 	}
 
@@ -1327,28 +1524,6 @@ func (l *Ledger) generateInvoice(ctx context.Context, subID id.SubscriptionID, o
 // ──────────────────────────────────────────────────
 // Helpers
 // ──────────────────────────────────────────────────
-
-func extractTenantID(ctx context.Context) string {
-	// Would extract from context (e.g., from Forge scope)
-	// For now, check context value
-	if v := ctx.Value("tenant_id"); v != nil {
-		if s, ok := v.(string); ok {
-			return s
-		}
-	}
-	return ""
-}
-
-func extractAppID(ctx context.Context) string {
-	// Would extract from context (e.g., from Forge scope)
-	// For now, check context value
-	if v := ctx.Value("app_id"); v != nil {
-		if s, ok := v.(string); ok {
-			return s
-		}
-	}
-	return ""
-}
 
 // tiersFor returns the tiers belonging to one feature key.
 func tiersFor(tiers []plan.PriceTier, featureKey string) []plan.PriceTier {
