@@ -1774,6 +1774,27 @@ func TestGenerateInvoice_CreditCoversPartialUsage(t *testing.T) {
 	}
 }
 
+func TestGenerateInvoice_FeatureInNoPoolIsBilledInFull(t *testing.T) {
+	l, s, sub := creditFixture(t, usagePool())
+	ingestFeature(t, s, sub, "compute", 3)
+	ingestFeature(t, s, sub, "ai_usd", 200)
+
+	inv, err := l.GenerateInvoice(context.Background(), sub.ID)
+	if err != nil {
+		t.Fatalf("GenerateInvoice: %v", err)
+	}
+	if over := lineItemsOfType(inv, invoice.LineItemOverage); len(over) != 2 {
+		t.Fatalf("got overage %+v, want a line each for compute and ai_usd", over)
+	}
+	credit := lineItemsOfType(inv, invoice.LineItemCredit)
+	if len(credit) != 1 || credit[0].Amount.Amount != -300 {
+		t.Fatalf("got credit lines %+v, want one of -300 covering compute only", credit)
+	}
+	if inv.Total.Amount != 700 {
+		t.Errorf("got total %v, want 700 (500 base + 300 compute + 200 ai_usd - 300 credit)", inv.Total)
+	}
+}
+
 func TestGenerateInvoice_CreditCappedAtPool(t *testing.T) {
 	l, s, sub := creditFixture(t, usagePool())
 	ingestFeature(t, s, sub, "compute", 8)

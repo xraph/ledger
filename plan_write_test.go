@@ -334,3 +334,70 @@ func TestCreatePlan_CreditPoolRejectionsSayWhatIsWrong(t *testing.T) {
 		})
 	}
 }
+
+func TestCreatePlan_NormalisesCreditPools(t *testing.T) {
+	ctx := context.Background()
+	l := ledger.New(memory.New())
+	p := creditPlan()
+	p.Credits = []plan.CreditPool{
+		{Key: " usage ", Amount: types.Money{Amount: 500, Currency: " USD "}, FeatureKeys: []string{"build_minutes"}},
+		{Key: "egress", Amount: types.Money{Amount: 100}, FeatureKeys: []string{"egress_gb"}},
+	}
+	if err := l.CreatePlan(ctx, p); err != nil {
+		t.Fatalf("CreatePlan: %v", err)
+	}
+	got, err := l.GetPlan(ctx, p.ID)
+	if err != nil {
+		t.Fatalf("GetPlan: %v", err)
+	}
+	want := []plan.CreditPool{
+		{Key: "usage", Amount: types.USD(500), FeatureKeys: []string{"build_minutes"}},
+		{Key: "egress", Amount: types.USD(100), FeatureKeys: []string{"egress_gb"}},
+	}
+	if !reflect.DeepEqual(got.Credits, want) {
+		t.Errorf("credits = %+v, want %+v", got.Credits, want)
+	}
+}
+
+func TestUpdatePlan_ChecksCreditPools(t *testing.T) {
+	ctx := context.Background()
+	l := ledger.New(memory.New())
+	p := creditPlan()
+	if err := l.CreatePlan(ctx, p); err != nil {
+		t.Fatalf("CreatePlan: %v", err)
+	}
+
+	edit, err := l.GetPlan(ctx, p.ID)
+	if err != nil {
+		t.Fatalf("GetPlan: %v", err)
+	}
+	edit.Credits[0].Amount = types.Money{Amount: 900, Currency: "USD"}
+	edit.Credits[0].FeatureKeys = []string{"build_minutes"}
+	if err = l.UpdatePlan(ctx, edit); err != nil {
+		t.Fatalf("UpdatePlan: %v", err)
+	}
+	got, err := l.GetPlan(ctx, p.ID)
+	if err != nil {
+		t.Fatalf("GetPlan: %v", err)
+	}
+	want := []plan.CreditPool{{Key: "usage", Amount: types.USD(900), FeatureKeys: []string{"build_minutes"}}}
+	if !reflect.DeepEqual(got.Credits, want) {
+		t.Fatalf("credits after update = %+v, want %+v", got.Credits, want)
+	}
+
+	bad, err := l.GetPlan(ctx, p.ID)
+	if err != nil {
+		t.Fatalf("GetPlan: %v", err)
+	}
+	bad.Credits[0].FeatureKeys = []string{"sso"}
+	if err = l.UpdatePlan(ctx, bad); !errors.Is(err, ledger.ErrInvalidCreditPool) {
+		t.Fatalf("UpdatePlan with a boolean feature in a pool: got %v, want ErrInvalidCreditPool", err)
+	}
+	got, err = l.GetPlan(ctx, p.ID)
+	if err != nil {
+		t.Fatalf("GetPlan: %v", err)
+	}
+	if !reflect.DeepEqual(got.Credits, want) {
+		t.Errorf("credits after a refused update = %+v, want them unchanged %+v", got.Credits, want)
+	}
+}
