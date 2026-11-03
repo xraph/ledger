@@ -384,7 +384,7 @@ ALTER TABLE ledger_subscriptions ADD COLUMN stretch_floor TEXT;
 			Name:    "add_invoice_credit_amount",
 			Version: "20240101000015",
 			Up: func(ctx context.Context, exec migrate.Executor) error {
-				_, err := exec.Exec(ctx, `ALTER TABLE ledger_invoices ADD COLUMN credit_amount INTEGER NOT NULL DEFAULT 0`)
+				_, err := exec.Exec(ctx, `ALTER TABLE ledger_invoices ADD COLUMN credit_amount_cents INTEGER NOT NULL DEFAULT 0`)
 				return err
 			},
 			Down: func(_ context.Context, _ migrate.Executor) error {

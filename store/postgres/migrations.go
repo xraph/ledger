@@ -378,11 +378,11 @@ ALTER TABLE ledger_subscriptions DROP COLUMN IF EXISTS stretch_floor;
 			Name:    "add_invoice_credit_amount",
 			Version: "20240101000014",
 			Up: func(ctx context.Context, exec migrate.Executor) error {
-				_, err := exec.Exec(ctx, `ALTER TABLE ledger_invoices ADD COLUMN IF NOT EXISTS credit_amount BIGINT NOT NULL DEFAULT 0`)
+				_, err := exec.Exec(ctx, `ALTER TABLE ledger_invoices ADD COLUMN IF NOT EXISTS credit_amount_cents BIGINT NOT NULL DEFAULT 0`)
 				return err
 			},
 			Down: func(ctx context.Context, exec migrate.Executor) error {
-				_, err := exec.Exec(ctx, `ALTER TABLE ledger_invoices DROP COLUMN IF EXISTS credit_amount`)
+				_, err := exec.Exec(ctx, `ALTER TABLE ledger_invoices DROP COLUMN IF EXISTS credit_amount_cents`)
 				return err
 			},
 		},

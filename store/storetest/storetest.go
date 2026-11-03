@@ -1269,8 +1269,8 @@ func testSubscriptionQuantityRoundTrip(t *testing.T, s ledgerstore.Store) {
 	}
 }
 
-// testInvoiceTenantIsolation is the invoice analogue of
-// testSubscriptionTenantIsolation.
+// testInvoiceCreditAmountRoundTrips checks that the credit applied to an
+// invoice survives a write and a read.
 func testInvoiceCreditAmountRoundTrips(t *testing.T, s ledgerstore.Store) {
 	ctx := context.Background()
 	inv := newTestInvoice("tenant-"+uniqueSuffix(), "app-"+uniqueSuffix())
@@ -1286,6 +1286,8 @@ func testInvoiceCreditAmountRoundTrips(t *testing.T, s ledgerstore.Store) {
 	}
 }
 
+// testInvoiceTenantIsolation is the invoice analogue of
+// testSubscriptionTenantIsolation.
 func testInvoiceTenantIsolation(t *testing.T, s ledgerstore.Store) {
 	ctx := context.Background()
 	appID := "app-" + uniqueSuffix()

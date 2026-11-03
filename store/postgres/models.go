@@ -336,7 +336,7 @@ type invoiceModel struct {
 	TaxCurrency         string            `grove:"tax_currency"`
 	DiscountAmountCents int64             `grove:"discount_amount_cents"`
 	DiscountCurrency    string            `grove:"discount_currency"`
-	CreditAmountCents   int64             `grove:"credit_amount"`
+	CreditAmountCents   int64             `grove:"credit_amount_cents"`
 	TotalAmountCents    int64             `grove:"total_amount_cents"`
 	TotalCurrency       string            `grove:"total_currency"`
 	LineItems           json.RawMessage   `grove:"line_items,type:jsonb"`
