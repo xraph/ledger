@@ -1802,7 +1802,15 @@ func (l *Ledger) SyncSubscriptionToProvider(ctx context.Context, subID id.Subscr
 	return result, syncErr
 }
 
+// zeroTotalPaymentRef is the payment reference SyncInvoiceToProvider records
+// on an invoice it marks paid because there is nothing to collect.
+const zeroTotalPaymentRef = "zero-total"
+
 // SyncInvoiceToProvider pushes a local invoice to the payment provider.
+//
+// An invoice whose total is zero has nothing to collect, so it is not sent:
+// it is marked paid with the payment reference "zero-total" and the result
+// carries no provider id. The provider is not called.
 func (l *Ledger) SyncInvoiceToProvider(ctx context.Context, invID id.InvoiceID) (res *provider.SyncResult, err error) {
 	ctx, span := telemetry.Start(ctx, "sync invoice",
 		trace.WithAttributes(attribute.String(attrInvoiceID, invID.String())))
@@ -1816,6 +1824,19 @@ func (l *Ledger) SyncInvoiceToProvider(ctx context.Context, invID id.InvoiceID) 
 	prov, err := l.providerFor(ctx, inv.ProviderName)
 	if err != nil {
 		return nil, err
+	}
+
+	if inv.Total.IsZero() {
+		if err := l.MarkInvoicePaid(ctx, invID, time.Now().UTC(), zeroTotalPaymentRef); err != nil {
+			return nil, err
+		}
+		return &provider.SyncResult{
+			ProviderName: prov.Name(),
+			EntityType:   "invoice",
+			EntityID:     invID.String(),
+			Direction:    "push",
+			Success:      true,
+		}, nil
 	}
 
 	providerID, syncErr := callProvider(l, prov, "sync_invoice", func() (string, error) {
