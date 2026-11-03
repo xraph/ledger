@@ -1,0 +1,18 @@
+{
+  "id": "evt_invoice_paid_foreign",
+  "object": "event",
+  "api_version": "2026-10-28.endive",
+  "created": 1793750400,
+  "type": "invoice.paid",
+  "data": {
+    "object": {
+      "id": "in_foreign",
+      "object": "invoice",
+      "customer": "cus_123",
+      "status": "paid",
+      "amount_paid": 800,
+      "currency": "usd",
+      "metadata": {}
+    }
+  }
+}

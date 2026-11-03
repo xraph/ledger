@@ -45,20 +45,29 @@ type seenRequest struct {
 	IdempotencyKey string
 }
 
+// fakeResp is one scripted answer from the fake Stripe API.
+type fakeResp struct {
+	Status int
+	Body   string
+}
+
 // fakeStripe is an httptest server standing in for api.stripe.com. Routes
-// map "METHOD /path" to a JSON body answered with 200.
+// map "METHOD /path" to a JSON body answered with 200. A route scripted with
+// script answers its calls in turn instead, repeating the last answer.
 type fakeStripe struct {
 	t      *testing.T
 	srv    *httptest.Server
 	routes map[string]string
 
-	mu   sync.Mutex
-	seen []seenRequest
+	mu      sync.Mutex
+	seen    []seenRequest
+	scripts map[string][]fakeResp
+	calls   map[string]int
 }
 
 func newFakeStripe(t *testing.T, routes map[string]string) *fakeStripe {
 	t.Helper()
-	f := &fakeStripe{t: t, routes: routes}
+	f := &fakeStripe{t: t, routes: routes, scripts: map[string][]fakeResp{}, calls: map[string]int{}}
 	f.srv = httptest.NewServer(http.HandlerFunc(f.serve))
 	t.Cleanup(f.srv.Close)
 	return f
@@ -83,10 +92,22 @@ func (f *fakeStripe) serve(w http.ResponseWriter, r *http.Request) {
 		Form:           form,
 		IdempotencyKey: r.Header.Get("Idempotency-Key"),
 	})
+	route := r.Method + " " + r.URL.Path
+	script, scripted := f.scripts[route]
+	n := f.calls[route]
+	f.calls[route]++
 	f.mu.Unlock()
 
-	resp, ok := f.routes[r.Method+" "+r.URL.Path]
 	w.Header().Set("Content-Type", "application/json")
+	if scripted {
+		answer := script[min(n, len(script)-1)]
+		if answer.Status != 0 {
+			w.WriteHeader(answer.Status)
+		}
+		_, _ = io.WriteString(w, answer.Body)
+		return
+	}
+	resp, ok := f.routes[route]
 	if !ok {
 		w.WriteHeader(http.StatusNotFound)
 		_, _ = io.WriteString(w, `{"error":{"type":"invalid_request_error","message":"no route"}}`)
@@ -106,6 +127,14 @@ func (f *fakeStripe) requests(method, path string) []seenRequest {
 		}
 	}
 	return out
+}
+
+// script makes route ("METHOD /path") answer its calls with resps in turn,
+// repeating the last one.
+func (f *fakeStripe) script(route string, resps ...fakeResp) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.scripts[route] = resps
 }
 
 // all returns every request the fake has seen, in the order it saw them.

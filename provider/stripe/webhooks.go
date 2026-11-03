@@ -36,8 +36,8 @@ func (p *Provider) Verify(payload []byte, signatureHeader string) error {
 // invoices and report the tenant. Any other event, or one that does not
 // carry Ledger metadata, comes back with Handled false and no error.
 //
-// Handling the same event twice gives the same result: setting the default
-// card overwrites it with the same value.
+// Handling the same event twice gives the same result, and an event for a
+// card older than the customer's current default leaves that default alone.
 func (p *Provider) HandleWebhook(ctx context.Context, payload []byte) (*provider.WebhookResult, error) {
 	var evt stripego.Event
 	if err := json.Unmarshal(payload, &evt); err != nil {
@@ -137,9 +137,32 @@ func (p *Provider) handleCheckoutSession(ctx context.Context, evt stripego.Event
 }
 
 // setDefaultPaymentMethod makes pm the card Stripe charges for the
-// customer's invoices. It sends no idempotency key: the update is a plain
-// overwrite, and a cached replay could undo a later change of card.
+// customer's invoices, unless the customer's current default is that card
+// already or was created after it. That keeps a late or replayed event for
+// an older card from replacing a newer one. The update sends no idempotency
+// key: it is a plain overwrite, and a cached replay could undo a later
+// change of card.
 func (p *Provider) setDefaultPaymentMethod(ctx context.Context, customerID, pmID string) error {
+	get := &stripego.CustomerRetrieveParams{}
+	get.AddExpand("invoice_settings.default_payment_method")
+	c, err := p.client.V1Customers.Retrieve(ctx, customerID, get)
+	if err != nil {
+		return fmt.Errorf("retrieve customer %s: %w", customerID, err)
+	}
+	if c.InvoiceSettings != nil && c.InvoiceSettings.DefaultPaymentMethod != nil {
+		current := c.InvoiceSettings.DefaultPaymentMethod
+		if current.ID == pmID {
+			return nil
+		}
+		incoming, err := p.client.V1PaymentMethods.Retrieve(ctx, pmID, nil)
+		if err != nil {
+			return fmt.Errorf("retrieve payment method %s: %w", pmID, err)
+		}
+		if current.Created > incoming.Created {
+			return nil
+		}
+	}
+
 	params := &stripego.CustomerUpdateParams{
 		InvoiceSettings: &stripego.CustomerUpdateInvoiceSettingsParams{
 			DefaultPaymentMethod: stripego.String(pmID),

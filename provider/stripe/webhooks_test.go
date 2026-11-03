@@ -37,8 +37,10 @@ func sign(payload []byte, secret string) string {
 var fixtureTime = time.Unix(1793750400, 0)
 
 // setupRoutes answers the calls a setup webhook makes for cus_123 and pm_9.
+// The customer has no default card yet.
 func setupRoutes() map[string]string {
 	return map[string]string{
+		"GET /v1/customers/cus_123":    `{"id":"cus_123","object":"customer","invoice_settings":{"default_payment_method":null}}`,
 		"GET /v1/setup_intents/seti_1": `{"id":"seti_1","object":"setup_intent","customer":"cus_123","payment_method":"pm_9","status":"succeeded"}`,
 		"POST /v1/customers/cus_123":   `{"id":"cus_123","object":"customer","invoice_settings":{"default_payment_method":"pm_9"}}`,
 	}
@@ -170,7 +172,11 @@ func TestHandleWebhook_SetupSucceededSetsDefault(t *testing.T) {
 }
 
 func TestHandleWebhook_UnknownEventIgnored(t *testing.T) {
-	for _, name := range []string{"customer_updated.json", "checkout_session_completed_payment.json"} {
+	for _, name := range []string{
+		"customer_updated.json",
+		"checkout_session_completed_payment.json",
+		"invoice_paid_no_ledger_metadata.json",
+	} {
 		t.Run(name, func(t *testing.T) {
 			f := newFakeStripe(t, nil)
 			p := newTestProvider(t, f, newMemCustomers())
@@ -202,6 +208,10 @@ func TestHandleWebhook_RejectsMalformedPayload(t *testing.T) {
 
 func TestHandleWebhook_ReplayIsSafe(t *testing.T) {
 	f := newFakeStripe(t, setupRoutes())
+	f.script("GET /v1/customers/cus_123",
+		fakeResp{Body: `{"id":"cus_123","object":"customer","invoice_settings":{"default_payment_method":null}}`},
+		fakeResp{Body: `{"id":"cus_123","object":"customer","invoice_settings":{"default_payment_method":{"id":"pm_9","object":"payment_method","created":100}}}`},
+	)
 	p := newTestProvider(t, f, newMemCustomers())
 	ctx := context.Background()
 
@@ -220,13 +230,59 @@ func TestHandleWebhook_ReplayIsSafe(t *testing.T) {
 		}
 	}
 
-	// Setting the default card is a plain overwrite, so a replay sends the
-	// same request again and leaves the customer as it was.
+	// The replay finds pm_9 already the default and leaves it alone.
 	updates := f.requests(http.MethodPost, "/v1/customers/cus_123")
-	if len(updates) != 2 {
-		t.Fatalf("customer updates = %d, want 2", len(updates))
+	if len(updates) != 1 {
+		t.Fatalf("customer updates = %d, want 1", len(updates))
 	}
-	if updates[0].Form.Encode() != updates[1].Form.Encode() {
-		t.Fatalf("replayed update differs: %q vs %q", updates[1].Form.Encode(), updates[0].Form.Encode())
+}
+
+// setupEvent builds a setup_intent.succeeded event for cus_123 saving pm.
+func setupEvent(eventID, pm string) []byte {
+	return []byte(`{"id":"` + eventID + `","object":"event","api_version":"2026-10-28.endive","created":1793750400,
+		"type":"setup_intent.succeeded","data":{"object":{"id":"seti_` + pm + `","object":"setup_intent",
+		"customer":"cus_123","payment_method":"` + pm + `","status":"succeeded","metadata":{"ledger_tenant_id":"ten_1"}}}}`)
+}
+
+func TestHandleWebhook_OutOfOrderSetupKeepsNewerCard(t *testing.T) {
+	f := newFakeStripe(t, map[string]string{
+		"GET /v1/payment_methods/pm_a": `{"id":"pm_a","object":"payment_method","type":"card","created":100}`,
+		"GET /v1/payment_methods/pm_b": `{"id":"pm_b","object":"payment_method","type":"card","created":200}`,
+		"POST /v1/customers/cus_123":   `{"id":"cus_123","object":"customer"}`,
+	})
+	// The customer's default as each delivery finds it: none, then A, then B.
+	f.script("GET /v1/customers/cus_123",
+		fakeResp{Body: `{"id":"cus_123","object":"customer","invoice_settings":{"default_payment_method":null}}`},
+		fakeResp{Body: `{"id":"cus_123","object":"customer","invoice_settings":{"default_payment_method":{"id":"pm_a","object":"payment_method","created":100}}}`},
+		fakeResp{Body: `{"id":"cus_123","object":"customer","invoice_settings":{"default_payment_method":{"id":"pm_b","object":"payment_method","created":200}}}`},
+	)
+	p := newTestProvider(t, f, newMemCustomers())
+	ctx := context.Background()
+
+	for _, evt := range [][]byte{
+		setupEvent("evt_a", "pm_a"),
+		setupEvent("evt_b", "pm_b"),
+		setupEvent("evt_a", "pm_a"), // late redelivery of A
+	} {
+		res, err := p.HandleWebhook(ctx, evt)
+		if err != nil {
+			t.Fatalf("HandleWebhook: %v", err)
+		}
+		if !res.Handled || res.EntityID != "ten_1" {
+			t.Fatalf("result = %+v, want handled for ten_1", res)
+		}
+	}
+
+	gets := f.requests(http.MethodGet, "/v1/customers/cus_123")
+	if len(gets) != 3 || gets[0].Form.Get("expand[0]") != "invoice_settings.default_payment_method" {
+		t.Fatalf("customer reads = %+v, want 3 expanding the default card", gets)
+	}
+	updates := f.requests(http.MethodPost, "/v1/customers/cus_123")
+	set := make([]string, 0, len(updates))
+	for _, u := range updates {
+		set = append(set, u.Form.Get("invoice_settings[default_payment_method]"))
+	}
+	if !reflect.DeepEqual(set, []string{"pm_a", "pm_b"}) {
+		t.Fatalf("default card updates = %q, want [pm_a pm_b] with the late A skipped", set)
 	}
 }
