@@ -529,7 +529,7 @@ Sentinels live in the root package. Match them with `errors.Is`.
 | Area | Errors |
 | --- | --- |
 | General | `ErrNotFound`, `ErrAlreadyExists`, `ErrInvalidInput`, `ErrUnauthorized`, `ErrForbidden` |
-| Plans and catalog | `ErrPlanNotFound`, `ErrPlanArchived`, `ErrPlanInUse`, `ErrFeatureNotFound`, `ErrFeatureArchived`, `ErrInvalidPricing`, `ErrDuplicateFeature` |
+| Plans and catalog | `ErrPlanNotFound`, `ErrPlanArchived`, `ErrPlanInUse`, `ErrFeatureNotFound`, `ErrFeatureArchived`, `ErrInvalidPricing`, `ErrDuplicateFeature`, `ErrInvalidCreditPool` |
 | Subscriptions | `ErrSubscriptionNotFound`, `ErrSubscriptionExists`, `ErrSubscriptionCanceled`, `ErrSubscriptionExpired`, `ErrInvalidUpgrade`, `ErrInvalidDowngrade`, `ErrTrialExpired`, `ErrNoActiveSubscription` |
 | Metering | `ErrMeterBufferFull`, `ErrInvalidQuantity`, `ErrDuplicateEvent`, `ErrEventTooOld` |
 | Entitlements | `ErrQuotaExceeded`, `ErrFeatureDisabled`, `ErrHardLimitReached`, `ErrSoftLimitReached`, `ErrNoEntitlement` |

@@ -362,5 +362,17 @@ ALTER TABLE ledger_subscriptions DROP COLUMN IF EXISTS stretch_floor;
 				return err
 			},
 		},
+		&migrate.Migration{
+			Name:    "add_plan_credits",
+			Version: "20240101000013",
+			Up: func(ctx context.Context, exec migrate.Executor) error {
+				_, err := exec.Exec(ctx, `ALTER TABLE ledger_plans ADD COLUMN IF NOT EXISTS credits JSONB NOT NULL DEFAULT '[]'`)
+				return err
+			},
+			Down: func(ctx context.Context, exec migrate.Executor) error {
+				_, err := exec.Exec(ctx, `ALTER TABLE ledger_plans DROP COLUMN IF EXISTS credits`)
+				return err
+			},
+		},
 	)
 }

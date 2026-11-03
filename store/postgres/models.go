@@ -31,6 +31,7 @@ type planModel struct {
 	TrialDays    int               `grove:"trial_days"`
 	Features     json.RawMessage   `grove:"features,type:jsonb"`
 	Pricing      json.RawMessage   `grove:"pricing,type:jsonb"`
+	Credits      json.RawMessage   `grove:"credits,type:jsonb"`
 	AppID        string            `grove:"app_id"`
 	ProviderID   string            `grove:"provider_id"`
 	ProviderName string            `grove:"provider_name"`
@@ -42,6 +43,7 @@ type planModel struct {
 func toPlanModel(p *plan.Plan) *planModel {
 	features, _ := json.Marshal(p.Features) //nolint:errcheck // best-effort
 	pricing, _ := json.Marshal(p.Pricing)   //nolint:errcheck // best-effort
+	credits, _ := json.Marshal(p.Credits)   //nolint:errcheck // best-effort
 	metadata := p.Metadata
 	if metadata == nil {
 		metadata = make(map[string]string)
@@ -57,6 +59,7 @@ func toPlanModel(p *plan.Plan) *planModel {
 		TrialDays:    p.TrialDays,
 		Features:     features,
 		Pricing:      pricing,
+		Credits:      credits,
 		AppID:        p.AppID,
 		ProviderID:   p.ProviderID,
 		ProviderName: p.ProviderName,
@@ -83,6 +86,11 @@ func fromPlanModel(m *planModel) (*plan.Plan, error) {
 		_ = json.Unmarshal(m.Pricing, pricing) //nolint:errcheck // best-effort
 	}
 
+	var credits []plan.CreditPool
+	if len(m.Credits) > 0 {
+		_ = json.Unmarshal(m.Credits, &credits) //nolint:errcheck // best-effort
+	}
+
 	return &plan.Plan{
 		Entity: types.Entity{
 			CreatedAt: m.CreatedAt,
@@ -97,6 +105,7 @@ func fromPlanModel(m *planModel) (*plan.Plan, error) {
 		TrialDays:    m.TrialDays,
 		Features:     features,
 		Pricing:      pricing,
+		Credits:      credits,
 		AppID:        m.AppID,
 		ProviderID:   m.ProviderID,
 		ProviderName: m.ProviderName,

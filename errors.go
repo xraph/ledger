@@ -23,6 +23,9 @@ var (
 	ErrInvalidPricing   = errors.New("ledger: invalid pricing configuration")
 	ErrDuplicateFeature = errors.New("ledger: duplicate feature key")
 
+	// ErrInvalidCreditPool is returned when a plan's credit pools are malformed.
+	ErrInvalidCreditPool = errors.New("ledger: invalid credit pool")
+
 	// Subscription errors
 	ErrSubscriptionNotFound = errors.New("ledger: subscription not found")
 	ErrSubscriptionExists   = errors.New("ledger: subscription already exists")

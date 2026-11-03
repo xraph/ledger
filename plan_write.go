@@ -32,6 +32,13 @@ func normalisePlan(p *plan.Plan) {
 			p.Features[i].ID = id.NewFeatureID()
 		}
 	}
+	for i := range p.Credits {
+		p.Credits[i].Key = strings.TrimSpace(p.Credits[i].Key)
+		p.Credits[i].Amount.Currency = strings.ToLower(strings.TrimSpace(p.Credits[i].Amount.Currency))
+		if p.Credits[i].Amount.Currency == "" {
+			p.Credits[i].Amount.Currency = p.Currency
+		}
+	}
 	if p.Pricing != nil {
 		if p.Pricing.ID.IsNil() {
 			p.Pricing.ID = id.NewPriceID()
@@ -90,6 +97,10 @@ func validatePlan(p *plan.Plan) error {
 		}
 	}
 
+	if err := validateCreditPools(p, keys); err != nil {
+		return err
+	}
+
 	if p.Pricing == nil {
 		return nil
 	}
@@ -115,6 +126,49 @@ func validatePlan(p *plan.Plan) error {
 	for _, key := range order {
 		if err := invoice.ValidateTiers(byFeature[key], p.Currency); err != nil {
 			return fmt.Errorf("feature %q: %w", key, err)
+		}
+	}
+	return nil
+}
+
+// validateCreditPools checks a plan's credit pools against its features. keys
+// holds the plan's feature keys. A pool spends on metered features only, and a
+// feature may sit in one pool at most, so a unit of usage is never paid twice.
+func validateCreditPools(p *plan.Plan, keys map[string]bool) error {
+	metered := make(map[string]bool, len(keys))
+	for _, f := range p.Features {
+		if f.Type == plan.FeatureMetered {
+			metered[f.Key] = true
+		}
+	}
+	poolKeys := make(map[string]bool, len(p.Credits))
+	poolOf := map[string]string{}
+	for _, c := range p.Credits {
+		if c.Key == "" {
+			return fmt.Errorf("%w: every credit pool needs a key", ErrInvalidCreditPool)
+		}
+		if poolKeys[c.Key] {
+			return fmt.Errorf("%w: duplicate pool key %q", ErrInvalidCreditPool, c.Key)
+		}
+		poolKeys[c.Key] = true
+		if c.Amount.Amount <= 0 {
+			return fmt.Errorf("%w: pool %q needs an amount above zero", ErrInvalidCreditPool, c.Key)
+		}
+		if c.Amount.Currency != p.Currency {
+			return fmt.Errorf("%w: pool %q is in %s but the plan bills in %s",
+				ErrInvalidCreditPool, c.Key, c.Amount.Currency, p.Currency)
+		}
+		for _, fk := range c.FeatureKeys {
+			switch {
+			case !keys[fk]:
+				return fmt.Errorf("%w: pool %q covers feature %q, which the plan does not have", ErrInvalidCreditPool, c.Key, fk)
+			case !metered[fk]:
+				return fmt.Errorf("%w: pool %q covers feature %q, which is not metered", ErrInvalidCreditPool, c.Key, fk)
+			}
+			if other, taken := poolOf[fk]; taken {
+				return fmt.Errorf("%w: feature %q is in pools %q and %q", ErrInvalidCreditPool, fk, other, c.Key)
+			}
+			poolOf[fk] = c.Key
 		}
 	}
 	return nil

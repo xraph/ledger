@@ -31,6 +31,7 @@ type planModel struct {
 	TrialDays    int               `grove:"trial_days"  bson:"trial_days"`
 	Features     []featureModel    `grove:"features"    bson:"features"`
 	Pricing      *pricingModel     `grove:"pricing"     bson:"pricing,omitempty"`
+	Credits      []creditPoolModel `grove:"credits"     bson:"credits,omitempty"`
 	AppID        string            `grove:"app_id"          bson:"app_id"`
 	ProviderID   string            `grove:"provider_id"     bson:"provider_id"`
 	ProviderName string            `grove:"provider_name"   bson:"provider_name"`
@@ -61,6 +62,13 @@ type pricingModel struct {
 	Tiers              []priceTierModel `bson:"tiers,omitempty"`
 	CreatedAt          time.Time        `bson:"created_at"`
 	UpdatedAt          time.Time        `bson:"updated_at"`
+}
+
+type creditPoolModel struct {
+	Key         string   `bson:"key"`
+	Cents       int64    `bson:"amount_cents"`
+	Currency    string   `bson:"amount_currency"`
+	FeatureKeys []string `bson:"feature_keys"`
 }
 
 type priceTierModel struct {
@@ -118,6 +126,13 @@ func toPlanModel(p *plan.Plan) *planModel {
 		}
 	}
 
+	var credits []creditPoolModel
+	for _, c := range p.Credits {
+		credits = append(credits, creditPoolModel{
+			Key: c.Key, Cents: c.Amount.Amount, Currency: c.Amount.Currency, FeatureKeys: c.FeatureKeys,
+		})
+	}
+
 	return &planModel{
 		ID:           p.ID.String(),
 		Name:         p.Name,
@@ -128,6 +143,7 @@ func toPlanModel(p *plan.Plan) *planModel {
 		TrialDays:    p.TrialDays,
 		Features:     features,
 		Pricing:      pricing,
+		Credits:      credits,
 		AppID:        p.AppID,
 		ProviderID:   p.ProviderID,
 		ProviderName: p.ProviderName,
@@ -235,6 +251,15 @@ func fromPlanModel(m *planModel) (*plan.Plan, error) {
 		}
 	}
 
+	var credits []plan.CreditPool
+	for _, c := range m.Credits {
+		credits = append(credits, plan.CreditPool{
+			Key:         c.Key,
+			Amount:      types.Money{Amount: c.Cents, Currency: c.Currency},
+			FeatureKeys: c.FeatureKeys,
+		})
+	}
+
 	return &plan.Plan{
 		Entity: types.Entity{
 			CreatedAt: m.CreatedAt,
@@ -249,6 +274,7 @@ func fromPlanModel(m *planModel) (*plan.Plan, error) {
 		TrialDays:    m.TrialDays,
 		Features:     features,
 		Pricing:      pricing,
+		Credits:      credits,
 		AppID:        m.AppID,
 		ProviderID:   m.ProviderID,
 		ProviderName: m.ProviderName,

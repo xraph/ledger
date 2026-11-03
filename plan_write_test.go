@@ -3,6 +3,7 @@ package ledger_test
 import (
 	"context"
 	"errors"
+	"reflect"
 	"testing"
 
 	ledger "github.com/xraph/ledger"
@@ -239,5 +240,68 @@ func TestUpdatePlanAcceptsALegacyUppercaseCurrency(t *testing.T) {
 	}
 	if got.Name != "Legacy renamed" {
 		t.Errorf("name = %q, want Legacy renamed", got.Name)
+	}
+}
+
+func creditPlan() *plan.Plan {
+	p := validPlan("credits", "app_1")
+	p.Currency = "usd"
+	p.Features = []plan.Feature{
+		{Key: "build_minutes", Name: "Build minutes", Type: plan.FeatureMetered, Limit: -1, Period: plan.PeriodMonthly},
+		{Key: "egress_gb", Name: "Egress", Type: plan.FeatureMetered, Limit: -1, Period: plan.PeriodMonthly},
+		{Key: "sso", Name: "SSO", Type: plan.FeatureBoolean},
+	}
+	p.Pricing = &plan.Pricing{BaseAmount: types.USD(500), BillingPeriod: plan.PeriodMonthly}
+	p.Credits = []plan.CreditPool{{
+		Key:         "usage",
+		Amount:      types.Money{Amount: 500, Currency: "usd"},
+		FeatureKeys: []string{"build_minutes", "egress_gb"},
+	}}
+	return p
+}
+
+func TestCreatePlan_CreditPoolValid(t *testing.T) {
+	ctx := context.Background()
+	l := ledger.New(memory.New())
+	p := creditPlan()
+	if err := l.CreatePlan(ctx, p); err != nil {
+		t.Fatalf("CreatePlan: %v", err)
+	}
+	got, err := l.GetPlan(ctx, p.ID)
+	if err != nil {
+		t.Fatalf("GetPlan: %v", err)
+	}
+	if !reflect.DeepEqual(got.Credits, p.Credits) {
+		t.Errorf("credits = %+v, want %+v", got.Credits, p.Credits)
+	}
+}
+
+func TestCreatePlan_CreditPoolRejects(t *testing.T) {
+	cases := []struct {
+		name   string
+		mutate func(*plan.Plan)
+	}{
+		{"unknown feature key", func(p *plan.Plan) { p.Credits[0].FeatureKeys = []string{"ghost"} }},
+		{"boolean feature", func(p *plan.Plan) { p.Credits[0].FeatureKeys = []string{"sso"} }},
+		{"feature in two pools", func(p *plan.Plan) {
+			p.Credits = append(p.Credits, plan.CreditPool{Key: "extra", Amount: types.USD(100), FeatureKeys: []string{"egress_gb"}})
+		}},
+		{"amount in another currency", func(p *plan.Plan) { p.Credits[0].Amount = types.EUR(500) }},
+		{"zero amount", func(p *plan.Plan) { p.Credits[0].Amount = types.USD(0) }},
+		{"negative amount", func(p *plan.Plan) { p.Credits[0].Amount = types.USD(-5) }},
+		{"empty key", func(p *plan.Plan) { p.Credits[0].Key = " " }},
+		{"duplicate pool key", func(p *plan.Plan) {
+			p.Credits = append(p.Credits, plan.CreditPool{Key: "usage", Amount: types.USD(100), FeatureKeys: []string{"sso"}})
+		}},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			l := ledger.New(memory.New())
+			p := creditPlan()
+			c.mutate(p)
+			if err := l.CreatePlan(context.Background(), p); !errors.Is(err, ledger.ErrInvalidCreditPool) {
+				t.Errorf("got %v, want ErrInvalidCreditPool", err)
+			}
+		})
 	}
 }

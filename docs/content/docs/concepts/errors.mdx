@@ -34,6 +34,7 @@ Some sentinels are declared but nothing in the module returns them yet. The tabl
 | `ErrPlanInUse` | `DeletePlan` on a plan a subscription still uses. Archive it instead. |
 | `ErrInvalidPricing` | A negative base price, a base price in another currency, or a tier for a feature the plan doesn't have. |
 | `ErrDuplicateFeature` | Two plan features share a key. |
+| `ErrInvalidCreditPool` | A credit pool with no key or a repeated key, an amount at or below zero or in another currency, or a feature that is unknown, not metered, or already in another pool. |
 | `ErrFeatureNotFound` | A catalog feature lookup finds nothing. |
 | `ErrPlanArchived`, `ErrFeatureArchived` | Declared only. Subscribing to an archived plan fails with `ErrInvalidInput`. |
 

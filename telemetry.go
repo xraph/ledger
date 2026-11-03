@@ -145,6 +145,7 @@ var sentinels = []struct {
 	{ErrFeatureArchived, "ledger.ErrFeatureArchived"},
 	{ErrInvalidPricing, "ledger.ErrInvalidPricing"},
 	{ErrDuplicateFeature, "ledger.ErrDuplicateFeature"},
+	{ErrInvalidCreditPool, "ledger.ErrInvalidCreditPool"},
 	{ErrSubscriptionNotFound, "ledger.ErrSubscriptionNotFound"},
 	{ErrSubscriptionExists, "ledger.ErrSubscriptionExists"},
 	{ErrSubscriptionCanceled, "ledger.ErrSubscriptionCanceled"},

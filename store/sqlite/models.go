@@ -46,6 +46,7 @@ type planModel struct {
 	TrialDays    int       `grove:"trial_days"`
 	Features     string    `grove:"features"` // JSON text
 	Pricing      string    `grove:"pricing"`  // JSON text
+	Credits      string    `grove:"credits"`  // JSON text
 	AppID        string    `grove:"app_id"`
 	ProviderID   string    `grove:"provider_id"`
 	ProviderName string    `grove:"provider_name"`
@@ -57,6 +58,7 @@ type planModel struct {
 func toPlanModel(p *plan.Plan) *planModel {
 	features, _ := json.Marshal(p.Features) //nolint:errcheck // best-effort
 	pricing, _ := json.Marshal(p.Pricing)   //nolint:errcheck // best-effort
+	credits, _ := json.Marshal(p.Credits)   //nolint:errcheck // best-effort
 	metadata, _ := json.Marshal(p.Metadata) //nolint:errcheck // best-effort
 
 	return &planModel{
@@ -69,6 +71,7 @@ func toPlanModel(p *plan.Plan) *planModel {
 		TrialDays:    p.TrialDays,
 		Features:     string(features),
 		Pricing:      string(pricing),
+		Credits:      string(credits),
 		AppID:        p.AppID,
 		ProviderID:   p.ProviderID,
 		ProviderName: p.ProviderName,
@@ -95,6 +98,11 @@ func fromPlanModel(m *planModel) (*plan.Plan, error) {
 		_ = json.Unmarshal([]byte(m.Pricing), pricing) //nolint:errcheck // best-effort
 	}
 
+	var credits []plan.CreditPool
+	if m.Credits != "" {
+		_ = json.Unmarshal([]byte(m.Credits), &credits) //nolint:errcheck // best-effort
+	}
+
 	var metadata map[string]string
 	if m.Metadata != "" {
 		_ = json.Unmarshal([]byte(m.Metadata), &metadata) //nolint:errcheck // best-effort
@@ -114,6 +122,7 @@ func fromPlanModel(m *planModel) (*plan.Plan, error) {
 		TrialDays:    m.TrialDays,
 		Features:     features,
 		Pricing:      pricing,
+		Credits:      credits,
 		AppID:        m.AppID,
 		ProviderID:   m.ProviderID,
 		ProviderName: m.ProviderName,
