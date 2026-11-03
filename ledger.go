@@ -1810,7 +1810,11 @@ const zeroTotalPaymentRef = "zero-total"
 //
 // An invoice whose total is zero has nothing to collect, so it is not sent:
 // it is marked paid with the payment reference "zero-total" and the result
-// carries no provider id. The provider is not called.
+// carries no provider id. The provider is not called. Only a pending or
+// past-due invoice is settled this way. A zero-total invoice that is already
+// paid returns the same success without writing anything, so a retry is
+// safe. A voided one returns ErrInvoiceVoided, and any other status (a
+// draft, say) an error wrapping ErrInvalidInput.
 func (l *Ledger) SyncInvoiceToProvider(ctx context.Context, invID id.InvoiceID) (res *provider.SyncResult, err error) {
 	ctx, span := telemetry.Start(ctx, "sync invoice",
 		trace.WithAttributes(attribute.String(attrInvoiceID, invID.String())))
@@ -1827,8 +1831,18 @@ func (l *Ledger) SyncInvoiceToProvider(ctx context.Context, invID id.InvoiceID) 
 	}
 
 	if inv.Total.IsZero() {
-		if err := l.MarkInvoicePaid(ctx, invID, time.Now().UTC(), zeroTotalPaymentRef); err != nil {
-			return nil, err
+		switch inv.Status {
+		case invoice.StatusPending, invoice.StatusPastDue:
+			if err := l.MarkInvoicePaid(ctx, invID, time.Now().UTC(), zeroTotalPaymentRef); err != nil {
+				return nil, err
+			}
+		case invoice.StatusPaid:
+			// A retry of a sync that already settled it: nothing to write.
+		case invoice.StatusVoided:
+			return nil, ErrInvoiceVoided
+		default:
+			return nil, fmt.Errorf("%w: invoice %s is %q, only pending or past_due invoices are synced",
+				ErrInvalidInput, invID, inv.Status)
 		}
 		return &provider.SyncResult{
 			ProviderName: prov.Name(),
