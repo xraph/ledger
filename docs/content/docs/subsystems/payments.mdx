@@ -5,7 +5,7 @@ description: The provider interface you implement to connect Stripe, Paddle or a
 
 Ledger doesn't take payments. It works out what a tenant owes and tracks the invoice from draft to paid, and collecting the money is up to you and your payment gateway. What Ledger gives you is an interface, `provider.Provider`, that lets the engine push plans, subscriptions and invoices to a gateway, pull them back, list payment methods and route webhooks.
 
-No provider ships with the module. There's no Stripe or Paddle package to import: you write the implementation for the gateway you use.
+A Stripe provider ships in `provider/stripe`, and [its page](/docs/subsystems/stripe) covers setup, webhooks and refunds. For Paddle or any other gateway, you write the implementation yourself against the interface below.
 
 ## The interface
 

@@ -8,6 +8,7 @@
     "entitlements",
     "invoicing",
     "payments",
+    "stripe",
     "billing-cycles",
     "coupons"
   ]
