@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"strconv"
 	"strings"
 
 	stripego "github.com/stripe/stripe-go/v87"
@@ -45,13 +44,19 @@ func (p *Provider) SyncSubscription(ctx context.Context, s *subscription.Subscri
 // The lines must sum to the invoice total, or nothing is sent. A zero-total
 // invoice is not sent and returns ("", nil); a negative total is an error.
 //
+// Before creating anything it looks through the customer's 20 most recent
+// Stripe invoices for one carrying this Ledger invoice id. An open, paid or
+// uncollectible one was already sent, and its id is returned with nothing
+// created, so a retry after a lost response does not bill twice. A draft one
+// is a leftover from a failed attempt and is deleted. Void ones are ignored.
+//
 // The draft is created without an idempotency key of ours (stripe-go still
 // keys its own network retries), so a retry after a failure starts a fresh
 // draft instead of replaying a deleted one. The items and the finalize call
 // are keyed on the draft: "invoice:<id>:<draft id>:<line id>" and
-// "invoice:<id>:<draft id>:finalize". A SyncInvoice that succeeded therefore
-// bills again if it is called again: the caller must keep the returned id
-// and not sync an invoice that already has one.
+// "invoice:<id>:<draft id>:finalize". The lookup only reaches 20 invoices
+// back, so the caller should still keep the returned id and not sync an
+// invoice that already has one.
 func (p *Provider) SyncInvoice(ctx context.Context, inv *invoice.Invoice) (string, error) {
 	if inv == nil {
 		return "", errors.New("stripe: sync invoice: invoice is nil")
@@ -78,6 +83,14 @@ func (p *Provider) SyncInvoice(ctx context.Context, inv *invoice.Invoice) (strin
 	}
 	if customerID == "" {
 		return "", ErrNoCustomer
+	}
+
+	existing, err := p.findSentInvoice(ctx, customerID, invID)
+	if err != nil {
+		return "", err
+	}
+	if existing != "" {
+		return existing, nil
 	}
 
 	draft, err := p.client.V1Invoices.Create(ctx, &stripego.InvoiceCreateParams{
@@ -125,6 +138,43 @@ func (p *Provider) SyncInvoice(ctx context.Context, inv *invoice.Invoice) (strin
 	return final.ID, nil
 }
 
+// recentInvoiceLimit is how many of the customer's newest Stripe invoices
+// SyncInvoice checks for one it already sent.
+const recentInvoiceLimit = 20
+
+// findSentInvoice looks through the customer's newest Stripe invoices for
+// the Ledger invoice invID. It returns the id of one already finalized and
+// deletes any draft left by a failed attempt. Stripe's list cannot filter by
+// metadata, so the match is made here; the Search API is not used because it
+// lags behind writes.
+func (p *Provider) findSentInvoice(ctx context.Context, customerID, invID string) (string, error) {
+	params := &stripego.InvoiceListParams{Customer: stripego.String(customerID)}
+	params.Limit = stripego.Int64(recentInvoiceLimit)
+
+	seen := 0
+	for in, err := range p.client.V1Invoices.List(ctx, params).All(ctx) {
+		if err != nil {
+			return "", fmt.Errorf("stripe: list invoices for %s: %w", invID, err)
+		}
+		seen++
+		if seen > recentInvoiceLimit {
+			break
+		}
+		if in.Metadata[invoiceMetadataKey] != invID {
+			continue
+		}
+		switch in.Status {
+		case stripego.InvoiceStatusOpen, stripego.InvoiceStatusPaid, stripego.InvoiceStatusUncollectible:
+			return in.ID, nil
+		case stripego.InvoiceStatusDraft:
+			if _, err := p.client.V1Invoices.Delete(ctx, in.ID, nil); err != nil {
+				return "", fmt.Errorf("stripe: delete leftover draft invoice %s: %w", in.ID, err)
+			}
+		}
+	}
+	return "", nil
+}
+
 // checkLines makes sure every line is in the invoice currency and that the
 // lines sum to the invoice total, so the Stripe invoice bills what Ledger
 // computed. The sum differs when credits and discounts exceed the subtotal
@@ -149,14 +199,16 @@ func checkLines(inv *invoice.Invoice, currency string) error {
 // now refunded in total. An invoice paid by more than one payment is refused,
 // since it is not clear which one to refund.
 //
-// The refund carries the idempotency key
-// "refund:<stripe invoice>:<already refunded>:<amount>", with "full" for a nil
-// amount and the payment's refunded total, in minor units, before this
-// refund. Two equal partial refunds get different keys, while a retry that
-// finds the same refunded total sends the same key.
-func (p *Provider) RefundInvoice(ctx context.Context, stripeInvoiceID string, amount *types.Money) (bool, error) {
+// refundKey identifies one refund intent and is required. The caller makes a
+// new key for each refund it means to issue and reuses that key when it
+// retries, so a retry after a lost response does not refund twice. The
+// refund is sent with the idempotency key "refund:<stripe invoice>:<key>".
+func (p *Provider) RefundInvoice(ctx context.Context, stripeInvoiceID string, amount *types.Money, refundKey string) (bool, error) {
 	if stripeInvoiceID == "" {
 		return false, errors.New("stripe: refund invoice: stripe invoice id is required")
+	}
+	if refundKey == "" {
+		return false, fmt.Errorf("stripe: refund invoice %s: refund key is required", stripeInvoiceID)
 	}
 	if amount != nil && amount.Amount <= 0 {
 		return false, fmt.Errorf("stripe: refund invoice %s: amount must be positive", stripeInvoiceID)
@@ -172,27 +224,19 @@ func (p *Provider) RefundInvoice(ctx context.Context, stripeInvoiceID string, am
 	}
 
 	params := &stripego.RefundCreateParams{}
-	var charge *stripego.Charge
 	switch {
 	case payment.Payment.PaymentIntent != nil:
 		params.PaymentIntent = stripego.String(payment.Payment.PaymentIntent.ID)
-		charge = payment.Payment.PaymentIntent.LatestCharge
 	case payment.Payment.Charge != nil:
 		params.Charge = stripego.String(payment.Payment.Charge.ID)
-		charge = payment.Payment.Charge
 	default:
 		return false, fmt.Errorf("stripe: refund invoice %s: payment %s has no charge to refund", stripeInvoiceID, payment.ID)
 	}
-	if charge == nil {
-		return false, fmt.Errorf("stripe: refund invoice %s: payment %s has no charge to refund", stripeInvoiceID, payment.ID)
-	}
-	key := "full"
 	if amount != nil {
 		params.Amount = stripego.Int64(amount.Amount)
-		key = strconv.FormatInt(amount.Amount, 10)
 	}
 	params.AddExpand("charge")
-	params.SetIdempotencyKey("refund:" + stripeInvoiceID + ":" + strconv.FormatInt(charge.AmountRefunded, 10) + ":" + key)
+	params.SetIdempotencyKey("refund:" + stripeInvoiceID + ":" + refundKey)
 
 	refund, err := p.client.V1Refunds.Create(ctx, params)
 	if err != nil {
@@ -204,16 +248,14 @@ func (p *Provider) RefundInvoice(ctx context.Context, stripeInvoiceID string, am
 	return refund.Charge.AmountRefunded >= payment.AmountPaid, nil
 }
 
-// paidPayment returns the one paid payment on a Stripe invoice, with its
-// charge expanded. In this API version an invoice no longer names its
-// charge or payment intent; the invoice payments list does.
+// paidPayment returns the one paid payment on a Stripe invoice. In this API
+// version an invoice no longer names its charge or payment intent; the
+// invoice payments list does.
 func (p *Provider) paidPayment(ctx context.Context, stripeInvoiceID string) (*stripego.InvoicePayment, error) {
 	params := &stripego.InvoicePaymentListParams{
 		Invoice: stripego.String(stripeInvoiceID),
 		Status:  stripego.String("paid"),
 	}
-	params.AddExpand("data.payment.payment_intent.latest_charge")
-	params.AddExpand("data.payment.charge")
 
 	var found *stripego.InvoicePayment
 	for payment, err := range p.client.V1InvoicePayments.List(ctx, params).All(ctx) {

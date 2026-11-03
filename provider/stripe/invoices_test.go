@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"net/http"
-	"reflect"
 	"strconv"
 	"strings"
 	"testing"
@@ -15,9 +14,24 @@ import (
 	"github.com/xraph/ledger/types"
 )
 
+// emptyInvoiceList is a customer with no Stripe invoices yet.
+const emptyInvoiceList = `{"object":"list","url":"/v1/invoices","has_more":false,"data":[]}`
+
+// writes returns the non-GET requests the fake has seen, in order.
+func writes(f *fakeStripe) []seenRequest {
+	var out []seenRequest
+	for _, r := range f.all() {
+		if r.Method != http.MethodGet {
+			out = append(out, r)
+		}
+	}
+	return out
+}
+
 // invoiceRoutes answers the calls SyncInvoice makes for Stripe invoice in_1.
 func invoiceRoutes() map[string]string {
 	return map[string]string{
+		"GET /v1/invoices":                emptyInvoiceList,
 		"POST /v1/invoices":               `{"id":"in_1","object":"invoice","status":"draft"}`,
 		"POST /v1/invoiceitems":           `{"id":"ii_1","object":"invoiceitem"}`,
 		"POST /v1/invoices/in_1/finalize": `{"id":"in_1","object":"invoice","status":"open"}`,
@@ -75,7 +89,14 @@ func TestSyncInvoice_LinesAndTotalsMatch(t *testing.T) {
 
 	// The draft invoice comes first: in this API version pending items are
 	// not pulled into a new invoice, so each item names the invoice.
-	seen := f.all()
+	lists := f.requests(http.MethodGet, "/v1/invoices")
+	if len(lists) != 1 || lists[0].Form.Get("customer") != "cus_123" || lists[0].Form.Get("limit") != "20" {
+		t.Fatalf("invoice lists = %+v, want one for cus_123 with limit=20", lists)
+	}
+	if first := f.all()[0]; first.Method != http.MethodGet {
+		t.Fatalf("first request = %s %s, want the invoice lookup", first.Method, first.Path)
+	}
+	seen := writes(f)
 	if len(seen) != 5 {
 		t.Fatalf("Stripe saw %d requests, want 5: %+v", len(seen), seen)
 	}
@@ -148,11 +169,11 @@ func TestSyncInvoice_IdempotentRetry(t *testing.T) {
 	if _, err := p.SyncInvoice(ctx, inv); err != nil {
 		t.Fatalf("first SyncInvoice: %v", err)
 	}
-	first := f.all()
+	first := writes(f)
 	if _, err := p.SyncInvoice(ctx, inv); err != nil {
 		t.Fatalf("second SyncInvoice: %v", err)
 	}
-	second := f.all()[len(first):]
+	second := writes(f)[len(first):]
 
 	if len(second) != len(first) {
 		t.Fatalf("retry made %d requests, first call made %d", len(second), len(first))
@@ -193,6 +214,7 @@ func TestSyncInvoice_IdempotentRetry(t *testing.T) {
 
 func TestSyncInvoice_FailedLineDeletesDraftAndRetryStartsFresh(t *testing.T) {
 	f := newFakeStripe(t, map[string]string{
+		"GET /v1/invoices":                emptyInvoiceList,
 		"DELETE /v1/invoices/in_1":        `{"id":"in_1","object":"invoice","deleted":true}`,
 		"POST /v1/invoices/in_2/finalize": `{"id":"in_2","object":"invoice","status":"open"}`,
 	})
@@ -223,7 +245,7 @@ func TestSyncInvoice_FailedLineDeletesDraftAndRetryStartsFresh(t *testing.T) {
 		t.Fatalf("partial draft in_1 finalized %d times, want 0", n)
 	}
 
-	before := len(f.all())
+	before := len(writes(f))
 	got, err := p.SyncInvoice(ctx, inv)
 	if err != nil {
 		t.Fatalf("retry SyncInvoice: %v", err)
@@ -231,7 +253,7 @@ func TestSyncInvoice_FailedLineDeletesDraftAndRetryStartsFresh(t *testing.T) {
 	if got != "in_2" {
 		t.Fatalf("retry SyncInvoice = %q, want the fresh draft in_2", got)
 	}
-	retry := f.all()[before:]
+	retry := writes(f)[before:]
 	if retry[0].Path != "/v1/invoices" || retry[0].IdempotencyKey == drafts[0].IdempotencyKey {
 		t.Fatalf("retry draft = %+v, want a new draft with a new key", retry[0])
 	}
@@ -334,15 +356,73 @@ func TestSyncSubscription_EnsuresCustomer(t *testing.T) {
 	}
 }
 
+func TestSyncInvoice_ReusesInvoiceAlreadySent(t *testing.T) {
+	inv := testInvoice()
+	for _, status := range []string{"open", "paid", "uncollectible"} {
+		t.Run(status, func(t *testing.T) {
+			routes := invoiceRoutes()
+			routes["GET /v1/invoices"] = `{"object":"list","url":"/v1/invoices","has_more":false,"data":[
+				{"id":"in_other","object":"invoice","status":"paid","metadata":{"ledger_invoice_id":"inv_someone_else"}},
+				{"id":"in_void","object":"invoice","status":"void","metadata":{"ledger_invoice_id":"` + inv.ID.String() + `"}},
+				{"id":"in_sent","object":"invoice","status":"` + status + `","metadata":{"ledger_invoice_id":"` + inv.ID.String() + `"}}
+			]}`
+			f := newFakeStripe(t, routes)
+			p := providerWithCustomer(t, f)
+
+			got, err := p.SyncInvoice(context.Background(), inv)
+			if err != nil {
+				t.Fatalf("SyncInvoice: %v", err)
+			}
+			if got != "in_sent" {
+				t.Fatalf("SyncInvoice = %q, want the invoice already sent, in_sent", got)
+			}
+			if w := writes(f); len(w) != 0 {
+				t.Fatalf("Stripe saw writes %+v, want none", w)
+			}
+		})
+	}
+}
+
+func TestSyncInvoice_DeletesLeftoverDraft(t *testing.T) {
+	inv := testInvoice()
+	routes := invoiceRoutes()
+	routes["GET /v1/invoices"] = `{"object":"list","url":"/v1/invoices","has_more":false,"data":[
+		{"id":"in_old","object":"invoice","status":"draft","metadata":{"ledger_invoice_id":"` + inv.ID.String() + `"}}
+	]}`
+	routes["DELETE /v1/invoices/in_old"] = `{"id":"in_old","object":"invoice","deleted":true}`
+	f := newFakeStripe(t, routes)
+	p := providerWithCustomer(t, f)
+
+	got, err := p.SyncInvoice(context.Background(), inv)
+	if err != nil {
+		t.Fatalf("SyncInvoice: %v", err)
+	}
+	if got != "in_1" {
+		t.Fatalf("SyncInvoice = %q, want the fresh draft in_1", got)
+	}
+	w := writes(f)
+	if len(w) == 0 || w[0].Method != http.MethodDelete || w[0].Path != "/v1/invoices/in_old" {
+		t.Fatalf("first write = %+v, want DELETE /v1/invoices/in_old", w)
+	}
+	if n := len(f.requests(http.MethodPost, "/v1/invoices")); n != 1 {
+		t.Fatalf("drafts created = %d, want 1", n)
+	}
+	if n := len(f.requests(http.MethodPost, "/v1/invoices/in_1/finalize")); n != 1 {
+		t.Fatalf("finalized %d times, want 1", n)
+	}
+	if n := len(f.requests(http.MethodPost, "/v1/invoices/in_old/finalize")); n != 0 {
+		t.Fatalf("leftover draft finalized %d times, want 0", n)
+	}
+}
+
 // refundRoutes answers RefundInvoice for Stripe invoice in_1, paid 800 by
-// pi_1 whose charge had prior refunded before this refund. The refund is for
-// amount and leaves the charge with refunded in total.
-func refundRoutes(prior, amount, refunded int64) map[string]string {
+// pi_1. The refund is for amount and leaves the charge with refunded in
+// total.
+func refundRoutes(amount, refunded int64) map[string]string {
 	return map[string]string{
 		"GET /v1/invoice_payments": `{"object":"list","url":"/v1/invoice_payments","has_more":false,"data":[
 			{"id":"inpay_1","object":"invoice_payment","amount_paid":800,"currency":"usd","status":"paid","is_default":true,
-			 "payment":{"type":"payment_intent","payment_intent":{"id":"pi_1","object":"payment_intent",
-			  "latest_charge":{"id":"ch_1","object":"charge","amount":800,"amount_refunded":` + strconv.FormatInt(prior, 10) + `,"currency":"usd"}}}}
+			 "payment":{"type":"payment_intent","payment_intent":"pi_1"}}
 		]}`,
 		"POST /v1/refunds": `{"id":"re_1","object":"refund","amount":` + strconv.FormatInt(amount, 10) +
 			`,"payment_intent":"pi_1","charge":{"id":"ch_1","object":"charge","amount":800,"amount_refunded":` +
@@ -354,10 +434,10 @@ func TestRefundInvoice_FullAndPartial(t *testing.T) {
 	ctx := context.Background()
 
 	t.Run("nil amount refunds the whole payment", func(t *testing.T) {
-		f := newFakeStripe(t, refundRoutes(0, 800, 800))
+		f := newFakeStripe(t, refundRoutes(800, 800))
 		p := providerWithCustomer(t, f)
 
-		full, err := p.RefundInvoice(ctx, "in_1", nil)
+		full, err := p.RefundInvoice(ctx, "in_1", nil, "rf_1")
 		if err != nil {
 			t.Fatalf("RefundInvoice: %v", err)
 		}
@@ -367,10 +447,6 @@ func TestRefundInvoice_FullAndPartial(t *testing.T) {
 		lists := f.requests(http.MethodGet, "/v1/invoice_payments")
 		if len(lists) != 1 || lists[0].Form.Get("invoice") != "in_1" || lists[0].Form.Get("status") != "paid" {
 			t.Fatalf("invoice_payments lists = %+v, want one for in_1 with status=paid", lists)
-		}
-		got := []string{lists[0].Form.Get("expand[0]"), lists[0].Form.Get("expand[1]")}
-		if !reflect.DeepEqual(got, []string{"data.payment.payment_intent.latest_charge", "data.payment.charge"}) {
-			t.Errorf("invoice_payments expand = %q, want the charge expanded", got)
 		}
 		refunds := f.requests(http.MethodPost, "/v1/refunds")
 		if len(refunds) != 1 {
@@ -383,17 +459,17 @@ func TestRefundInvoice_FullAndPartial(t *testing.T) {
 		if r.Form.Has("amount") {
 			t.Errorf("amount = %q, want none for a full refund", r.Form.Get("amount"))
 		}
-		if r.IdempotencyKey != "refund:in_1:0:full" {
-			t.Errorf("Idempotency-Key = %q, want refund:in_1:0:full", r.IdempotencyKey)
+		if r.IdempotencyKey != "refund:in_1:rf_1" {
+			t.Errorf("Idempotency-Key = %q, want refund:in_1:rf_1", r.IdempotencyKey)
 		}
 	})
 
 	t.Run("partial amount", func(t *testing.T) {
-		f := newFakeStripe(t, refundRoutes(0, 100, 100))
+		f := newFakeStripe(t, refundRoutes(100, 100))
 		p := providerWithCustomer(t, f)
 		amount := types.USD(100)
 
-		full, err := p.RefundInvoice(ctx, "in_1", &amount)
+		full, err := p.RefundInvoice(ctx, "in_1", &amount, "rf_1")
 		if err != nil {
 			t.Fatalf("RefundInvoice: %v", err)
 		}
@@ -401,51 +477,81 @@ func TestRefundInvoice_FullAndPartial(t *testing.T) {
 			t.Fatal("full = true, want false for 100 of 800")
 		}
 		refunds := f.requests(http.MethodPost, "/v1/refunds")
-		if len(refunds) != 1 {
-			t.Fatalf("refunds = %d, want 1", len(refunds))
-		}
-		r := refunds[0]
-		if got := r.Form.Get("amount"); got != "100" {
-			t.Errorf("amount = %q, want 100", got)
-		}
-		if r.IdempotencyKey != "refund:in_1:0:100" {
-			t.Errorf("Idempotency-Key = %q, want refund:in_1:0:100", r.IdempotencyKey)
+		if len(refunds) != 1 || refunds[0].Form.Get("amount") != "100" || refunds[0].IdempotencyKey != "refund:in_1:rf_1" {
+			t.Fatalf("refunds = %+v, want one of 100 keyed refund:in_1:rf_1", refunds)
 		}
 	})
 
 	t.Run("partial refunds that reach the amount paid are full", func(t *testing.T) {
-		f := newFakeStripe(t, refundRoutes(100, 700, 800))
+		f := newFakeStripe(t, refundRoutes(700, 800))
 		p := providerWithCustomer(t, f)
 		amount := types.USD(700)
 
-		full, err := p.RefundInvoice(ctx, "in_1", &amount)
+		full, err := p.RefundInvoice(ctx, "in_1", &amount, "rf_2")
 		if err != nil {
 			t.Fatalf("RefundInvoice: %v", err)
 		}
 		if !full {
 			t.Fatal("full = false, want true once the refunded total reaches 800")
 		}
-		if r := f.requests(http.MethodPost, "/v1/refunds"); len(r) != 1 || r[0].IdempotencyKey != "refund:in_1:100:700" {
-			t.Fatalf("refunds = %+v, want one keyed refund:in_1:100:700", r)
-		}
 	})
 
-	t.Run("two equal partial refunds get different keys", func(t *testing.T) {
-		f := newFakeStripe(t, refundRoutes(0, 100, 100))
-		first := refundRoutes(0, 100, 100)["GET /v1/invoice_payments"]
-		second := refundRoutes(100, 100, 200)["GET /v1/invoice_payments"]
-		f.script("GET /v1/invoice_payments", fakeResp{Body: first}, fakeResp{Body: second})
+	t.Run("a retry with the same key sends the same key", func(t *testing.T) {
+		f := newFakeStripe(t, refundRoutes(100, 100))
 		p := providerWithCustomer(t, f)
 		amount := types.USD(100)
 
 		for range 2 {
-			if _, err := p.RefundInvoice(ctx, "in_1", &amount); err != nil {
+			if _, err := p.RefundInvoice(ctx, "in_1", &amount, "rf_1"); err != nil {
+				t.Fatalf("RefundInvoice: %v", err)
+			}
+		}
+		// Stripe answers a repeated idempotency key with the first refund,
+		// so these two calls make one refund.
+		r := f.requests(http.MethodPost, "/v1/refunds")
+		if len(r) != 2 || r[0].IdempotencyKey != "refund:in_1:rf_1" || r[1].IdempotencyKey != r[0].IdempotencyKey {
+			t.Fatalf("refunds = %+v, want both keyed refund:in_1:rf_1", r)
+		}
+	})
+
+	t.Run("two keys with equal amounts are two refunds", func(t *testing.T) {
+		f := newFakeStripe(t, refundRoutes(100, 100))
+		p := providerWithCustomer(t, f)
+		amount := types.USD(100)
+
+		for _, key := range []string{"rf_1", "rf_2"} {
+			if _, err := p.RefundInvoice(ctx, "in_1", &amount, key); err != nil {
 				t.Fatalf("RefundInvoice: %v", err)
 			}
 		}
 		r := f.requests(http.MethodPost, "/v1/refunds")
-		if len(r) != 2 || r[0].IdempotencyKey != "refund:in_1:0:100" || r[1].IdempotencyKey != "refund:in_1:100:100" {
-			t.Fatalf("refund keys = %+v, want refund:in_1:0:100 then refund:in_1:100:100", r)
+		if len(r) != 2 || r[0].IdempotencyKey != "refund:in_1:rf_1" || r[1].IdempotencyKey != "refund:in_1:rf_2" {
+			t.Fatalf("refunds = %+v, want keys refund:in_1:rf_1 then refund:in_1:rf_2", r)
+		}
+	})
+
+	t.Run("empty refund key", func(t *testing.T) {
+		f := newFakeStripe(t, refundRoutes(800, 800))
+		p := providerWithCustomer(t, f)
+
+		if _, err := p.RefundInvoice(ctx, "in_1", nil, ""); err == nil {
+			t.Fatal("RefundInvoice without a refund key: want error")
+		}
+		if n := f.total(); n != 0 {
+			t.Fatalf("Stripe saw %d requests, want 0", n)
+		}
+	})
+
+	t.Run("wrong currency", func(t *testing.T) {
+		f := newFakeStripe(t, refundRoutes(100, 100))
+		p := providerWithCustomer(t, f)
+		amount := types.EUR(100)
+
+		if _, err := p.RefundInvoice(ctx, "in_1", &amount, "rf_1"); err == nil {
+			t.Fatal("RefundInvoice in eur against a usd payment: want error")
+		}
+		if n := len(f.requests(http.MethodPost, "/v1/refunds")); n != 0 {
+			t.Fatalf("refunds = %d, want 0", n)
 		}
 	})
 
@@ -453,29 +559,16 @@ func TestRefundInvoice_FullAndPartial(t *testing.T) {
 		f := newFakeStripe(t, map[string]string{
 			"GET /v1/invoice_payments": `{"object":"list","url":"/v1/invoice_payments","has_more":false,"data":[
 				{"id":"inpay_1","object":"invoice_payment","amount_paid":400,"currency":"usd","status":"paid",
-				 "payment":{"type":"payment_intent","payment_intent":{"id":"pi_1","object":"payment_intent"}}},
+				 "payment":{"type":"payment_intent","payment_intent":"pi_1"}},
 				{"id":"inpay_2","object":"invoice_payment","amount_paid":400,"currency":"usd","status":"paid",
-				 "payment":{"type":"payment_intent","payment_intent":{"id":"pi_2","object":"payment_intent"}}}
+				 "payment":{"type":"payment_intent","payment_intent":"pi_2"}}
 			]}`,
 		})
 		p := providerWithCustomer(t, f)
 
-		_, err := p.RefundInvoice(ctx, "in_1", nil)
+		_, err := p.RefundInvoice(ctx, "in_1", nil, "rf_1")
 		if err == nil || !strings.Contains(err.Error(), "more than one paid payment") {
 			t.Fatalf("err = %v, want a more-than-one-payment error", err)
-		}
-		if n := len(f.requests(http.MethodPost, "/v1/refunds")); n != 0 {
-			t.Fatalf("refunds = %d, want 0", n)
-		}
-	})
-
-	t.Run("wrong currency", func(t *testing.T) {
-		f := newFakeStripe(t, refundRoutes(0, 100, 100))
-		p := providerWithCustomer(t, f)
-		amount := types.EUR(100)
-
-		if _, err := p.RefundInvoice(ctx, "in_1", &amount); err == nil {
-			t.Fatal("RefundInvoice in eur against a usd payment: want error")
 		}
 		if n := len(f.requests(http.MethodPost, "/v1/refunds")); n != 0 {
 			t.Fatalf("refunds = %d, want 0", n)
@@ -488,7 +581,7 @@ func TestRefundInvoice_FullAndPartial(t *testing.T) {
 		})
 		p := providerWithCustomer(t, f)
 
-		if _, err := p.RefundInvoice(ctx, "in_1", nil); !errors.Is(err, ErrNotPaid) {
+		if _, err := p.RefundInvoice(ctx, "in_1", nil, "rf_1"); !errors.Is(err, ErrNotPaid) {
 			t.Fatalf("err = %v, want ErrNotPaid", err)
 		}
 	})
