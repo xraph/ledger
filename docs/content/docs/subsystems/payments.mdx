@@ -1,11 +1,11 @@
 ---
 title: Payment Providers
-description: The provider interface you implement to connect Stripe, Paddle or another gateway, and what the engine does with it.
+description: The provider interface behind payments, the Stripe provider Ledger ships, and what the engine does with either.
 ---
 
 Ledger doesn't take payments. It works out what a tenant owes and tracks the invoice from draft to paid, and collecting the money is up to you and your payment gateway. What Ledger gives you is an interface, `provider.Provider`, that lets the engine push plans, subscriptions and invoices to a gateway, pull them back, list payment methods and route webhooks.
 
-No provider ships with the module. There's no Stripe or Paddle package to import: you write the implementation for the gateway you use.
+A Stripe provider ships in `provider/stripe`, and [its page](/docs/subsystems/stripe) covers setup, webhooks and refunds. For Paddle or any other gateway, you write the implementation yourself against the interface below.
 
 ## The interface
 
@@ -41,15 +41,15 @@ type Provider interface {
 A provider reaches the engine as a plugin that implements `plugin.PaymentProviderPlugin`:
 
 ```go
-type stripePlugin struct{ p *StripeProvider }
+type paddlePlugin struct{ p *PaddleProvider }
 
-func (s *stripePlugin) Name() string                { return "stripe" }
-func (s *stripePlugin) Provider() provider.Provider { return s.p }
+func (s *paddlePlugin) Name() string                { return "paddle" }
+func (s *paddlePlugin) Provider() provider.Provider { return s.p }
 
-engine := ledger.New(store, ledger.WithPlugin(&stripePlugin{p: NewStripeProvider(apiKey)}))
+engine := ledger.New(store, ledger.WithPlugin(&paddlePlugin{p: NewPaddleProvider(apiKey)}))
 ```
 
-You can register more than one. Calls that take a provider name use the one whose `Provider().Name()` matches; calls that don't use the first one registered. `ProviderNames()` and `HasProviders()` tell you what's there.
+For Stripe, `stripe.NewPlugin(sp)` does this for you. You can register more than one. Calls that take a provider name use the one whose `Provider().Name()` matches; calls that don't use the first one registered. `ProviderNames()` and `HasProviders()` tell you what's there.
 
 ## What the engine does with it
 
@@ -57,7 +57,7 @@ You can register more than one. Calls that take a provider name use the one whos
 |--------|------|
 | `ListPaymentMethods(ctx, tenantID)` | Asks the first provider. Returns an empty list, not an error, when none is registered. |
 | `SyncPlanToProvider(ctx, planID)` | Calls `SyncPlan` on the provider named in the plan's `ProviderName`, or the first one. On success, stores the provider's ID and name on the plan. |
-| `SyncFeatureToProvider`, `SyncSubscriptionToProvider`, `SyncInvoiceToProvider` | The same for those entities. Subscription and invoice syncs write only the provider columns, so a lifecycle change landing during the network call survives. |
+| `SyncFeatureToProvider`, `SyncSubscriptionToProvider`, `SyncInvoiceToProvider` | The same for those entities. Subscription and invoice syncs write only the provider columns, so a lifecycle change landing during the network call survives. An invoice whose total is zero is never sent: it's marked paid with the payment reference `zero-total`. |
 | `ImportPlanFromProvider(ctx, providerName, providerID, opts...)` | Pulls a plan and creates it through `CreatePlan`, so it's validated like any other. A slug the app already uses fails with `ErrAlreadyExists`, which is also what stops a second import of the same plan. |
 | `ImportFeatureFromProvider`, `ImportSubscriptionFromProvider`, `ImportInvoiceFromProvider` | The same for those entities, each with its own checks. |
 | `HandleWebhook(ctx, providerName, payload)` | Fires `OnWebhookReceived`, then passes the payload to the provider's `HandleWebhook`. A provider error comes back wrapped in `ErrProviderWebhook`. |
@@ -73,13 +73,13 @@ Imports take `ledger.ImportInto(appID)` to file the record under an app. The pro
 Ledger has no webhook endpoint. Mount one on your own router and hand the body to the engine:
 
 ```go
-mux.HandleFunc("POST /webhooks/stripe", func(w http.ResponseWriter, r *http.Request) {
+mux.HandleFunc("POST /webhooks/paddle", func(w http.ResponseWriter, r *http.Request) {
 	payload, err := io.ReadAll(r.Body)
 	if err != nil {
 		http.Error(w, "bad body", http.StatusBadRequest)
 		return
 	}
-	if _, err := engine.HandleWebhook(r.Context(), "stripe", payload); err != nil {
+	if _, err := engine.HandleWebhook(r.Context(), "paddle", payload); err != nil {
 		http.Error(w, "rejected", http.StatusBadRequest)
 		return
 	}

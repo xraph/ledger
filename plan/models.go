@@ -24,10 +24,20 @@ type Plan struct {
 	TrialDays    int               `json:"trial_days"`
 	Features     []Feature         `json:"features"`
 	Pricing      *Pricing          `json:"pricing,omitempty"`
+	Credits      []CreditPool      `json:"credits,omitempty"`
 	AppID        string            `json:"app_id"`
 	ProviderID   string            `json:"provider_id,omitempty"`
 	ProviderName string            `json:"provider_name,omitempty"`
 	Metadata     map[string]string `json:"metadata,omitempty"`
+}
+
+// CreditPool is an amount of usage credit a plan includes each billing period.
+// It is spent against the metered features named in FeatureKeys, and a feature
+// belongs to at most one pool on a plan.
+type CreditPool struct {
+	Key         string      `json:"key"`
+	Amount      types.Money `json:"amount"`
+	FeatureKeys []string    `json:"feature_keys"`
 }
 
 type Feature struct {

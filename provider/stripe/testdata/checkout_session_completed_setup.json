@@ -1,0 +1,18 @@
+{
+  "id": "evt_checkout_completed",
+  "object": "event",
+  "api_version": "2026-10-28.endive",
+  "created": 1793750400,
+  "type": "checkout.session.completed",
+  "data": {
+    "object": {
+      "id": "cs_1",
+      "object": "checkout.session",
+      "mode": "setup",
+      "status": "complete",
+      "customer": "cus_123",
+      "setup_intent": "seti_1",
+      "metadata": {"ledger_tenant_id": "ten_1"}
+    }
+  }
+}

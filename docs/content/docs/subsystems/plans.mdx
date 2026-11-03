@@ -80,6 +80,7 @@ Seat features price the full seat count with an allowance of zero, so for seats 
 - a feature without a key, a duplicate key (`ErrDuplicateFeature`), an unknown type or period, or a limit below `-1`;
 - a negative base price, or one in another currency (`ErrInvalidPricing`);
 - a tier for a feature the plan doesn't have (`ErrInvalidPricing`);
+- a broken credit pool (`ErrInvalidCreditPool`), covered above;
 - a broken ladder (`invoice.ErrInvalidTiers`): mixed types, an unknown type, a currency that isn't the plan's, two tiers with the same `UpTo`, a negative amount, a graduated or volume tier with a `FlatAmount`, or a flat tier with a `UnitAmount`.
 
 `CreatePlan` also trims the name and slug, lowercases the currency, gives features and pricing their IDs, and refuses a slug the app already uses (`ErrAlreadyExists`).
@@ -87,6 +88,22 @@ Seat features price the full seat count with an allowance of zero, so for seats 
 ### Custom pricing
 
 A feature (or the whole plan) can name a pricing strategy plugin in its `Metadata` under `"pricing_strategy"`, and a metered feature can name a usage aggregator under `"aggregator"`. The engine hands the pricing or the usage total to that plugin. See [Custom plugin](/docs/guides/custom-plugin#strategy-plugins).
+
+## Credit pools
+
+A credit pool is an amount of usage a plan covers each billing period, in money rather than units. Give a plan a pool and its invoice takes that much off the metered charges for the features the pool names.
+
+```go
+pro.Credits = []plan.CreditPool{
+	{Key: "ai", Amount: types.USD(2000), FeatureKeys: []string{"api_calls"}},
+}
+```
+
+Each pool becomes one negative `credit` line on the invoice, titled `<key> credit`. The credit is the smaller of the pool's amount and the usage charges already on the invoice for its features, so a pool only ever cancels usage. It never touches the base fee or seat charges, it never goes below zero, and a pool with no usage to cancel adds no line. Unused credit doesn't roll over. The sum of the credits is `Invoice.CreditAmount`.
+
+Credit comes off before coupons. A percentage coupon is taken on the subtotal less credit.
+
+A pool needs a unique key, an amount above zero in the plan's currency, and at least one feature key. Each key has to exist on the plan, be metered, and appear once. A feature can sit in one pool at most, so a unit of usage is never paid for twice. `CreatePlan`, `UpdatePlan` and `ActivatePlan` refuse anything else with `ErrInvalidCreditPool`.
 
 ## Status
 

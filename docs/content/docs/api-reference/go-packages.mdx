@@ -124,7 +124,7 @@ Errors: the sentinel errors, `IsNotFound`, `IsQuotaError`, `IsRetryable`, and th
 
 ### `github.com/xraph/ledger/plan`
 
-`Plan`, `Feature`, `Pricing`, `PriceTier` and `ListOpts`, plus:
+`Plan`, `Feature`, `Pricing`, `PriceTier`, `CreditPool` and `ListOpts`, plus:
 
 ```go
 func (p *Plan) FindFeature(key string) *Feature
@@ -137,6 +137,8 @@ func (p *Plan) Allows(featureKey string, currentUsage int64) bool
 | `FeatureType` | `FeatureMetered`, `FeatureBoolean`, `FeatureSeat` |
 | `Period` | `PeriodMonthly`, `PeriodYearly`, `PeriodNone` |
 | `TierType` | `TierGraduated`, `TierVolume`, `TierFlat` |
+
+`CreditPool` (`Key`, `Amount`, `FeatureKeys`) is one entry in `Plan.Credits`: an amount of usage charges the plan pays for each period. See [credit pools](/docs/subsystems/plans#credit-pools).
 
 `plan.Store` is the plan slice of storage (`Create`, `Get`, `GetBySlug`, `List`, `Update`, `Delete`, `Archive`). Stores implement `store.Store` instead, which repeats these with entity-prefixed names.
 
@@ -170,7 +172,7 @@ The catalog: `Feature` and `ListOpts`, with its own `Status`, `FeatureType` and 
 | Type | Constants |
 |------|-----------|
 | `Status` | `StatusDraft`, `StatusPending`, `StatusPaid`, `StatusPastDue`, `StatusVoided` |
-| `LineItemType` | `LineItemBase`, `LineItemUsage`, `LineItemOverage`, `LineItemSeat`, `LineItemDiscount`, `LineItemTax` |
+| `LineItemType` | `LineItemBase`, `LineItemUsage`, `LineItemOverage`, `LineItemSeat`, `LineItemCredit`, `LineItemDiscount`, `LineItemTax` |
 
 The tier pricing the engine uses is exported:
 
@@ -215,6 +217,27 @@ type WebhookResult struct {
 	Timestamp             time.Time
 }
 ```
+
+### `github.com/xraph/ledger/provider/stripe`
+
+A `provider.Provider` that collects Ledger invoices through Stripe. See [Stripe provider](/docs/subsystems/stripe).
+
+```go
+func New(cfg Config) (*Provider, error)               // SecretKey, WebhookSecret, Customers, Currency
+func NewPlugin(p *Provider) plugin.PaymentProviderPlugin // panics on a nil p
+
+type CustomerStore interface {
+	CustomerID(ctx context.Context, tenantID string) (string, error)
+	SetCustomerID(ctx context.Context, tenantID, customerID string) error
+}
+
+func (p *Provider) EnsureCustomer(ctx context.Context, tenantID, email, name string) (string, error)
+func (p *Provider) CreateSetupSession(ctx context.Context, tenantID, successURL, cancelURL string) (string, error)
+func (p *Provider) Verify(payload []byte, signatureHeader string) error
+func (p *Provider) RefundInvoice(ctx context.Context, stripeInvoiceID string, amount *types.Money, refundKey string) (full bool, err error)
+```
+
+The rest of `Provider` is the `provider.Provider` interface. Errors: `ErrUnsupported`, `ErrNoCustomer`, `ErrMissingTenant` and `ErrNotPaid`.
 
 ## Shared packages
 

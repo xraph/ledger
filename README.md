@@ -144,6 +144,14 @@ Pricing: &plan.Pricing{
 
 With `Limit: 10000` on the feature, the first 10,000 calls are covered by the base fee and every call after that costs a cent. `CreatePlan` checks the ladder when you save the plan, so a broken one (mixed tier types, a currency that doesn't match the plan) fails right there with `invoice.ErrInvalidTiers`, long before a billing run.
 
+A plan can also include usage credit with `Credits`. Each `plan.CreditPool` is an amount of money per period, spent against the metered features it names, and it shows up on the invoice as a negative `credit` line (the total is `Invoice.CreditAmount`). A pool only cancels usage, never the base fee or seats, and a feature can belong to one pool on a plan:
+
+```go
+pro.Credits = []plan.CreditPool{
+	{Key: "ai", Amount: types.USD(2000), FeatureKeys: []string{"api_calls"}},
+}
+```
+
 These are the engine methods you'll reach for most:
 
 | Area | Methods on `*ledger.Ledger` |
@@ -190,11 +198,35 @@ defer l.Stop()
 
 `Start` migrates the schema before it starts the workers. If you migrate separately, pass `ledger.WithoutMigrate()`. Every store passes the same conformance suite in `store/storetest`, and you can run it against your own `store.Store` too.
 
+## Collecting payment with Stripe
+
+`provider/stripe` copies each finished Ledger invoice into Stripe and lets Stripe charge the tenant's saved card. Ledger stays the source of truth for plans and prices, so there's nothing to mirror on the Stripe side.
+
+```go
+sp, err := stripe.New(stripe.Config{
+	SecretKey:     os.Getenv("STRIPE_SECRET_KEY"),
+	WebhookSecret: os.Getenv("STRIPE_WEBHOOK_SECRET"),
+	Customers:     customers, // your stripe.CustomerStore: tenant id to Stripe customer id
+})
+if err != nil {
+	return err
+}
+engine := ledger.New(store, ledger.WithPlugin(stripe.NewPlugin(sp)))
+
+// in your webhook handler: check the signature, then pass the body on
+if err := sp.Verify(payload, r.Header.Get("Stripe-Signature")); err != nil {
+	return err
+}
+res, err := engine.HandleWebhook(ctx, "stripe", payload)
+```
+
+Create the webhook endpoint in Stripe on API version `2026-10-28.endive`. `Verify` refuses an event from another release train, though stripe-go only compares the part after the dot, so any `*.endive` version gets through. Keep the Stripe invoice id that `SyncInvoice` returns, run one sync per invoice at a time, and give every refund its own `refundKey` (reused on retries). The [Stripe provider page](docs/content/docs/subsystems/stripe.mdx) has the webhook handler in full.
+
 ## Plugins, audit and metrics
 
 Register a plugin with `ledger.WithPlugin(p)`. A plugin implements `plugin.Plugin` (just `Name()`) plus any hook interfaces it cares about, such as `OnSubscriptionCreated`, `OnQuotaExceeded`, `OnInvoicePaid` or `OnInvoicePastDue`. The full list is in [`plugin/plugin.go`](plugin/plugin.go).
 
-Some plugin interfaces change what the engine computes. `PricingStrategy`, `UsageAggregator`, `TaxCalculator` and `InvoiceFormatter` let you replace tier pricing, usage totals, tax and export formats, and `PaymentProviderPlugin` connects a payment provider through the [`provider.Provider`](provider/provider.go) interface for sync, import and webhooks. Ledger doesn't ship a provider implementation, so you write the one for Stripe, Paddle or whoever you use.
+Some plugin interfaces change what the engine computes. `PricingStrategy`, `UsageAggregator`, `TaxCalculator` and `InvoiceFormatter` let you replace tier pricing, usage totals, tax and export formats, and `PaymentProviderPlugin` connects a payment provider through the [`provider.Provider`](provider/provider.go) interface for sync, import and webhooks. Stripe is covered by the `provider/stripe` package (see below). For Paddle or anyone else, you write the `provider.Provider` yourself.
 
 Two plugins come in the box:
 
@@ -262,6 +294,7 @@ Outside Forge, the engine takes `ledger.WithLogger`, `WithPlugin`, `WithMeterCon
 | --- | --- |
 | Get a first plan billing | [Getting started](https://www.xraph.com/docs/ledger/getting-started) |
 | Understand quotas and usage | [Entitlements](https://www.xraph.com/docs/ledger/subsystems/entitlements), [metering](https://www.xraph.com/docs/ledger/subsystems/metering) |
+| Collect payment through Stripe | [Stripe provider](https://www.xraph.com/docs/ledger/subsystems/stripe) |
 | Bill a period | [Invoicing](https://www.xraph.com/docs/ledger/subsystems/invoicing), [billing cycles](https://www.xraph.com/docs/ledger/subsystems/billing-cycles), [coupons](https://www.xraph.com/docs/ledger/subsystems/coupons) |
 | Scope data per tenant and app | [Multi-tenancy](https://www.xraph.com/docs/ledger/concepts/multi-tenancy) |
 | Pick and run a store | [PostgreSQL](https://www.xraph.com/docs/ledger/stores/postgres), [SQLite](https://www.xraph.com/docs/ledger/stores/sqlite), [MongoDB](https://www.xraph.com/docs/ledger/stores/mongo), [memory](https://www.xraph.com/docs/ledger/stores/memory) |
@@ -278,7 +311,7 @@ Put the tenant and app in the context with `ledger.WithTenant` and call `l.Entit
 
 ### Does Ledger charge cards?
 
-No. Ledger computes what a tenant owes and tracks invoice state (`FinalizeInvoice`, `MarkInvoicePaid`, `MarkInvoiceVoided`). Collecting the money is a payment provider's job, and you connect one by writing a `provider.Provider` and registering it as a plugin.
+Not itself. Ledger computes what a tenant owes and tracks invoice state (`FinalizeInvoice`, `MarkInvoicePaid`, `MarkInvoiceVoided`). Collecting the money is a payment provider's job. `provider/stripe` does it for Stripe, and for anything else you write a `provider.Provider` and register it as a plugin.
 
 ### Can I use Ledger without Forge?
 

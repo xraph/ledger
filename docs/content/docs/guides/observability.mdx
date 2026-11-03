@@ -87,7 +87,7 @@ histogram_quantile(0.95, sum by (le, provider, operation) (rate(forge_ledger_pro
 
 ## Payment providers
 
-Ledger ships no provider, so it can't trace the HTTP calls yours makes. If you write one, build its client on `forge.HTTPClient()` or wrap its transport with `forge.InstrumentTransport`. Its requests then show up as client spans under `sync plan`, `handle webhook` and the rest.
+Ledger can't trace the HTTP calls a provider makes on its own. The bundled Stripe provider talks to Stripe through stripe-go's default client, so its requests don't show up as client spans; you still get the engine's own `sync invoice` and `handle webhook` spans around them. If you write a provider, build its client on `forge.HTTPClient()` or wrap its transport with `forge.InstrumentTransport`. Its requests then show up as client spans under `sync plan`, `handle webhook` and the rest.
 
 ## The observability plugin
 

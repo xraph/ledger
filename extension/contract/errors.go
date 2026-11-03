@@ -37,6 +37,7 @@ var (
 		ledger.ErrInvalidInput, ledger.ErrCouponInvalid, ledger.ErrCouponExpired,
 		ledger.ErrCouponNotStarted, ledger.ErrInvalidPricing, ledger.ErrDuplicateFeature,
 		ledger.ErrInvalidDiscount, ledger.ErrInvalidQuantity, invoice.ErrInvalidTiers,
+		ledger.ErrInvalidCreditPool,
 		types.ErrOverflow,
 	}
 	conflictErrs = []error{

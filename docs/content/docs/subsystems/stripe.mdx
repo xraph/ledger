@@ -1,0 +1,147 @@
+---
+title: Stripe Provider
+description: Collect Ledger invoices through Stripe with the provider/stripe package, including webhooks and refunds.
+---
+
+Ledger ships a Stripe provider in `github.com/xraph/ledger/provider/stripe`. It collects the invoices Ledger computes and nothing else. There are no Stripe plans, prices or subscriptions to keep in step: Ledger works out what a tenant owes, the provider copies the finished invoice into Stripe, and Stripe charges the tenant's saved card.
+
+You need a Stripe secret key, a webhook signing secret and somewhere to store the tenant-to-customer mapping. The package is built on stripe-go v87.1.0 and Stripe API version `2026-10-28.endive`.
+
+## Setting it up
+
+The mapping is a two-method interface you implement over your own tables:
+
+```go
+type CustomerStore interface {
+	CustomerID(ctx context.Context, tenantID string) (string, error) // "" when the tenant has none
+	SetCustomerID(ctx context.Context, tenantID, customerID string) error
+}
+```
+
+Then build the provider and register it as a plugin:
+
+```go
+sp, err := stripe.New(stripe.Config{
+	SecretKey:     os.Getenv("STRIPE_SECRET_KEY"),
+	WebhookSecret: os.Getenv("STRIPE_WEBHOOK_SECRET"),
+	Customers:     customers,
+	Currency:      "usd", // optional, used for card setup sessions; empty means usd
+})
+if err != nil {
+	return err
+}
+
+engine := ledger.New(store, ledger.WithPlugin(stripe.NewPlugin(sp)))
+```
+
+`New` fails if the secret key, the webhook secret or the customer store is missing. The provider's name is `"stripe"`, which is what the engine's provider calls take.
+
+## Getting a card on file
+
+A tenant needs a Stripe customer, then a saved card.
+
+```go
+customerID, err := sp.EnsureCustomer(ctx, tenantID, "billing@acme.test", "Acme Ltd")
+
+url, err := sp.CreateSetupSession(ctx, tenantID, successURL, cancelURL)
+// redirect the tenant to url
+```
+
+`EnsureCustomer` creates the customer on first call and returns the stored id after that. Creation is sent with the idempotency key `customer:<tenantID>`, and Stripe only honours a key for about a day. Retry inside that window with the same email and name and you get the same customer back. Retry with a different email or name and Stripe answers with `idempotency_error`. Retry after the window and you get a second customer, so check your own `CustomerStore` first.
+
+`CreateSetupSession` opens a Checkout session in setup mode and returns its URL. It fails with `ErrNoCustomer` if you haven't called `EnsureCustomer` yet, and with `ErrMissingTenant` if the tenant id is empty. `ListPaymentMethods` reads the tenant's cards live from Stripe and marks the one used for invoices as `IsDefault`.
+
+## Sending an invoice
+
+Generate and finalize the invoice in Ledger as usual, then sync it:
+
+```go
+res, err := engine.SyncInvoiceToProvider(ctx, inv.ID)
+```
+
+The provider creates a draft Stripe invoice with auto-advance off, adds one item per Ledger line (credit and discount lines go across as negative items), and only then finalizes it, which is the point Stripe starts collecting. If adding a line fails, the draft is deleted. The lines have to add up to the invoice total or nothing is sent. Only a `pending` or `past_due` invoice goes across: a draft, a paid or a voided one is refused before Stripe is called. An invoice whose `ProviderName` is `"stripe"` and that already has a `ProviderID` gets that id back, also without a call.
+
+A zero-total invoice has nothing to collect, so `SyncInvoiceToProvider` doesn't send it. It marks the invoice paid with the payment reference `zero-total` and returns a result with no provider id. Call `sp.SyncInvoice` directly on one and you get `("", nil)`.
+
+The amount Stripe charges can differ from `Total`. Below Stripe's minimum charge for the currency (50 cents in USD), Stripe marks the invoice paid without charging the card and moves the amount onto the customer's balance, where it lands on the next Stripe invoice. Stripe also takes anything already in that balance, credit or debit, into account before it charges. Ledger sees neither, so if you bill tiny amounts or touch the customer balance yourself, reconcile against what Stripe actually collected and not against `Total`.
+
+Three rules are on you as the caller:
+
+- Keep the Stripe invoice id. The engine stores it on the invoice's `ProviderID` when you go through `SyncInvoiceToProvider`; if you call `sp.SyncInvoice` yourself, save the returned id. Don't sync an invoice that already has one.
+- Run one sync per invoice at a time. Two overlapping calls can each create a draft before either sees the other.
+- Treat a failed sync as safe to retry. Before it creates anything, the provider looks through the customer's 20 most recent Stripe invoices for one carrying this Ledger invoice id. A sent one (open, paid or uncollectible) is returned as is, a leftover draft is deleted, and a void one is ignored. That lookup only reaches 20 invoices back, which is why the first rule still matters.
+
+## Webhooks
+
+Mount an endpoint on your own router. Check the signature with `Verify`, then hand the body to the engine:
+
+```go
+mux.HandleFunc("POST /webhooks/stripe", func(w http.ResponseWriter, r *http.Request) {
+	payload, err := io.ReadAll(r.Body)
+	if err != nil {
+		http.Error(w, "bad body", http.StatusBadRequest)
+		return
+	}
+	if err := sp.Verify(payload, r.Header.Get("Stripe-Signature")); err != nil {
+		http.Error(w, "bad signature", http.StatusBadRequest)
+		return
+	}
+	res, err := engine.HandleWebhook(r.Context(), "stripe", payload)
+	if err != nil {
+		http.Error(w, "failed", http.StatusInternalServerError)
+		return
+	}
+	if res.Handled && res.EventType == "invoice.paid" {
+		// res.EntityID is the Ledger invoice id, res.ProviderID the Stripe invoice id.
+		invID, perr := id.ParseInvoiceID(res.EntityID)
+		if perr != nil {
+			http.Error(w, "bad invoice id", http.StatusInternalServerError)
+			return
+		}
+		err = engine.MarkInvoicePaid(r.Context(), invID, res.Timestamp, res.ProviderID)
+		switch {
+		case err == nil, errors.Is(err, ledger.ErrInvoicePaid):
+			// Paid now, or by an earlier delivery of this event.
+		case errors.Is(err, ledger.ErrInvoiceVoided):
+			// Stripe collected money on an invoice you voided. Alert
+			// someone, or refund it with sp.RefundInvoice.
+			log.Printf("stripe collected %s on voided invoice %s", res.ProviderID, invID)
+		default:
+			http.Error(w, "failed", http.StatusInternalServerError)
+			return
+		}
+	}
+	w.WriteHeader(http.StatusOK)
+})
+```
+
+`res.Timestamp` is when Stripe created the event, so the paid-at time on the invoice is when the payment happened, not when your handler got round to it. Stripe delivers events at least once, which is why `ErrInvoicePaid` counts as success. `ErrInvoiceVoided` is different: the money arrived on an invoice you'd already voided, and someone has to decide whether to refund it.
+
+`HandleWebhook` never checks the signature, so don't skip `Verify`. It rejects a missing or wrong signature, and one older than five minutes. It also rejects an event from another release train: stripe-go only compares the part after the dot, so any `*.endive` version passes while a `*.dahlia` one is refused. Create the webhook endpoint in Stripe on `2026-10-28.endive` to be safe.
+
+Subscribe the endpoint to these events:
+
+| Event | What the provider does |
+|-------|------------------------|
+| `invoice.paid` | Reports the Ledger invoice named in the Stripe invoice's metadata (`EntityType` is `invoice`). You call `MarkInvoicePaid`. |
+| `invoice.payment_failed` | Reports the same invoice. What happens next (a retry, a past-due mark, an email) is up to you. |
+| `checkout.session.completed` | For a setup-mode session, makes the saved card the customer's default for invoices and reports the tenant (`EntityType` is `tenant`). Other modes are ignored. |
+| `setup_intent.succeeded` | Nothing, for cards saved through `CreateSetupSession`: the tenant id lives on the Checkout session, not the setup intent. It only acts on a setup intent you created yourself with `ledger_tenant_id` in its metadata. |
+
+Any other event, or one without Ledger metadata, comes back with `Handled` false and no error. Handling the same event twice gives the same result, and a card event older than the customer's current default leaves that default alone, so Stripe's out-of-order delivery doesn't swap cards under you.
+
+## Refunds
+
+```go
+full, err := sp.RefundInvoice(ctx, stripeInvoiceID, nil, refundKey)
+```
+
+A nil amount refunds whatever is left of the payment. Pass a `*types.Money` for a partial refund, in minor units of the payment's currency. `full` says whether the payment is now refunded in total.
+
+`refundKey` is required, and it names one refund intent. Make a new key for each refund you mean to issue and reuse that same key when you retry, so a lost response doesn't refund twice. The provider sends it to Stripe as `refund:<stripe invoice>:<refundKey>`. An invoice with no paid payment fails with `ErrNotPaid`, and one paid by several payments is refused because it isn't clear which to refund.
+
+## What it doesn't do
+
+`SyncPlan` and `SyncFeature` do nothing, and `SyncSubscription` only makes sure the tenant has a customer and returns its id. The four `Import` methods return `ErrUnsupported`, since Ledger owns plans, features, subscriptions and invoices. Errors you can match with `errors.Is`: `ErrUnsupported`, `ErrNoCustomer`, `ErrMissingTenant` and `ErrNotPaid`.
+
+See [Payment providers](/docs/subsystems/payments) for the interface it implements.

@@ -1675,3 +1675,213 @@ func TestGenerateInvoiceRefusesANegativeBaseAmount(t *testing.T) {
 	}
 	requireNoInvoiceStored(t, s, sub)
 }
+
+// creditFixture builds a plan with a $5.00 base fee, metered features
+// compute (1.00 a unit) and ai_usd (1c a unit), both with no allowance, and
+// the given credit pools.
+func creditFixture(t *testing.T, pools ...plan.CreditPool) (*ledger.Ledger, *memory.Store, *subscription.Subscription) {
+	t.Helper()
+	ctx := context.Background()
+
+	s := memory.New()
+	l := ledger.New(s)
+
+	p := &plan.Plan{
+		Entity:   types.NewEntity(),
+		ID:       id.NewPlanID(),
+		Name:     "Credits",
+		Slug:     "credits",
+		Currency: "usd",
+		Status:   plan.StatusActive,
+		AppID:    "app_1",
+		Features: []plan.Feature{
+			{ID: id.NewFeatureID(), Key: "compute", Name: "Compute", Type: plan.FeatureMetered, Period: plan.PeriodMonthly},
+			{ID: id.NewFeatureID(), Key: "ai_usd", Name: "AI", Type: plan.FeatureMetered, Period: plan.PeriodMonthly},
+		},
+		Pricing: &plan.Pricing{
+			ID:            id.NewPriceID(),
+			BaseAmount:    types.USD(500),
+			BillingPeriod: plan.PeriodMonthly,
+			Tiers: []plan.PriceTier{
+				{FeatureKey: "compute", Type: plan.TierGraduated, UpTo: 0, UnitAmount: types.USD(100)},
+				{FeatureKey: "ai_usd", Type: plan.TierGraduated, UpTo: 0, UnitAmount: types.USD(1)},
+			},
+		},
+		Credits: pools,
+	}
+	if err := s.CreatePlan(ctx, p); err != nil {
+		t.Fatalf("CreatePlan: %v", err)
+	}
+	sub := &subscription.Subscription{
+		Entity:             types.NewEntity(),
+		ID:                 id.NewSubscriptionID(),
+		TenantID:           "tenant_1",
+		PlanID:             p.ID,
+		Status:             subscription.StatusActive,
+		CurrentPeriodStart: time.Now().UTC().Add(-24 * time.Hour),
+		CurrentPeriodEnd:   time.Now().UTC().Add(24 * time.Hour),
+		AppID:              "app_1",
+	}
+	if err := s.CreateSubscription(ctx, sub); err != nil {
+		t.Fatalf("CreateSubscription: %v", err)
+	}
+	return l, s, sub
+}
+
+func ingestFeature(t *testing.T, s *memory.Store, sub *subscription.Subscription, key string, qty int64) {
+	t.Helper()
+	if qty == 0 {
+		return
+	}
+	err := s.IngestBatch(context.Background(), []*meter.UsageEvent{{
+		ID: id.NewUsageEventID(), TenantID: sub.TenantID, AppID: sub.AppID,
+		FeatureKey: key, Quantity: qty, Timestamp: time.Now().UTC(),
+	}})
+	if err != nil {
+		t.Fatalf("IngestBatch: %v", err)
+	}
+}
+
+func usagePool() plan.CreditPool {
+	return plan.CreditPool{Key: "usage", Amount: types.USD(500), FeatureKeys: []string{"compute"}}
+}
+
+func TestGenerateInvoice_CreditCoversPartialUsage(t *testing.T) {
+	l, s, sub := creditFixture(t, usagePool())
+	ingestFeature(t, s, sub, "compute", 3)
+
+	inv, err := l.GenerateInvoice(context.Background(), sub.ID)
+	if err != nil {
+		t.Fatalf("GenerateInvoice: %v", err)
+	}
+	if over := lineItemsOfType(inv, invoice.LineItemOverage); len(over) != 1 || over[0].Amount.Amount != 300 {
+		t.Fatalf("got overage %+v, want one line of 300", over)
+	}
+	credit := lineItemsOfType(inv, invoice.LineItemCredit)
+	if len(credit) != 1 {
+		t.Fatalf("got %d credit lines, want 1", len(credit))
+	}
+	c := credit[0]
+	if c.Amount.Amount != -300 || c.UnitAmount.Amount != -300 || c.Quantity != 1 || c.FeatureKey != "" ||
+		c.Description != "usage credit" || c.Metadata["credit_pool"] != "usage" {
+		t.Errorf("unexpected credit line %+v", c)
+	}
+	if inv.CreditAmount.Amount != 300 || inv.CreditAmount.Currency != "usd" {
+		t.Errorf("got CreditAmount %v, want 300 usd", inv.CreditAmount)
+	}
+	if inv.Total.Amount != 500 {
+		t.Errorf("got total %v, want 500", inv.Total)
+	}
+}
+
+func TestGenerateInvoice_CreditCappedAtPool(t *testing.T) {
+	l, s, sub := creditFixture(t, usagePool())
+	ingestFeature(t, s, sub, "compute", 8)
+
+	inv, err := l.GenerateInvoice(context.Background(), sub.ID)
+	if err != nil {
+		t.Fatalf("GenerateInvoice: %v", err)
+	}
+	credit := lineItemsOfType(inv, invoice.LineItemCredit)
+	if len(credit) != 1 || credit[0].Amount.Amount != -500 {
+		t.Fatalf("got credit lines %+v, want one of -500", credit)
+	}
+	if inv.CreditAmount.Amount != 500 {
+		t.Errorf("got CreditAmount %v, want 500", inv.CreditAmount)
+	}
+	if inv.Total.Amount != 800 {
+		t.Errorf("got total %v, want 800 (500 base + 800 usage - 500 credit)", inv.Total)
+	}
+}
+
+func TestGenerateInvoice_NoUsageNoCreditLine(t *testing.T) {
+	l, _, sub := creditFixture(t, usagePool())
+
+	inv, err := l.GenerateInvoice(context.Background(), sub.ID)
+	if err != nil {
+		t.Fatalf("GenerateInvoice: %v", err)
+	}
+	if credit := lineItemsOfType(inv, invoice.LineItemCredit); len(credit) != 0 {
+		t.Errorf("got credit lines %+v, want none", credit)
+	}
+	if !inv.CreditAmount.IsZero() {
+		t.Errorf("got CreditAmount %v, want zero", inv.CreditAmount)
+	}
+	if inv.Total.Amount != 500 {
+		t.Errorf("got total %v, want 500: a credit must never touch the base fee", inv.Total)
+	}
+}
+
+func TestGenerateInvoice_PoolsAreSeparate(t *testing.T) {
+	l, s, sub := creditFixture(t, usagePool(),
+		plan.CreditPool{Key: "ai", Amount: types.USD(1000), FeatureKeys: []string{"ai_usd"}})
+	ingestFeature(t, s, sub, "compute", 8)
+	ingestFeature(t, s, sub, "ai_usd", 1200)
+
+	inv, err := l.GenerateInvoice(context.Background(), sub.ID)
+	if err != nil {
+		t.Fatalf("GenerateInvoice: %v", err)
+	}
+	credit := lineItemsOfType(inv, invoice.LineItemCredit)
+	if len(credit) != 2 {
+		t.Fatalf("got %d credit lines, want 2", len(credit))
+	}
+	if credit[0].Amount.Amount != -500 || credit[0].Metadata["credit_pool"] != "usage" {
+		t.Errorf("first credit line %+v, want usage -500", credit[0])
+	}
+	if credit[1].Amount.Amount != -1000 || credit[1].Metadata["credit_pool"] != "ai" {
+		t.Errorf("second credit line %+v, want ai -1000", credit[1])
+	}
+	if inv.CreditAmount.Amount != 1500 {
+		t.Errorf("got CreditAmount %v, want 1500", inv.CreditAmount)
+	}
+	// 500 base + 800 compute + 1200 ai - 1500 credit.
+	if inv.Total.Amount != 1000 {
+		t.Errorf("got total %v, want 1000", inv.Total)
+	}
+}
+
+// Order of operations: credit comes off first, then a percentage coupon is
+// taken on what is left. Here 8 units bill 800 on a 500 base (subtotal 1300);
+// the credit takes 500, so 10% is 80, not 130.
+func TestGenerateInvoice_CreditBeforeCoupon(t *testing.T) {
+	ctx := context.Background()
+	l, s, sub := creditFixture(t, usagePool())
+	ingestFeature(t, s, sub, "compute", 8)
+
+	if err := s.CreateCoupon(ctx, &coupon.Coupon{
+		Entity: types.NewEntity(), ID: id.NewCouponID(), Code: "TEN",
+		Type: coupon.CouponTypePercentage, Percentage: 10,
+		Currency: "usd", AppID: "app_1",
+	}); err != nil {
+		t.Fatalf("CreateCoupon: %v", err)
+	}
+	if _, err := l.ApplyCoupon(ctx, sub.ID, "TEN"); err != nil {
+		t.Fatalf("ApplyCoupon: %v", err)
+	}
+
+	inv, err := l.GenerateInvoice(ctx, sub.ID)
+	if err != nil {
+		t.Fatalf("GenerateInvoice: %v", err)
+	}
+	if inv.Subtotal.Amount != 1300 || inv.CreditAmount.Amount != 500 {
+		t.Fatalf("got subtotal %v credit %v, want 1300 and 500", inv.Subtotal, inv.CreditAmount)
+	}
+	if inv.DiscountAmount.Amount != 80 {
+		t.Errorf("got discount %v, want 80 (10%% of 800 after credit)", inv.DiscountAmount)
+	}
+	if inv.Total.Amount != 720 {
+		t.Errorf("got total %v, want 720", inv.Total)
+	}
+}
+
+func TestGenerateInvoice_CreditPoolInAnotherCurrencyIsInvalid(t *testing.T) {
+	pool := usagePool()
+	pool.Amount = types.EUR(500)
+	l, s, sub := creditFixture(t, pool)
+	ingestFeature(t, s, sub, "compute", 3)
+
+	if _, err := l.GenerateInvoice(context.Background(), sub.ID); !errors.Is(err, ledger.ErrInvalidCreditPool) {
+		t.Fatalf("got %v, want ErrInvalidCreditPool", err)
+	}
+}

@@ -31,6 +31,7 @@ type planModel struct {
 	TrialDays    int               `grove:"trial_days"`
 	Features     json.RawMessage   `grove:"features,type:jsonb"`
 	Pricing      json.RawMessage   `grove:"pricing,type:jsonb"`
+	Credits      json.RawMessage   `grove:"credits,type:jsonb"`
 	AppID        string            `grove:"app_id"`
 	ProviderID   string            `grove:"provider_id"`
 	ProviderName string            `grove:"provider_name"`
@@ -42,6 +43,7 @@ type planModel struct {
 func toPlanModel(p *plan.Plan) *planModel {
 	features, _ := json.Marshal(p.Features) //nolint:errcheck // best-effort
 	pricing, _ := json.Marshal(p.Pricing)   //nolint:errcheck // best-effort
+	credits, _ := json.Marshal(p.Credits)   //nolint:errcheck // best-effort
 	metadata := p.Metadata
 	if metadata == nil {
 		metadata = make(map[string]string)
@@ -57,6 +59,7 @@ func toPlanModel(p *plan.Plan) *planModel {
 		TrialDays:    p.TrialDays,
 		Features:     features,
 		Pricing:      pricing,
+		Credits:      credits,
 		AppID:        p.AppID,
 		ProviderID:   p.ProviderID,
 		ProviderName: p.ProviderName,
@@ -83,6 +86,11 @@ func fromPlanModel(m *planModel) (*plan.Plan, error) {
 		_ = json.Unmarshal(m.Pricing, pricing) //nolint:errcheck // best-effort
 	}
 
+	var credits []plan.CreditPool
+	if len(m.Credits) > 0 {
+		_ = json.Unmarshal(m.Credits, &credits) //nolint:errcheck // best-effort
+	}
+
 	return &plan.Plan{
 		Entity: types.Entity{
 			CreatedAt: m.CreatedAt,
@@ -97,6 +105,7 @@ func fromPlanModel(m *planModel) (*plan.Plan, error) {
 		TrialDays:    m.TrialDays,
 		Features:     features,
 		Pricing:      pricing,
+		Credits:      credits,
 		AppID:        m.AppID,
 		ProviderID:   m.ProviderID,
 		ProviderName: m.ProviderName,
@@ -327,6 +336,7 @@ type invoiceModel struct {
 	TaxCurrency         string            `grove:"tax_currency"`
 	DiscountAmountCents int64             `grove:"discount_amount_cents"`
 	DiscountCurrency    string            `grove:"discount_currency"`
+	CreditAmountCents   int64             `grove:"credit_amount_cents"`
 	TotalAmountCents    int64             `grove:"total_amount_cents"`
 	TotalCurrency       string            `grove:"total_currency"`
 	LineItems           json.RawMessage   `grove:"line_items,type:jsonb"`
@@ -364,6 +374,7 @@ func toInvoiceModel(inv *invoice.Invoice) *invoiceModel {
 		TaxCurrency:         inv.TaxAmount.Currency,
 		DiscountAmountCents: inv.DiscountAmount.Amount,
 		DiscountCurrency:    inv.DiscountAmount.Currency,
+		CreditAmountCents:   inv.CreditAmount.Amount,
 		TotalAmountCents:    inv.Total.Amount,
 		TotalCurrency:       inv.Total.Currency,
 		LineItems:           lineItems,
@@ -411,6 +422,7 @@ func fromInvoiceModel(m *invoiceModel) (*invoice.Invoice, error) {
 		Subtotal:       types.Money{Amount: m.SubtotalAmountCents, Currency: m.SubtotalCurrency},
 		TaxAmount:      types.Money{Amount: m.TaxAmountCents, Currency: m.TaxCurrency},
 		DiscountAmount: types.Money{Amount: m.DiscountAmountCents, Currency: m.DiscountCurrency},
+		CreditAmount:   types.Money{Amount: m.CreditAmountCents, Currency: m.Currency},
 		Total:          types.Money{Amount: m.TotalAmountCents, Currency: m.TotalCurrency},
 		LineItems:      lineItems,
 		PeriodStart:    m.PeriodStart,

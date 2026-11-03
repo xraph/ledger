@@ -91,6 +91,13 @@ func copyPlan(p *plan.Plan) *plan.Plan {
 			cp.Features[i].Metadata = copyStringMap(f.Metadata)
 		}
 	}
+	if p.Credits != nil {
+		cp.Credits = make([]plan.CreditPool, len(p.Credits))
+		for i, c := range p.Credits {
+			cp.Credits[i] = c
+			cp.Credits[i].FeatureKeys = append([]string(nil), c.FeatureKeys...)
+		}
+	}
 	if p.Pricing != nil {
 		pricing := *p.Pricing
 		if p.Pricing.Tiers != nil {

@@ -31,6 +31,7 @@ type planModel struct {
 	TrialDays    int               `grove:"trial_days"  bson:"trial_days"`
 	Features     []featureModel    `grove:"features"    bson:"features"`
 	Pricing      *pricingModel     `grove:"pricing"     bson:"pricing,omitempty"`
+	Credits      []creditPoolModel `grove:"credits"     bson:"credits,omitempty"`
 	AppID        string            `grove:"app_id"          bson:"app_id"`
 	ProviderID   string            `grove:"provider_id"     bson:"provider_id"`
 	ProviderName string            `grove:"provider_name"   bson:"provider_name"`
@@ -61,6 +62,13 @@ type pricingModel struct {
 	Tiers              []priceTierModel `bson:"tiers,omitempty"`
 	CreatedAt          time.Time        `bson:"created_at"`
 	UpdatedAt          time.Time        `bson:"updated_at"`
+}
+
+type creditPoolModel struct {
+	Key         string   `bson:"key"`
+	Cents       int64    `bson:"amount_cents"`
+	Currency    string   `bson:"amount_currency"`
+	FeatureKeys []string `bson:"feature_keys"`
 }
 
 type priceTierModel struct {
@@ -118,6 +126,17 @@ func toPlanModel(p *plan.Plan) *planModel {
 		}
 	}
 
+	// credits stays nil for a plan without pools, so omitempty drops the field.
+	var credits []creditPoolModel
+	if len(p.Credits) > 0 {
+		credits = make([]creditPoolModel, 0, len(p.Credits))
+	}
+	for _, c := range p.Credits {
+		credits = append(credits, creditPoolModel{
+			Key: c.Key, Cents: c.Amount.Amount, Currency: c.Amount.Currency, FeatureKeys: c.FeatureKeys,
+		})
+	}
+
 	return &planModel{
 		ID:           p.ID.String(),
 		Name:         p.Name,
@@ -128,6 +147,7 @@ func toPlanModel(p *plan.Plan) *planModel {
 		TrialDays:    p.TrialDays,
 		Features:     features,
 		Pricing:      pricing,
+		Credits:      credits,
 		AppID:        p.AppID,
 		ProviderID:   p.ProviderID,
 		ProviderName: p.ProviderName,
@@ -235,6 +255,15 @@ func fromPlanModel(m *planModel) (*plan.Plan, error) {
 		}
 	}
 
+	var credits []plan.CreditPool
+	for _, c := range m.Credits {
+		credits = append(credits, plan.CreditPool{
+			Key:         c.Key,
+			Amount:      types.Money{Amount: c.Cents, Currency: c.Currency},
+			FeatureKeys: c.FeatureKeys,
+		})
+	}
+
 	return &plan.Plan{
 		Entity: types.Entity{
 			CreatedAt: m.CreatedAt,
@@ -249,6 +278,7 @@ func fromPlanModel(m *planModel) (*plan.Plan, error) {
 		TrialDays:    m.TrialDays,
 		Features:     features,
 		Pricing:      pricing,
+		Credits:      credits,
 		AppID:        m.AppID,
 		ProviderID:   m.ProviderID,
 		ProviderName: m.ProviderName,
@@ -471,6 +501,7 @@ type invoiceModel struct {
 	TaxCurrency         string            `grove:"tax_currency"         bson:"tax_currency"`
 	DiscountAmountCents int64             `grove:"discount_amount_cents" bson:"discount_amount_cents"`
 	DiscountCurrency    string            `grove:"discount_currency"    bson:"discount_currency"`
+	CreditAmountCents   int64             `grove:"credit_amount_cents" bson:"credit_amount_cents"`
 	TotalAmountCents    int64             `grove:"total_amount_cents"   bson:"total_amount_cents"`
 	TotalCurrency       string            `grove:"total_currency"       bson:"total_currency"`
 	LineItems           []lineItemModel   `grove:"line_items"           bson:"line_items"`
@@ -533,6 +564,7 @@ func toInvoiceModel(inv *invoice.Invoice) *invoiceModel {
 		TaxCurrency:         inv.TaxAmount.Currency,
 		DiscountAmountCents: inv.DiscountAmount.Amount,
 		DiscountCurrency:    inv.DiscountAmount.Currency,
+		CreditAmountCents:   inv.CreditAmount.Amount,
 		TotalAmountCents:    inv.Total.Amount,
 		TotalCurrency:       inv.Total.Currency,
 		LineItems:           lineItems,
@@ -598,6 +630,7 @@ func fromInvoiceModel(m *invoiceModel) (*invoice.Invoice, error) {
 		Subtotal:       types.Money{Amount: m.SubtotalAmountCents, Currency: m.SubtotalCurrency},
 		TaxAmount:      types.Money{Amount: m.TaxAmountCents, Currency: m.TaxCurrency},
 		DiscountAmount: types.Money{Amount: m.DiscountAmountCents, Currency: m.DiscountCurrency},
+		CreditAmount:   types.Money{Amount: m.CreditAmountCents, Currency: m.Currency},
 		Total:          types.Money{Amount: m.TotalAmountCents, Currency: m.TotalCurrency},
 		LineItems:      lineItems,
 		PeriodStart:    m.PeriodStart,

@@ -29,6 +29,7 @@ func Run(t *testing.T, newStore func(t *testing.T) ledgerstore.Store) {
 	t.Helper()
 
 	t.Run("PlanRoundTrip", func(t *testing.T) { testPlanRoundTrip(t, newStore(t)) })
+	t.Run("PlanRoundTripCredits", func(t *testing.T) { testPlanRoundTripCredits(t, newStore(t)) })
 	t.Run("PlanRoundTripWithoutPricingPlanID", func(t *testing.T) { testPlanRoundTripWithoutPricingPlanID(t, newStore(t)) })
 	t.Run("PlanRoundTripWithoutChildIDs", func(t *testing.T) { testPlanRoundTripWithoutChildIDs(t, newStore(t)) })
 	t.Run("CouponRoundTrip", func(t *testing.T) { testCouponRoundTrip(t, newStore(t)) })
@@ -59,6 +60,7 @@ func Run(t *testing.T, newStore func(t *testing.T) ledgerstore.Store) {
 	t.Run("UpdateCouponLeavesTimesRedeemedAlone", func(t *testing.T) { testUpdateCouponLeavesTimesRedeemedAlone(t, newStore(t)) })
 	t.Run("SubscriptionTenantIsolation", func(t *testing.T) { testSubscriptionTenantIsolation(t, newStore(t)) })
 	t.Run("SubscriptionQuantityRoundTrip", func(t *testing.T) { testSubscriptionQuantityRoundTrip(t, newStore(t)) })
+	t.Run("InvoiceCreditAmountRoundTrips", func(t *testing.T) { testInvoiceCreditAmountRoundTrips(t, newStore(t)) })
 	t.Run("InvoiceTenantIsolation", func(t *testing.T) { testInvoiceTenantIsolation(t, newStore(t)) })
 	t.Run("UsageTenantIsolation", func(t *testing.T) { testUsageTenantIsolation(t, newStore(t)) })
 	t.Run("EmptyTenantIDBehavior", func(t *testing.T) { testEmptyTenantIDBehavior(t, newStore(t)) })
@@ -138,6 +140,49 @@ func testPlanRoundTrip(t *testing.T, s ledgerstore.Store) {
 	}
 	if !got.Pricing.BaseAmount.Equal(types.USD(4900)) {
 		t.Errorf("got base amount %v, want $49.00", got.Pricing.BaseAmount)
+	}
+}
+
+// testPlanRoundTripCredits pins down that a plan's credit pools survive a
+// store round trip, and that a plan without any comes back with none.
+func testPlanRoundTripCredits(t *testing.T, s ledgerstore.Store) {
+	ctx := context.Background()
+	appID := "app-" + uniqueSuffix()
+
+	pools := []plan.CreditPool{
+		{Key: "usage", Amount: types.USD(500), FeatureKeys: []string{"build_minutes", "egress_gb"}},
+		{Key: "ai", Amount: types.USD(250), FeatureKeys: []string{"tokens"}},
+	}
+	with := &plan.Plan{
+		Entity: types.NewEntity(), ID: id.NewPlanID(),
+		Name: "Pro", Slug: "pro-" + uniqueSuffix(), Currency: "usd",
+		Status: plan.StatusActive, AppID: appID, Credits: pools,
+	}
+	without := &plan.Plan{
+		Entity: types.NewEntity(), ID: id.NewPlanID(),
+		Name: "Free", Slug: "free-" + uniqueSuffix(), Currency: "usd",
+		Status: plan.StatusActive, AppID: appID,
+	}
+	for _, p := range []*plan.Plan{with, without} {
+		if err := s.CreatePlan(ctx, p); err != nil {
+			t.Fatalf("CreatePlan %s: %v", p.Name, err)
+		}
+	}
+
+	got, err := s.GetPlan(ctx, with.ID)
+	if err != nil {
+		t.Fatalf("GetPlan: %v", err)
+	}
+	if !reflect.DeepEqual(got.Credits, pools) {
+		t.Errorf("credits = %+v, want %+v", got.Credits, pools)
+	}
+
+	got, err = s.GetPlan(ctx, without.ID)
+	if err != nil {
+		t.Fatalf("GetPlan: %v", err)
+	}
+	if len(got.Credits) != 0 {
+		t.Errorf("credits = %+v, want none", got.Credits)
 	}
 }
 
@@ -1088,6 +1133,7 @@ func newTestInvoice(tenantID, appID string) *invoice.Invoice {
 		Subtotal:       types.USD(1000),
 		TaxAmount:      types.USD(0),
 		DiscountAmount: types.USD(0),
+		CreditAmount:   types.USD(250),
 		Total:          types.USD(1000),
 		PeriodStart:    now,
 		PeriodEnd:      now.AddDate(0, 1, 0),
@@ -1220,6 +1266,23 @@ func testSubscriptionQuantityRoundTrip(t *testing.T, s ledgerstore.Store) {
 	}
 	if want := (map[string]int64{"seats": 20}); !reflect.DeepEqual(gotAfterUpdate.Quantity, want) {
 		t.Errorf("Quantity after update: got %v, want %v", gotAfterUpdate.Quantity, want)
+	}
+}
+
+// testInvoiceCreditAmountRoundTrips checks that the credit applied to an
+// invoice survives a write and a read.
+func testInvoiceCreditAmountRoundTrips(t *testing.T, s ledgerstore.Store) {
+	ctx := context.Background()
+	inv := newTestInvoice("tenant-"+uniqueSuffix(), "app-"+uniqueSuffix())
+	if err := s.CreateInvoice(ctx, inv); err != nil {
+		t.Fatalf("CreateInvoice: %v", err)
+	}
+	got, err := s.GetInvoice(ctx, inv.ID)
+	if err != nil {
+		t.Fatalf("GetInvoice: %v", err)
+	}
+	if !got.CreditAmount.Equal(types.USD(250)) {
+		t.Errorf("got CreditAmount %v, want $2.50", got.CreditAmount)
 	}
 }
 

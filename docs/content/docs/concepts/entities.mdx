@@ -32,6 +32,7 @@ type Plan struct {
 	TrialDays    int
 	Features     []Feature
 	Pricing      *Pricing
+	Credits      []CreditPool // usage credit included each period
 	AppID        string
 	ProviderID   string
 	ProviderName string
@@ -176,6 +177,7 @@ type Invoice struct {
 	Subtotal       types.Money
 	TaxAmount      types.Money
 	DiscountAmount types.Money
+	CreditAmount   types.Money // plan credit pools applied to usage
 	Total          types.Money
 	LineItems      []LineItem
 	PeriodStart    time.Time
@@ -242,7 +244,8 @@ See [Coupons](/docs/subsystems/coupons).
 ```
 Plan (AppID)
   ├── Feature[]        quota and allowance per feature key
-  └── Pricing          base fee, billing period, PriceTier[] per feature key
+  ├── Pricing          base fee, billing period, PriceTier[] per feature key
+  └── CreditPool[]     usage credit per period, spent on metered features
 
 Subscription (TenantID, AppID) ──> Plan
   ├── Quantity         seat counts

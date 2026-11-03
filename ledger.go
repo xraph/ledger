@@ -1135,16 +1135,17 @@ func addChecked(stage string, a, b types.Money) (types.Money, error) {
 //
 // It assembles line items in a fixed order: the base fee, then metered
 // usage overage per feature in plan order, then seat charges per seat
-// feature in plan order, then one discount line per applied coupon, then
-// one tax line. Every Money the function builds is normalised to one
+// feature in plan order, then one credit line per plan credit pool with
+// usage to cancel, then one discount line per applied coupon, then one tax
+// line. Every Money the function builds is normalised to one
 // lowercased currency taken from the plan, so two values built from
 // different casings of the same currency (e.g. "USD" and "usd") never trip
 // Money.Add/Subtract's case-sensitive mismatch panic. Tax is computed on
-// the net amount (subtotal less discounts, clamped at zero), not the
+// the net amount (subtotal less credit and discounts, clamped at zero), not the
 // gross subtotal, so a discounted invoice is never taxed on money the
 // customer was never charged.
 //
-// Every sum it builds (subtotal, discount, net, tax and total) is checked.
+// Every sum it builds (subtotal, credit, discount, net, tax and total) is checked.
 // An amount that overflows an int64 fails generation with an error wrapping
 // types.ErrOverflow that names the stage, and nothing is stored: a wrapped
 // figure must never become an invoice.
@@ -1272,6 +1273,7 @@ func (l *Ledger) generateInvoice(ctx context.Context, subID id.SubscriptionID, o
 		Subtotal:       types.Zero(currency),
 		TaxAmount:      types.Zero(currency),
 		DiscountAmount: types.Zero(currency),
+		CreditAmount:   types.Zero(currency),
 		Total:          types.Zero(currency),
 		PeriodStart:    sub.CurrentPeriodStart,
 		PeriodEnd:      sub.CurrentPeriodEnd,
@@ -1417,9 +1419,19 @@ func (l *Ledger) generateInvoice(ctx context.Context, subID id.SubscriptionID, o
 		inv.Subtotal = subtotal
 	}
 
-	// 4. Coupon discounts. Percentage coupons compute against the subtotal
-	// as it stood before any discount, so two stacked percentages do not
-	// compound. Amount coupons subtract flat. Each coupon is validated again
+	// 4. Plan credit pools, one negative line per pool that has usage to
+	// cancel. They apply before coupons, so a percentage coupon is taken on
+	// what is left after credit.
+	credits, creditTotal, creditErr := creditLines(p, inv.LineItems, inv.ID, currency)
+	if creditErr != nil {
+		return nil, creditErr
+	}
+	inv.LineItems = append(inv.LineItems, credits...)
+	inv.CreditAmount = creditTotal
+
+	// 5. Coupon discounts. Percentage coupons compute against the subtotal
+	// less credit, as it stood before any coupon, so two stacked
+	// percentages do not compound. Amount coupons subtract flat. Each coupon is validated again
 	// below (range, sign, type and currency against the plan) because it may
 	// have been attached by a path other than ApplyCoupon, or the plan may
 	// have changed since it was applied. That per-coupon currency check is
@@ -1429,7 +1441,10 @@ func (l *Ledger) generateInvoice(ctx context.Context, subID id.SubscriptionID, o
 		return nil, fmt.Errorf("list applied coupons: %w", couponErr)
 	}
 
-	discountBase := inv.Subtotal
+	discountBase, baseErr := inv.Subtotal.CheckedSubtract(inv.CreditAmount)
+	if baseErr != nil {
+		return nil, fmt.Errorf("discount: subtracting credit: %w", baseErr)
+	}
 	for _, c := range applied {
 		// A coupon reaching here did not necessarily pass through
 		// ApplyCoupon's own checks: it may have been recorded by another
@@ -1500,7 +1515,7 @@ func (l *Ledger) generateInvoice(ctx context.Context, subID id.SubscriptionID, o
 	// final total is built from. It is clamped at zero here, before tax:
 	// Ledger has no refund path, so a discount larger than the bill must
 	// produce a free invoice, never a negative one.
-	net, netErr := inv.Subtotal.CheckedSubtract(inv.DiscountAmount)
+	net, netErr := discountBase.CheckedSubtract(inv.DiscountAmount)
 	if netErr != nil {
 		return nil, fmt.Errorf("net amount: %w", netErr)
 	}
@@ -1508,7 +1523,7 @@ func (l *Ledger) generateInvoice(ctx context.Context, subID id.SubscriptionID, o
 		net = types.Zero(currency)
 	}
 
-	// 5. Tax, from whichever plugins provide it, computed on the net
+	// 6. Tax, from whichever plugins provide it, computed on the net
 	// amount. The interface returns interface{}, so a plugin that hands
 	// back the wrong type fails generation rather than silently
 	// contributing nothing.
@@ -1787,7 +1802,15 @@ func (l *Ledger) SyncSubscriptionToProvider(ctx context.Context, subID id.Subscr
 	return result, syncErr
 }
 
+// zeroTotalPaymentRef is the payment reference SyncInvoiceToProvider records
+// on an invoice it marks paid because there is nothing to collect.
+const zeroTotalPaymentRef = "zero-total"
+
 // SyncInvoiceToProvider pushes a local invoice to the payment provider.
+//
+// An invoice whose total is zero has nothing to collect, so it is not sent:
+// it is marked paid with the payment reference "zero-total" and the result
+// carries no provider id. The provider is not called.
 func (l *Ledger) SyncInvoiceToProvider(ctx context.Context, invID id.InvoiceID) (res *provider.SyncResult, err error) {
 	ctx, span := telemetry.Start(ctx, "sync invoice",
 		trace.WithAttributes(attribute.String(attrInvoiceID, invID.String())))
@@ -1801,6 +1824,19 @@ func (l *Ledger) SyncInvoiceToProvider(ctx context.Context, invID id.InvoiceID) 
 	prov, err := l.providerFor(ctx, inv.ProviderName)
 	if err != nil {
 		return nil, err
+	}
+
+	if inv.Total.IsZero() {
+		if err := l.MarkInvoicePaid(ctx, invID, time.Now().UTC(), zeroTotalPaymentRef); err != nil {
+			return nil, err
+		}
+		return &provider.SyncResult{
+			ProviderName: prov.Name(),
+			EntityType:   "invoice",
+			EntityID:     invID.String(),
+			Direction:    "push",
+			Success:      true,
+		}, nil
 	}
 
 	providerID, syncErr := callProvider(l, prov, "sync_invoice", func() (string, error) {

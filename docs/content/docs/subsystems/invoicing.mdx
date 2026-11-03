@@ -21,17 +21,19 @@ The lines are built in a fixed order:
 | 1 | `base` | "Base subscription fee" | `Pricing.BaseAmount`, when it's above zero |
 | 2 | `overage` | "&lt;feature name&gt; overage" | One per metered feature whose usage in the period passed its `Limit`, priced by its tiers. `Quantity` is the units past the limit |
 | 3 | `seat` | the feature name | One per seat feature with a seat count above zero, priced by its tiers. `Quantity` is the seat count |
-| 4 | `discount` | "Discount &lt;code&gt;" | One per applied coupon, as a negative amount |
-| 5 | `tax` | "Tax" | The sum from every `TaxCalculator` plugin, when it's above zero |
+| 4 | `credit` | "&lt;pool key&gt; credit" | One per plan credit pool that has usage to cancel, as a negative amount. See [credit pools](/docs/subsystems/plans#credit-pools) |
+| 5 | `discount` | "Discount &lt;code&gt;" | One per applied coupon, as a negative amount |
+| 6 | `tax` | "Tax" | The sum from every `TaxCalculator` plugin, when it's above zero |
 
 A line that prices at zero is left off. Overage and seat lines carry the feature key, and their `UnitAmount` is zero, because a tiered price has no single unit rate. `invoice.LineItemUsage` is declared but never used.
 
 The totals:
 
 - `Subtotal` is base plus overage plus seats.
-- `DiscountAmount` is the sum of the coupons. A percentage coupon takes its share of the subtotal before any discount, rounded down to the cent, so two percentage coupons don't compound.
-- Tax is computed on the subtotal less discounts, never below zero.
-- `Total` is that net amount plus `TaxAmount`. A discount larger than the bill gives a zero total, never a negative one.
+- `CreditAmount` is the sum of the credit pool lines.
+- `DiscountAmount` is the sum of the coupons. A percentage coupon takes its share of the subtotal less credit, before any coupon, rounded down to the cent, so two percentage coupons don't compound.
+- Tax is computed on the subtotal less credit and discounts, never below zero.
+- `Total` is that net amount plus `TaxAmount`. Credit and discount together larger than the bill give a zero total, never a negative one.
 
 Every amount is in the plan's currency, lowercased. Every sum is overflow-checked: an amount that doesn't fit in an `int64` fails generation with an error wrapping `types.ErrOverflow`, and nothing is stored.
 

@@ -102,27 +102,27 @@ Some constants have no event behind them yet. The hook never records `entitlemen
 
 ## Payment providers
 
-Ledger doesn't charge cards, and it ships no provider. To connect Stripe, Paddle or anything else, you implement `provider.Provider` (sync, import, payment methods and webhooks) and register it through a plugin that implements `plugin.PaymentProviderPlugin`:
+Ledger doesn't charge cards itself. For Stripe you can use the provider that ships in `provider/stripe`; the [Stripe provider page](content/docs/subsystems/stripe.mdx) covers setup, webhooks and refunds. To connect Paddle or anything else, you implement `provider.Provider` (sync, import, payment methods and webhooks) and register it through a plugin that implements `plugin.PaymentProviderPlugin`:
 
 ```go
-type stripePlugin struct{ p provider.Provider }
+type paddlePlugin struct{ p provider.Provider }
 
-func (s *stripePlugin) Name() string                { return "stripe" }
-func (s *stripePlugin) Provider() provider.Provider { return s.p }
+func (s *paddlePlugin) Name() string                { return "paddle" }
+func (s *paddlePlugin) Provider() provider.Provider { return s.p }
 
-l := ledger.New(st, ledger.WithPlugin(&stripePlugin{p: myStripeProvider}))
+l := ledger.New(st, ledger.WithPlugin(&paddlePlugin{p: myPaddleProvider}))
 ```
 
 Then the engine's `SyncPlanToProvider`, `SyncSubscriptionToProvider`, `SyncInvoiceToProvider`, the `Import...FromProvider` methods and `ListPaymentMethods` work. Ledger doesn't serve a webhook endpoint, so mount your own and pass the body through:
 
 ```go
-http.HandleFunc("/webhooks/stripe", func(w http.ResponseWriter, r *http.Request) {
+http.HandleFunc("/webhooks/paddle", func(w http.ResponseWriter, r *http.Request) {
     payload, err := io.ReadAll(r.Body)
     if err != nil {
         http.Error(w, err.Error(), http.StatusBadRequest)
         return
     }
-    if _, err := l.HandleWebhook(r.Context(), "stripe", payload); err != nil {
+    if _, err := l.HandleWebhook(r.Context(), "paddle", payload); err != nil {
         http.Error(w, err.Error(), http.StatusBadRequest)
         return
     }

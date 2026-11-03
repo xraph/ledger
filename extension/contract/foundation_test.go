@@ -106,6 +106,7 @@ func TestToContractError(t *testing.T) {
 		{ledger.ErrCouponNotStarted, dash.CodeBadRequest},
 		{ledger.ErrInvalidPricing, dash.CodeBadRequest},
 		{ledger.ErrDuplicateFeature, dash.CodeBadRequest},
+		{ledger.ErrInvalidCreditPool, dash.CodeBadRequest},
 		{invoice.ErrInvalidTiers, dash.CodeBadRequest},
 		{types.ErrOverflow, dash.CodeBadRequest},
 		{ledger.ErrCouponAlreadyApplied, dash.CodeConflict},

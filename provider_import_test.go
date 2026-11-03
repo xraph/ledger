@@ -699,7 +699,7 @@ func TestImportedInvoiceRefusesALineItemOfAnUnknownType(t *testing.T) {
 		t.Errorf("%d invoices stored after refused imports, want 0", len(rows))
 	}
 
-	// All six types the engine writes still import.
+	// All seven types the engine writes still import.
 	src.invoices["in_all"] = func() *invoice.Invoice {
 		inv := importedBill("acme", sub.ID)
 		line := func(typ invoice.LineItemType, cents int64) invoice.LineItem {
@@ -707,13 +707,91 @@ func TestImportedInvoiceRefusesALineItemOfAnUnknownType(t *testing.T) {
 		}
 		inv.LineItems = []invoice.LineItem{
 			line(invoice.LineItemBase, 2000), line(invoice.LineItemUsage, 1000), line(invoice.LineItemOverage, 900),
-			line(invoice.LineItemSeat, 1000), line(invoice.LineItemDiscount, -500), line(invoice.LineItemTax, 300),
+			line(invoice.LineItemSeat, 1000), line(invoice.LineItemCredit, -400), line(invoice.LineItemDiscount, -500),
+			line(invoice.LineItemTax, 300),
 		}
-		inv.DiscountAmount, inv.TaxAmount, inv.Total = types.USD(500), types.USD(300), types.USD(4700)
+		inv.CreditAmount, inv.DiscountAmount, inv.TaxAmount, inv.Total = types.USD(400), types.USD(500), types.USD(300), types.USD(4300)
 		return inv
 	}
 	if _, err := l.ImportInvoiceFromProvider(ctx, "", "in_all", ledger.ImportInto("app_1")); err != nil {
-		t.Errorf("an invoice using all six line item types: %v", err)
+		t.Errorf("an invoice using all seven line item types: %v", err)
+	}
+}
+
+func TestImportedInvoiceCreditFollowsTheEnginesArithmetic(t *testing.T) {
+	ctx := context.Background()
+	src := &importSource{}
+	l, st := newImportLedger(src)
+	p := activePlanIn(t, l, "pro", "app_1")
+	sub := &subscription.Subscription{TenantID: "acme", PlanID: p.ID, AppID: "app_1"}
+	if err := l.CreateSubscription(ctx, sub); err != nil {
+		t.Fatalf("CreateSubscription: %v", err)
+	}
+	creditLine := func(cents int64) invoice.LineItem {
+		return invoice.LineItem{Description: "usage credit", Quantity: 1, UnitAmount: types.USD(-cents), Amount: types.USD(-cents), Type: invoice.LineItemCredit}
+	}
+	// withCredit is $49.00 of base fee less a $9.00 credit line.
+	withCredit := func() *invoice.Invoice {
+		inv := importedBill("acme", sub.ID)
+		inv.LineItems = append(inv.LineItems, creditLine(900))
+		inv.CreditAmount, inv.Total = types.USD(900), types.USD(4000)
+		return inv
+	}
+
+	src.invoices = map[string]func() *invoice.Invoice{
+		"credit": withCredit,
+		// Credit and discount together exceed the bill: the net clamps at
+		// zero before tax, as GenerateInvoice does. It bills the next month,
+		// so it does not collide with the first.
+		"clamped": func() *invoice.Invoice {
+			inv := withCredit()
+			inv.PeriodStart, inv.PeriodEnd = inv.PeriodEnd, inv.PeriodEnd.AddDate(0, 1, 0)
+			inv.LineItems = append(inv.LineItems, invoice.LineItem{Description: "Discount", Quantity: 1, UnitAmount: types.USD(-4500), Amount: types.USD(-4500), Type: invoice.LineItemDiscount})
+			inv.DiscountAmount, inv.Total = types.USD(4500), types.Zero("usd")
+			return inv
+		},
+	}
+	for _, pid := range []string{"credit", "clamped"} {
+		if _, err := l.ImportInvoiceFromProvider(ctx, "", pid, ledger.ImportInto("app_1")); err != nil {
+			t.Errorf("%s: %v", pid, err)
+		}
+	}
+
+	bad := map[string]func() *invoice.Invoice{
+		"credit lines that miss the credit amount": func() *invoice.Invoice {
+			inv := withCredit()
+			inv.LineItems[1] = creditLine(800)
+			return inv
+		},
+		"a credit amount with no credit lines": func() *invoice.Invoice {
+			inv := withCredit()
+			inv.LineItems = inv.LineItems[:1]
+			return inv
+		},
+		"credit lines with no credit amount": func() *invoice.Invoice {
+			inv := withCredit()
+			inv.CreditAmount, inv.Total = types.Zero("usd"), types.USD(4900)
+			return inv
+		},
+		"a total that ignores the credit": func() *invoice.Invoice {
+			inv := withCredit()
+			inv.Total = types.USD(4900)
+			return inv
+		},
+		"a credit amount in another currency": func() *invoice.Invoice {
+			inv := withCredit()
+			inv.CreditAmount = types.EUR(900)
+			return inv
+		},
+	}
+	for name, build := range bad {
+		src.invoices[name] = build
+		if _, err := l.ImportInvoiceFromProvider(ctx, "", name, ledger.ImportInto("app_1")); !errors.Is(err, ledger.ErrInvalidInput) {
+			t.Errorf("%s: got %v, want ErrInvalidInput", name, err)
+		}
+	}
+	if rows, _ := st.ListInvoices(ctx, "acme", "app_1", invoice.ListOpts{}); len(rows) != 2 {
+		t.Errorf("%d invoices stored, want the 2 valid ones", len(rows))
 	}
 }
 
