@@ -5,12 +5,12 @@ go 1.26.0
 require (
 	github.com/jackc/pgx/v5 v5.10.0
 	github.com/stripe/stripe-go/v87 v87.1.0
-	github.com/xraph/forge v1.13.2
+	github.com/xraph/forge v1.13.6
 	github.com/xraph/go-utils v1.5.0
-	github.com/xraph/grove v1.10.1
-	github.com/xraph/grove/drivers/mongodriver v1.10.1
-	github.com/xraph/grove/drivers/pgdriver v1.10.1
-	github.com/xraph/grove/drivers/sqlitedriver v1.10.1
+	github.com/xraph/grove v1.10.2
+	github.com/xraph/grove/drivers/mongodriver v1.10.2
+	github.com/xraph/grove/drivers/pgdriver v1.10.2
+	github.com/xraph/grove/drivers/sqlitedriver v1.10.2
 	github.com/xraph/vessel v1.0.5
 	go.jetify.com/typeid/v2 v2.0.0-alpha.3
 	go.mongodb.org/mongo-driver/v2 v2.5.0
@@ -34,7 +34,7 @@ require (
 	github.com/felixge/httpsnoop v1.1.0 // indirect
 	github.com/fsnotify/fsnotify v1.10.1 // indirect
 	github.com/fxamacker/cbor/v2 v2.9.2 // indirect
-	github.com/gabriel-vasile/mimetype v1.4.15 // indirect
+	github.com/gabriel-vasile/mimetype v1.4.16 // indirect
 	github.com/go-logr/logr v1.4.4 // indirect
 	github.com/go-logr/stdr v1.2.2 // indirect
 	github.com/go-openapi/jsonpointer v1.0.0 // indirect
@@ -78,7 +78,7 @@ require (
 	github.com/jackc/pgservicefile v0.0.0-20240606120523-5a60cdf6a761 // indirect
 	github.com/jackc/puddle/v2 v2.2.2 // indirect
 	github.com/json-iterator/go v1.1.12 // indirect
-	github.com/klauspost/compress v1.19.1 // indirect
+	github.com/klauspost/compress v1.20.2 // indirect
 	github.com/klauspost/cpuid/v2 v2.4.0 // indirect
 	github.com/leodido/go-urn v1.5.0 // indirect
 	github.com/mattn/go-colorable v0.1.15 // indirect
