@@ -249,6 +249,7 @@ func TestCreateSetupSession_ModeSetup(t *testing.T) {
 		"metadata[ledger_tenant_id]":      "ten_1",
 		"success_url":                     "https://app.test/ok",
 		"cancel_url":                      "https://app.test/cancel",
+		"managed_payments[enabled]":       "false",
 	}
 	for k, v := range want {
 		if got := form.Get(k); got != v {

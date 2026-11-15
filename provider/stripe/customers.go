@@ -76,6 +76,13 @@ func (p *Provider) CreateSetupSession(ctx context.Context, tenantID, successURL,
 		SuccessURL:                stripego.String(successURL),
 		CancelURL:                 stripego.String(cancelURL),
 		Metadata:                  map[string]string{tenantMetadataKey: tenantID},
+		// Managed Payments, which Stripe turns on by default for new
+		// accounts, only takes subscription and payment mode and refuses a
+		// setup-mode session with a 400. Saving a card is not a sale, so it
+		// is turned off for this session alone.
+		ManagedPayments: &stripego.CheckoutSessionCreateManagedPaymentsParams{
+			Enabled: stripego.Bool(false),
+		},
 	}
 	s, err := p.client.V1CheckoutSessions.Create(ctx, params)
 	if err != nil {
