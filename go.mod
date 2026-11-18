@@ -3,7 +3,7 @@ module github.com/xraph/ledger
 go 1.26.0
 
 require (
-	github.com/jackc/pgx/v5 v5.12.0
+	github.com/jackc/pgx/v5 v5.13.0
 	github.com/stripe/stripe-go/v87 v87.1.0
 	github.com/xraph/forge v1.14.0
 	github.com/xraph/go-utils v1.5.1
